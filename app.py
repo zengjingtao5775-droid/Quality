@@ -1398,7 +1398,8 @@ def load_customer_voice() -> pd.DataFrame:
                 "feedback_date": pd.to_datetime(raw_intern.get("反馈日期", pd.Series(pd.NaT, index=raw_intern.index)), errors="coerce"),
             }
         )
-        intern["case_id"] = intern["iv_no"].replace({"": np.nan, "nan": np.nan}).fillna(intern.index.astype(str))
+        fallback_case_id = pd.Series(intern.index.astype(str), index=intern.index)
+        intern["case_id"] = intern["iv_no"].replace({"": np.nan, "nan": np.nan}).fillna(fallback_case_id)
         intern["file_name"] = intern["case_id"]
         intern_source_file = FACTORIES["ZX"]["intern_voice_file"]
     elif intern_manifest.exists():
