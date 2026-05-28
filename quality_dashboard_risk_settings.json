@@ -1,0 +1,25 @@
+{
+  "active_profile": "__default__",
+  "profiles": {
+    "__default__": {
+      "supplier_weights": {
+        "production_score": 24,
+        "client_score": 76
+      },
+      "product_weights": {
+        "production_score": 48,
+        "client_score": 52
+      },
+      "client_weights": {
+        "rpm_score": 30,
+        "intern_voice_score": 70
+      },
+      "qc_benchmark_pct": 4.0,
+      "process_benchmark_pct": 5.0,
+      "rpm_cap": 1500.0,
+      "intern_voice_cap": 30,
+      "incoming_reject_cap": 25,
+      "incoming_issue_cap": 120
+    }
+  }
+}
