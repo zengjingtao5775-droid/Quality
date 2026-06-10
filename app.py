@@ -543,8 +543,10 @@ FACTORIES = {
         "location": "TF",
         "finished": None,
         "finished_files": [
-            Path("TF Database/尾查数据报表 (1).xls"),
-            Path("TF Database/尾查数据报表 (2).xls"),
+            Path("TF Database/数据补充5月29日/尾查数据报表01.xls"),
+            Path("TF Database/数据补充5月29日/尾查数据报表02.xls"),
+            Path("TF Database/数据补充5月29日/尾查数据报表03.xls"),
+            Path("TF Database/数据补充5月29日/尾查数据报表04.xls"),
         ],
         "voice": None,
         "incoming": None,
@@ -552,6 +554,9 @@ FACTORIES = {
             Path("TF Database/面料检验报告.xls"),
             Path("TF Database/辅料检验登记.xls"),
             Path("TF Database/裁片检验.xls"),
+            Path("TF Database/数据补充5月29日/面料检验报告.xls"),
+            Path("TF Database/数据补充5月29日/辅料检验登记.xls"),
+            Path("TF Database/数据补充5月29日/裁片检验.xls"),
         ],
     },
 }
@@ -1137,7 +1142,10 @@ def normalize_finished_qc(canonical: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_tf_finished_qc(cfg: dict) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
+    detail_frames: list[pd.DataFrame] = []
+    inspection_frames: list[pd.DataFrame] = []
+    inspection_key = ["date", "workshop", "product_code", "work_order", "item_code", "product_label"]
+
     for rel in cfg.get("finished_files", []):
         path = ROOT / rel
         if not path.exists():
@@ -1183,52 +1191,78 @@ def load_tf_finished_qc(cfg: dict) -> pd.DataFrame:
             "reviewer_code",
             "reviewer",
         ]
-        raw["inspection_id"] = raw["date"].notna().cumsum()
+        raw["_summary_row"] = pd.to_datetime(raw["date"], errors="coerce").notna()
+        raw["inspection_id"] = raw["_summary_row"].cumsum()
         for col in main_cols:
             if col in raw.columns:
                 raw[col] = raw[col].ffill()
+
+        raw["date"] = pd.to_datetime(raw["date"], errors="coerce")
+        for col in inspection_key[1:]:
+            raw[col] = raw.get(col, "").fillna("").astype(str).str.strip()
+
+        inspection = raw[raw["_summary_row"]].copy()
+        inspection["inspection_qty"] = pd.to_numeric(inspection["inspection_qty"], errors="coerce")
+        inspection["inspection_defects"] = pd.to_numeric(inspection["inspection_defects"], errors="coerce")
+        rate_text = inspection["inspection_defect_rate"].fillna("").astype(str).str.strip()
+        rate_value = pd.to_numeric(rate_text.str.replace("%", "", regex=False), errors="coerce")
+        rate_value = np.where(rate_text.str.contains("%", regex=False), rate_value / 100, np.where(rate_value > 1, rate_value / 100, rate_value))
+        derived_qty = inspection["inspection_defects"] / pd.Series(rate_value, index=inspection.index).replace(0, np.nan)
+        inspection["inspection_qty"] = inspection["inspection_qty"].where(inspection["inspection_qty"] > 0, derived_qty)
+        inspection["source_file"] = str(rel)
+        inspection_frames.append(inspection[inspection_key + ["inspection_qty", "source_file"]])
 
         raw["detail_defects"] = pd.to_numeric(raw.get("detail_defects", 0), errors="coerce").fillna(0)
         detail = raw[(raw["product_code"].notna()) & (raw["detail_defects"] > 0)].copy()
         if detail.empty:
             continue
+        detail["source_file"] = str(rel)
+        detail_frames.append(detail)
 
-        detail["inspection_qty"] = pd.to_numeric(detail["inspection_qty"], errors="coerce").fillna(0)
-        detail_total = detail.groupby("inspection_id")["detail_defects"].transform("sum").replace(0, np.nan)
-        detail["allocated_qty"] = detail["inspection_qty"] * detail["detail_defects"] / detail_total
-        detail["allocated_qty"] = detail["allocated_qty"].fillna(detail["inspection_qty"])
+    if not detail_frames or not inspection_frames:
+        return pd.DataFrame()
 
-        canonical = pd.DataFrame(
-            {
-                "factory_code": "TF",
-                "factory_name": cfg["name"],
-                "supplier": cfg["supplier"],
-                "location": cfg["location"],
-                "product_line": "Apparel / TF",
-                "customer": "Decathlon",
-                "product_code": detail["product_code"],
-                "product_label": detail["product_label"],
-                "item_code": detail["item_code"],
-                "inspection_type": "尾查",
-                "work_order": detail["work_order"],
-                "workshop": detail["workshop"],
-                "process": detail.get("process", "未记录"),
-                "worker_team": detail.get("worker_team", "未记录"),
-                "inspector": detail.get("inspector", ""),
-                "qty_ordered": 0,
-                "qty_inspected": detail["allocated_qty"],
-                "scrap_qty": 0,
-                "defect_qty": detail["detail_defects"],
-                "defect_type": detail.get("defect_name", "").fillna(detail.get("defect_grade", "")),
-                "defect_grade": detail.get("defect_grade", ""),
-                "date": detail["date"],
-                "source_file": str(rel),
-            }
-        )
-        canonical["inspection_stage"] = "End QC / FQC"
-        frames.append(normalize_finished_qc(canonical))
+    detail = pd.concat(detail_frames, ignore_index=True)
+    inspection = pd.concat(inspection_frames, ignore_index=True)
+    inspection_qty = (
+        inspection.groupby(inspection_key, dropna=False, as_index=False)["inspection_qty"]
+        .sum(min_count=1)
+        .fillna({"inspection_qty": 0})
+    )
+    detail = detail.merge(inspection_qty, on=inspection_key, how="left", suffixes=("", "_merged"))
+    detail_total = detail.groupby(inspection_key, dropna=False)["detail_defects"].transform("sum").replace(0, np.nan)
+    detail["allocated_qty"] = detail["inspection_qty_merged"].fillna(0) * detail["detail_defects"] / detail_total
+    detail["allocated_qty"] = detail["allocated_qty"].fillna(0)
 
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    canonical = pd.DataFrame(
+        {
+            "factory_code": "TF",
+            "factory_name": cfg["name"],
+            "supplier": cfg["supplier"],
+            "location": cfg["location"],
+            "product_line": "Apparel / TF",
+            "customer": "Decathlon",
+            "product_code": detail["product_code"],
+            "product_label": detail["product_label"],
+            "item_code": detail["item_code"],
+            "inspection_type": "尾查",
+            "work_order": detail["work_order"],
+            "workshop": detail["workshop"],
+            "process": detail.get("process", "未记录"),
+            "worker_team": detail.get("worker_team", "未记录"),
+            "inspector": detail.get("inspector", ""),
+            "qty_ordered": 0,
+            "qty_inspected": detail["allocated_qty"],
+            "scrap_qty": 0,
+            "defect_qty": detail["detail_defects"],
+            "defect_type": detail.get("defect_name", "").fillna(detail.get("defect_grade", "")),
+            "defect_grade": detail.get("defect_grade", ""),
+            "date": detail["date"],
+            "source_file": detail["source_file"],
+        }
+    )
+    canonical["inspection_stage"] = "End QC / FQC"
+    return normalize_finished_qc(canonical)
 
 
 # ==========================================
@@ -1522,18 +1556,21 @@ def load_incoming_material() -> pd.DataFrame:
             frames.append(data)
 
     tf_cfg = FACTORIES.get("TF", {})
-    tf_material_dir = ROOT / "TF Database"
+    for rel in tf_cfg.get("material_files", []):
+        material_path = ROOT / rel
+        if not material_path.exists():
+            continue
 
-    accessory_path = tf_material_dir / "辅料检验登记.xls"
-    if accessory_path.exists():
-        accessory = read_excel_any(accessory_path, sheet_name=0, header=2)
-        accessory.columns = [str(c).strip() for c in accessory.columns]
-        accessory["不良数"] = pd.to_numeric(accessory.get("不良数", 0), errors="coerce").fillna(0)
-        accessory = accessory[
-            (accessory["日期"].notna())
-            & ((accessory["不良数"] > 0) | (~accessory["抽检结果"].astype(str).str.contains("合格|OK", case=False, na=False)))
-        ].copy()
-        if not accessory.empty:
+        if material_path.name == "辅料检验登记.xls":
+            accessory = read_excel_any(material_path, sheet_name=0, header=2)
+            accessory.columns = [str(c).strip() for c in accessory.columns]
+            accessory["不良数"] = pd.to_numeric(accessory.get("不良数", 0), errors="coerce").fillna(0)
+            accessory = accessory[
+                (accessory["日期"].notna())
+                & ((accessory["不良数"] > 0) | (~accessory["抽检结果"].astype(str).str.contains("合格|OK", case=False, na=False)))
+            ].copy()
+            if accessory.empty:
+                continue
             data = pd.DataFrame(
                 {
                     "batch": pick(accessory, "编号", ""),
@@ -1552,31 +1589,28 @@ def load_incoming_material() -> pd.DataFrame:
                     "factory_name": tf_cfg.get("name", "TF / 腾飞"),
                     "supplier": tf_cfg.get("supplier", "衡阳腾飞"),
                     "material_type": "辅料",
-                    "source_file": str(Path("TF Database/辅料检验登记.xls")),
+                    "source_file": str(rel),
                 }
             )
-            data["date"] = pd.to_datetime(data["date"], errors="coerce")
-            data["material_qty"] = pd.to_numeric(data["material_qty"], errors="coerce").fillna(0)
             data["material_supplier"] = data["material_supplier"].fillna("未记录").astype(str)
-            frames.append(data)
 
-    cut_path = tf_material_dir / "裁片检验.xls"
-    if cut_path.exists():
-        cut = read_excel_any(cut_path, sheet_name=0, header=2)
-        cut.columns = [str(c).strip() for c in cut.columns]
-        main_cols = ["测试类型", "日期", "款号", "颜色", "总数量", "部位名称", "抽检结果", "复检结果", "检验人", "审核人", "抽检数量", "不良数"]
-        for col in main_cols:
-            if col in cut.columns:
-                cut[col] = cut[col].ffill()
-        cut["问题不良数"] = pd.to_numeric(cut.get("Unnamed: 34", 0), errors="coerce").fillna(0)
-        cut["主不良数"] = pd.to_numeric(cut.get("不良数", 0), errors="coerce").fillna(0)
-        cut = cut[
-            (cut["款号"].notna())
-            & (cut.get("问题列表", pd.Series(index=cut.index, dtype=object)).notna())
-            & (cut.get("问题列表", "").astype(str) != "问题描述")
-            & ((cut["问题不良数"] > 0) | (cut["主不良数"] > 0))
-        ].copy()
-        if not cut.empty:
+        elif material_path.name == "裁片检验.xls":
+            cut = read_excel_any(material_path, sheet_name=0, header=2)
+            cut.columns = [str(c).strip() for c in cut.columns]
+            main_cols = ["测试类型", "日期", "款号", "颜色", "总数量", "部位名称", "抽检结果", "复检结果", "检验人", "审核人", "抽检数量", "不良数"]
+            for col in main_cols:
+                if col in cut.columns:
+                    cut[col] = cut[col].ffill()
+            cut["问题不良数"] = pd.to_numeric(cut.get("Unnamed: 34", 0), errors="coerce").fillna(0)
+            cut["主不良数"] = pd.to_numeric(cut.get("不良数", 0), errors="coerce").fillna(0)
+            cut = cut[
+                (cut["款号"].notna())
+                & (cut.get("问题列表", pd.Series(index=cut.index, dtype=object)).notna())
+                & (cut.get("问题列表", "").astype(str) != "问题描述")
+                & ((cut["问题不良数"] > 0) | (cut["主不良数"] > 0))
+            ].copy()
+            if cut.empty:
+                continue
             data = pd.DataFrame(
                 {
                     "batch": pick(cut, "订单号", "").fillna(pick(cut, "款号", "")),
@@ -1595,27 +1629,24 @@ def load_incoming_material() -> pd.DataFrame:
                     "factory_name": tf_cfg.get("name", "TF / 腾飞"),
                     "supplier": tf_cfg.get("supplier", "衡阳腾飞"),
                     "material_type": "裁片",
-                    "source_file": str(Path("TF Database/裁片检验.xls")),
+                    "source_file": str(rel),
                 }
             )
-            data["date"] = pd.to_datetime(data["date"], errors="coerce")
-            data["material_qty"] = pd.to_numeric(data["material_qty"], errors="coerce").fillna(0)
-            frames.append(data)
 
-    fabric_path = tf_material_dir / "面料检验报告.xls"
-    if fabric_path.exists():
-        fabric = read_excel_any(fabric_path, sheet_name=0, header=2)
-        fabric.columns = [str(c).strip() for c in fabric.columns]
-        main_cols = ["来料日期", "检验日期", "面料型号", "单号", "供应商", "客户名称", "客户花色号", "送货总数", "检验结果", "异常处理方式"]
-        for col in main_cols:
-            if col in fabric.columns:
-                fabric[col] = fabric[col].ffill()
-        fabric["总扣分"] = pd.to_numeric(fabric.get("Unnamed: 31", 0), errors="coerce").fillna(0)
-        fabric = fabric[
-            (fabric["单号"].notna())
-            & ((fabric["总扣分"] > 0) | (~fabric["检验结果"].astype(str).str.contains("合格|OK", case=False, na=False)))
-        ].copy()
-        if not fabric.empty:
+        elif material_path.name == "面料检验报告.xls":
+            fabric = read_excel_any(material_path, sheet_name=0, header=2)
+            fabric.columns = [str(c).strip() for c in fabric.columns]
+            main_cols = ["来料日期", "检验日期", "面料型号", "单号", "供应商", "客户名称", "客户花色号", "送货总数", "检验结果", "异常处理方式"]
+            for col in main_cols:
+                if col in fabric.columns:
+                    fabric[col] = fabric[col].ffill()
+            fabric["总扣分"] = pd.to_numeric(fabric.get("Unnamed: 31", 0), errors="coerce").fillna(0)
+            fabric = fabric[
+                (fabric["单号"].notna())
+                & ((fabric["总扣分"] > 0) | (~fabric["检验结果"].astype(str).str.contains("合格|OK", case=False, na=False)))
+            ].copy()
+            if fabric.empty:
+                continue
             issue = np.where(
                 fabric["总扣分"] > 0,
                 "面料外观扣分",
@@ -1639,12 +1670,15 @@ def load_incoming_material() -> pd.DataFrame:
                     "factory_name": tf_cfg.get("name", "TF / 腾飞"),
                     "supplier": tf_cfg.get("supplier", "衡阳腾飞"),
                     "material_type": "面料",
-                    "source_file": str(Path("TF Database/面料检验报告.xls")),
+                    "source_file": str(rel),
                 }
             )
-            data["date"] = pd.to_datetime(data["date"], errors="coerce")
-            data["material_qty"] = pd.to_numeric(data["material_qty"], errors="coerce").fillna(0)
-            frames.append(data)
+        else:
+            continue
+
+        data["date"] = pd.to_datetime(data["date"], errors="coerce")
+        data["material_qty"] = pd.to_numeric(data["material_qty"], errors="coerce").fillna(0)
+        frames.append(data)
 
     if not frames:
         return pd.DataFrame()
@@ -1667,6 +1701,20 @@ def load_incoming_material() -> pd.DataFrame:
     if "material_qty" not in incoming.columns:
         incoming["material_qty"] = 0
     incoming["material_qty"] = pd.to_numeric(incoming["material_qty"], errors="coerce").fillna(0)
+    duplicate_key = [
+        "factory_code",
+        "material_type",
+        "date",
+        "batch",
+        "material_supplier",
+        "material_name",
+        "material_color",
+        "material_qty",
+        "issue",
+        "decision",
+        "extra",
+    ]
+    incoming = incoming.drop_duplicates(subset=duplicate_key, keep="last").reset_index(drop=True)
     return incoming
 
 
