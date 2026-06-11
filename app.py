@@ -1032,15 +1032,26 @@ def render_risk_settings_panel() -> dict:
     return attach_risk_profile_context(current_settings, runtime_payload, selected_profile)
 
 
-def render_product_weight_panel() -> dict:
-    payload, active_profile, settings = runtime_risk_payload()
+def render_product_weight_panel(profile: str | None = None) -> dict:
+    if profile is None:
+        payload, active_profile, settings = runtime_risk_payload()
+    else:
+        if "risk_payload" not in st.session_state:
+            st.session_state.risk_payload = load_risk_payload()
+        payload = merge_risk_payload(st.session_state.risk_payload)
+        active_profile = normalize_profile_key(profile)
+        settings = risk_settings_from_widget_state(profile_settings(payload, active_profile), active_profile)
+        payload["profiles"][active_profile] = settings
     widget_prefix = risk_widget_prefix(active_profile)
     st.markdown(
         f"""
         <div class="risk-weight-panel">
             <div class="risk-weight-title">{t('产品权重方案', 'Product Weight Profile')}</div>
             <div class="risk-weight-note">
-                {t('产品风险同样拆成生产端和客户端：生产端来自半检/总检质量数据；客户端来自 RPM 百万退货率和 Intern Voice 退货发起次数。', 'Product risk is also split into production-side QC and client-side RPM plus Intern Voice return initiations.')}
+                {t(
+                    f'当前编辑：{risk_profile_label(active_profile)}。产品风险拆成生产端和客户端：生产端来自半检/总检质量数据；客户端来自 RPM 百万退货率和 Intern Voice 退货发起次数。',
+                    f'Editing: {risk_profile_label(active_profile)}. Product risk is split into production-side QC and client-side RPM plus Intern Voice return initiations.'
+                )}
             </div>
         </div>
         """,
@@ -1941,9 +1952,23 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
     product["product_label"] = product.get("product_label", pd.Series(index=product.index, dtype=object)).fillna(
         product.get("voice_product_name", pd.Series(index=product.index, dtype=object))
     )
+    has_client_data = pd.Series(False, index=product.index)
+    for column in ["voice_product_code", "voice_product_name", "rpm_now", "customer_score", "intern_voice_count"]:
+        if column in product.columns:
+            has_client_data |= product[column].notna()
     product["qty_inspected"] = product.get("qty_inspected", 0).fillna(0)
     product["defect_qty"] = product.get("defect_qty", 0).fillna(0)
     product["defect_rate"] = product.get("defect_rate", np.nan)
+    for column, default in {
+        "rpm_now": np.nan,
+        "rpm_prev": np.nan,
+        "delta_rpm": np.nan,
+        "avg_score_now": np.nan,
+        "returned_now": 0,
+        "nqc_now": 0,
+    }.items():
+        if column not in product.columns:
+            product[column] = default
     product["qc_score"] = product.apply(
         lambda row: min(
             (row["defect_rate"] if pd.notna(row.get("defect_rate")) else 0)
@@ -1959,8 +1984,6 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
     if "intern_voice_count" not in product.columns:
         product["intern_voice_count"] = 0
     product["intern_voice_count"] = product["intern_voice_count"].fillna(0)
-    if "rpm_now" not in product.columns:
-        product["rpm_now"] = np.nan
     product["rpm_score"] = product.apply(
         lambda row: rpm_risk_score(row.get("rpm_now", 0), settings_for_factory(risk_settings, row["factory_code"])),
         axis=1,
@@ -1976,6 +1999,7 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
         ),
         axis=1,
     ).clip(0, 100)
+    product.loc[~has_client_data, ["rpm_score", "intern_voice_score", "client_score"]] = np.nan
     product["production_score"] = product["qc_score"]
 
     product["risk_score"] = product.apply(
@@ -3171,21 +3195,79 @@ with tabs[2]:
 # ==========================================
 with tabs[3]:
     st.subheader(t("By Product 产品风险看板", "By Product Risk Dashboard"))
-    if product_summary.empty:
+
+    product_finished_scope = finished_all[
+        (finished_all["date"].dt.date >= start_date)
+        & (finished_all["date"].dt.date <= end_date)
+    ].copy()
+    if selected_stages:
+        product_finished_scope = product_finished_scope[product_finished_scope["inspection_stage"].isin(selected_stages)]
+    if selected_processes:
+        product_finished_scope = product_finished_scope[product_finished_scope["process"].isin(selected_processes)]
+    if product_search.strip():
+        product_needle = product_search.strip().lower()
+        product_finished_scope = product_finished_scope[
+            product_finished_scope["product_code"].astype(str).str.lower().str.contains(product_needle, na=False)
+            | product_finished_scope["product_label"].astype(str).str.lower().str.contains(product_needle, na=False)
+        ]
+
+    product_voice_scope = voice_all.copy()
+    if product_search.strip():
+        product_needle = product_search.strip().lower()
+        product_voice_scope = product_voice_scope[
+            product_voice_scope["product_raw"].astype(str).str.lower().str.contains(product_needle, na=False)
+            | product_voice_scope["product_code"].astype(str).str.lower().str.contains(product_needle, na=False)
+        ]
+
+    available_product_factories = set(product_finished_scope["factory_code"].dropna().astype(str))
+    available_product_factories.update(product_voice_scope["factory_code"].dropna().astype(str))
+    product_factory_options = [code for code in FACTORIES if code in available_product_factories]
+    if st.session_state.get("product_factory_filter") not in product_factory_options:
+        st.session_state.pop("product_factory_filter", None)
+
+    if not product_factory_options:
         st.info(t("没有可展示的产品数据。", "No product data to show."))
     else:
-        risk_settings = render_product_weight_panel()
+        product_factory = st.selectbox(
+            t("分析工厂", "Analysis Factory"),
+            product_factory_options,
+            format_func=lambda code: FACTORIES.get(code, {}).get("name", code),
+            key="product_factory_filter",
+        )
+        product_factory_name = FACTORIES.get(product_factory, {}).get("name", product_factory)
+        product_finished = product_finished_scope[product_finished_scope["factory_code"] == product_factory].copy()
+        product_voice = product_voice_scope[product_voice_scope["factory_code"] == product_factory].copy()
+
+        risk_settings = render_product_weight_panel(product_factory)
+        product_factory_summary = compute_product_summary(product_finished, product_voice, risk_settings)
+        product_source = f"{product_factory} QC data"
+        if not product_voice.empty:
+            product_source += " + RPM + Intern Voice"
         active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
         product_prod_w = effective_weight_pct(risk_settings, "product_weights", "production_score")
         product_client_w = effective_weight_pct(risk_settings, "product_weights", "client_score")
         client_rpm_w = effective_weight_pct(risk_settings, "client_weights", "rpm_score")
         client_iv_w = effective_weight_pct(risk_settings, "client_weights", "intern_voice_score")
+        product_date_min = product_finished["date"].min()
+        product_date_max = product_finished["date"].max()
+        product_period = (
+            f"{product_date_min:%Y-%m-%d} - {product_date_max:%Y-%m-%d}"
+            if pd.notna(product_date_min) and pd.notna(product_date_max)
+            else "-"
+        )
+        st.caption(
+            t(
+                f"当前产品分析范围：{product_factory_name}｜QC记录 {len(product_finished):,} 条｜客户端记录 {len(product_voice):,} 条｜产品 {len(product_factory_summary):,} 个｜数据周期 {product_period}。工厂选择仅影响04产品，日期、检验阶段、工序和款式沿用左侧筛选。",
+                f"Current product scope: {product_factory_name} | {len(product_finished):,} QC records | {len(product_voice):,} client records | {len(product_factory_summary):,} products | {product_period}. Factory selection only affects 04 Product; date, stage, process, and product follow the sidebar filters.",
+            )
+        )
         product_logic_cn = (
             f"<div>当前编辑方案：<span class='formula-highlight'>{html.escape(active_profile_label)}</span>。</div>"
             f"<div>产品风险分 = <span class='formula-highlight'>生产端 {product_prod_w:.0f}% + 客户端 {product_client_w:.0f}%</span>。</div>"
             "<div>生产端来自该 CC 的半检/总检 QC 不良率。</div>"
             f"<div>客户端 = 标准化后的 RPM风险分 {client_rpm_w:.0f}% + 标准化后的 Intern Voice风险分 {client_iv_w:.0f}%。</div>"
             f"<div>RPM和Intern Voice先各自换算成0-100风险分，再按权重加权；不是按原始数量直接相加。</div>"
+            f"<div>缺少客户端数据时，综合分仅按现有生产端数据自动归一，不把缺失值计为0分。</div>"
         )
         product_logic_en = (
             f"<div>Editing profile: <span class='formula-highlight'>{html.escape(active_profile_label)}</span>.</div>"
@@ -3193,6 +3275,7 @@ with tabs[3]:
             "<div>Production uses the CC-level online/final QC defect rate.</div>"
             f"<div>Client = normalized RPM risk {client_rpm_w:.0f}% + normalized Intern Voice risk {client_iv_w:.0f}%.</div>"
             "<div>RPM and Intern Voice are each converted to 0-100 risk scores before weighting; raw values are not added directly.</div>"
+            "<div>When client data is unavailable, the score is normalized over available production data instead of treating missing values as zero.</div>"
         )
         st.markdown(
             f"""
@@ -3203,7 +3286,7 @@ with tabs[3]:
             """,
             unsafe_allow_html=True,
         )
-        product_risk_view, x_cap, y_cap = prepare_product_risk_view(product_summary)
+        product_risk_view, x_cap, y_cap = prepare_product_risk_view(product_factory_summary)
         left, right = st.columns([1.2, 1])
         with left:
             zone_colors = {
@@ -3254,8 +3337,8 @@ with tabs[3]:
             )
             plot_chart(fig, 450)
             st.caption(t(
-                f"数据来源：{', '.join(selected_factories)} QC data + RPM + Intern Voice。坐标轴按 P95 聚焦：QC ≤ {pct(x_cap)}，客户端风险信号 ≤ {y_cap:.0f}；超出部分仍在 hover 中保留真实值。",
-                f"Source: {', '.join(selected_factories)} QC data + RPM + Intern Voice. Axes focus on P95: QC <= {pct(x_cap)}, client signal <= {y_cap:.0f}; hover keeps actual values for clipped points.",
+                f"数据来源：{product_source}。坐标轴按 P95 聚焦：QC ≤ {pct(x_cap)}，客户端风险信号 ≤ {y_cap:.0f}；超出部分仍在 hover 中保留真实值。",
+                f"Source: {product_source}. Axes focus on P95: QC <= {pct(x_cap)}, client signal <= {y_cap:.0f}; hover keeps actual values for clipped points.",
             ))
 
         with right:
@@ -3273,27 +3356,28 @@ with tabs[3]:
             )
             fig.update_traces(texttemplate="%{text:.0f}", textposition="inside", insidetextanchor="middle", textfont_color="#ffffff")
             plot_chart(fig, 430)
-            st.caption(t(f"数据来源：{', '.join(selected_factories)} QC data。按疵点数优先展示 Top CC，用于快速找出生产端主问题。", f"Source: {', '.join(selected_factories)} QC data. Top CCs by defect count for quick production-side triage."))
+            st.caption(t(f"数据来源：{product_factory} QC data。按疵点数优先展示 Top CC，用于快速找出生产端主问题。", f"Source: {product_factory} QC data. Top CCs by defect count for quick production-side triage."))
 
         zone_count = (
-            product_risk_view.groupby(["factory_code", "risk_zone"], as_index=False)
+            product_risk_view.groupby("risk_zone", as_index=False)
             .size()
             .rename(columns={"size": t("产品数", "Products")})
         )
         fig = px.bar(
             zone_count,
-            x="factory_code",
+            x="risk_zone",
             y=t("产品数", "Products"),
             color="risk_zone",
-            barmode="stack",
+            text=t("产品数", "Products"),
             color_discrete_map=zone_colors,
-            labels={"factory_code": t("工厂", "Factory"), "risk_zone": t("风险分区", "Risk zone")},
+            labels={"risk_zone": t("风险分区", "Risk zone")},
         )
+        fig.update_traces(textposition="outside")
         plot_chart(fig, 300)
-        st.caption(t(f"数据来源：{', '.join(selected_factories)} QC data + RPM + Intern Voice。展示各工厂产品落在哪些风险分区。", f"Source: {', '.join(selected_factories)} QC data + RPM + Intern Voice. Shows how products distribute across risk zones by factory."))
+        st.caption(t(f"数据来源：{product_source}。展示该工厂产品在各风险分区的数量。", f"Source: {product_source}. Shows the selected factory's product count in each risk zone."))
 
         with st.expander(t("产品明细（可选）", "Product detail (optional)")):
-            product_table = product_summary.head(30).copy()
+            product_table = product_factory_summary.head(30).copy()
             product_table["risk_level"] = product_table["risk_level"].map(risk_level_text)
             product_table = product_table[
                 [
