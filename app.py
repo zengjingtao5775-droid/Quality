@@ -2206,26 +2206,176 @@ def chart_layout(fig: go.Figure, height: int = 420) -> go.Figure:
         height=height,
         margin=dict(l=10, r=10, t=38, b=20),
         legend_title_text="",
+        hoverlabel=dict(align="left"),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
 
+def plotly_hover_labels() -> dict[str, str]:
+    return {
+        "factory": t("工厂", "Factory"),
+        "factory_code": t("工厂代码", "Factory Code"),
+        "factory_name": t("工厂", "Factory"),
+        "supplier": t("供应商", "Supplier"),
+        "risk_level": t("风险等级", "Risk Level"),
+        "risk_score": t("风险分", "Risk Score"),
+        "production_score": t("生产端风险", "Production Risk"),
+        "client_score": t("客户端风险", "Client Risk"),
+        "rpm_score": t("RPM 风险分", "RPM Risk"),
+        "intern_voice_score": t("Intern Voice 风险分", "Intern Voice Risk"),
+        "component": t("风险分项", "Risk Component"),
+        "metric": t("指标", "Metric"),
+        "score": t("分数", "Score"),
+        "inspection_stage": t("检验阶段", "Inspection Stage"),
+        "month": t("月份", "Month"),
+        "process": t("工序", "Process"),
+        "process_view": t("工厂 / 工序", "Factory / Process"),
+        "defect_type": t("疵点类型", "Defect Type"),
+        "defect_qty": t("疵点数", "Defects"),
+        "qty_inspected": t("检验数量", "Inspected Qty"),
+        "defect_rate": t("不良率", "Defect Rate"),
+        "qc_rate": t("QC 不良率", "QC Defect Rate"),
+        "customer_signal": t("客户端风险信号", "Client Risk Signal"),
+        "risk_zone": t("风险分区", "Risk Zone"),
+        "axis_note": t("坐标说明", "Axis Note"),
+        "product_code": t("CC / 款式", "CC / Style"),
+        "product_label": t("产品名称 / 颜色", "Product / Color"),
+        "work_order": t("工单", "Work Order"),
+        "material_type": t("材料类型", "Material Type"),
+        "material_issues": t("来料问题数", "Material Issues"),
+        "issue_view": t("工厂 / 质量问题点", "Factory / Issue"),
+        "supplier_view": t("来料供应商", "Material Supplier"),
+        "size": t("数量", "Count"),
+        "combined_signal": t("组合信号强度", "Combined Signal"),
+        "rpm_now": "RPM N0",
+        "intern_voice_count": "Intern Voice",
+        "delta_rpm": t("RPM 变化", "RPM Change"),
+        "returned_now": t("退货数", "Returns"),
+        "nqc_now": "NQC",
+        "avg_score_now": t("客户评分", "Customer Score"),
+        "change_type": t("变化方向", "Change"),
+        "delta_rate": t("不良率变化", "Defect-Rate Change"),
+        "week": t("周", "Week"),
+        "defects": t("疵点数", "Defects"),
+        "effectiveness_score": t("有效性评分", "Effectiveness Score"),
+        "recurrence": t("复发状态", "Recurrence"),
+    }
+
+
+def plotly_hover_formats() -> dict[str, str]:
+    return {
+        t("综合风险分", "Risk Score"): ".1f",
+        t("风险分", "Risk Score"): ".1f",
+        t("分数", "Score"): ".1f",
+        t("分项风险分", "Component Risk"): ".1f",
+        t("工序风险分", "Process Risk Score"): ".1f",
+        t("组合信号强度", "Combined signal"): ".1f",
+        t("客户端风险信号", "Client Risk Signal"): ".1f",
+        t("有效性评分", "Effectiveness score"): ".1f",
+        t("不良率", "Defect Rate"): ".2%",
+        t("QC 不良率", "QC Defect Rate"): ".2%",
+        t("过程/成品不良率", "QC defect rate"): ".2%",
+        t("不良率变化", "Defect-rate change"): "+.2%",
+        t("检验数量", "Inspected Qty"): ",.0f",
+        t("疵点数", "Defects"): ",.0f",
+        t("数量", "Count"): ",.0f",
+        t("批次数", "Batches"): ",.0f",
+        t("问题批次", "Issue Batches"): ",.0f",
+        t("来料问题数", "Material Issues"): ",.0f",
+        "RPM N0": ",.0f",
+        "Intern Voice": ",.0f",
+        t("RPM 变化", "RPM Change"): ",.0f",
+        t("退货数", "Returns"): ",.0f",
+        "NQC": ",.0f",
+        t("客户评分", "Customer Score"): ".2f",
+    }
+
+
+def clean_plotly_hover(fig: go.Figure) -> go.Figure:
+    labels = plotly_hover_labels()
+    formats = plotly_hover_formats()
+    level_names = {level: risk_level_text(level) for level in LEVEL_COLORS}
+
+    for trace in fig.data:
+        if trace.name in level_names:
+            trace.name = level_names[trace.name]
+
+        template = getattr(trace, "hovertemplate", None)
+        if not template:
+            continue
+
+        # Plotly Express repeats the visible bar label as "text=..." in hover.
+        template = re.sub(r"(?:^|<br>)[^=<]*=%\{text[^}]*\}", "", template)
+        for field, label in labels.items():
+            template = re.sub(
+                rf"(^|<br>){re.escape(field)}=",
+                lambda match, localized=label: f"{match.group(1)}{localized}=",
+                template,
+            )
+        risk_label = labels["risk_level"]
+        for level, localized_level in level_names.items():
+            template = template.replace(f"{risk_label}={level}", f"{risk_label}={localized_level}")
+        for label, number_format in formats.items():
+            template = re.sub(
+                rf"({re.escape(label)}=)%\{{([^}}:]+)(?::[^}}]+)?\}}",
+                lambda match, fmt=number_format: f"{match.group(1)}%{{{match.group(2)}:{fmt}}}",
+                template,
+            )
+        trace.hovertemplate = template
+
+    return fig
+
+
 def plot_chart(fig: go.Figure, height: int = 420):
     st.plotly_chart(
-        chart_layout(fig, height),
+        chart_layout(clean_plotly_hover(fig), height),
         config={"displayModeBar": False, "responsive": True},
     )
 
 
 def dataframe_with_format(df: pd.DataFrame, column_config: dict | None = None, height: int = 360):
+    display_labels = {
+        "factory_code": t("工厂代码", "Factory Code"),
+        "factory_name": t("工厂", "Factory"),
+        "supplier": t("供应商", "Supplier"),
+        "product_code": t("CC / 款式", "CC / Style"),
+        "product_label": t("产品名称 / 颜色", "Product / Color"),
+        "risk_level": t("风险等级", "Risk Level"),
+        "risk_score": t("风险分", "Risk Score"),
+        "production_score": t("生产端风险", "Production Risk"),
+        "client_score": t("客户端风险", "Client Risk"),
+        "rpm_score": t("RPM 风险分", "RPM Risk"),
+        "intern_voice_score": t("Intern Voice 风险分", "Intern Voice Risk"),
+        "qty_inspected": t("检验数量", "Inspected Qty"),
+        "defect_qty": t("疵点数", "Defects"),
+        "defect_rate": t("不良率", "Defect Rate"),
+        "top_defect": t("主要疵点", "Top Defect"),
+        "rpm_now": "RPM N0",
+        "delta_rpm": t("RPM 变化", "RPM Change"),
+        "avg_score_now": t("客户评分", "Customer Score"),
+        "intern_voice_count": "Intern Voice",
+        "alert_reason": t("风险原因", "Risk Reason"),
+        "process": t("工序", "Process"),
+        "worker_team": t("班组 / 岗位", "Team / Position"),
+        "work_order": t("工单", "Work Order"),
+        "material_type": t("材料类型", "Material Type"),
+        "material_supplier": t("来料供应商", "Material Supplier"),
+        "issue": t("质量问题点", "Quality Issue"),
+        "decision": t("判定", "Decision"),
+        "risk_trend": t("趋势", "Trend"),
+    }
+    resolved_config = dict(column_config or {})
+    for column in df.columns:
+        if column in display_labels and column not in resolved_config:
+            resolved_config[column] = st.column_config.Column(display_labels[column])
     st.dataframe(
         df,
         width="stretch",
         hide_index=True,
         height=height,
-        column_config=column_config,
+        column_config=resolved_config,
     )
 
 
@@ -2601,16 +2751,18 @@ with tabs[0]:
     with left:
         st.subheader(t("供应商风险排序", "Supplier Risk Ranking"))
         supplier_plot = supplier_summary.copy()
-        supplier_plot["供应商"] = supplier_plot["factory_name"]
-        supplier_plot["风险等级"] = supplier_plot["risk_level"].map(risk_level_text)
+        supplier_col = t("供应商", "Supplier")
+        risk_level_col = t("风险等级", "Risk Level")
+        supplier_plot[supplier_col] = supplier_plot["factory_name"]
+        supplier_plot[risk_level_col] = supplier_plot["risk_level"].map(risk_level_text)
         fig = px.bar(
             supplier_plot,
-            x="供应商",
+            x=supplier_col,
             y="risk_score",
-            color="risk_level",
-            color_discrete_map=LEVEL_COLORS,
+            color=risk_level_col,
+            color_discrete_map={risk_level_text(level): color for level, color in LEVEL_COLORS.items()},
             text=supplier_plot["risk_score"].round(1),
-            labels={"risk_score": t("综合风险分", "Risk Score")},
+            labels={"risk_score": t("综合风险分", "Risk Score"), supplier_col: supplier_col, risk_level_col: risk_level_col},
         )
         fig.update_traces(textposition="outside")
         fig.update_yaxes(range=[0, max(100, supplier_plot["risk_score"].max() * 1.15)])
@@ -3217,7 +3369,19 @@ with tabs[4]:
         }
         panel_long = panel_df.melt(id_vars=["factory_name"], value_vars=metrics, var_name="metric", value_name="score")
         panel_long["metric"] = panel_long["metric"].map(metric_labels)
-        fig = px.bar(panel_long, x="metric", y="score", color="factory_name", barmode="group", text=panel_long["score"].map(lambda x: f"{x:.0f}"))
+        fig = px.bar(
+            panel_long,
+            x="metric",
+            y="score",
+            color="factory_name",
+            barmode="group",
+            text=panel_long["score"].map(lambda x: f"{x:.0f}"),
+            labels={
+                "metric": t("指标", "Metric"),
+                "score": t("风险分", "Risk Score"),
+                "factory_name": t("工厂", "Factory"),
+            },
+        )
         fig.update_traces(textposition="outside")
         fig.update_yaxes(range=[0, 115])
         plot_chart(fig, 450)
