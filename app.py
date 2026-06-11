@@ -2644,11 +2644,7 @@ supplier_summary = compute_supplier_summary(finished, voice, incoming, risk_sett
 product_summary = compute_product_summary(finished, voice, risk_settings)
 process_summary = compute_process_summary(finished, risk_settings)
 worker_clusters = compute_worker_clusters(finished)
-cap_effectiveness = compute_cap_effectiveness(finished)
-abnormal_orders = detect_abnormal_work_orders(finished)
 defect_pareto = compute_pareto(finished[finished["defect_qty"] > 0], "defect_type", "defect_qty")
-process_shift = compute_process_shift(finished)
-weekly_material_process = compute_weekly_material_process(finished, incoming)
 
 process_material_codes = [code for code in selected_factories if code in {"ZX", "TF"}]
 if not process_material_codes:
@@ -3704,11 +3700,60 @@ with tabs[5]:
 with tabs[6]:
     st.subheader(t("分析方法", "Analysis Methods"))
 
+    method_finished_scope = finished_all[
+        (finished_all["date"].dt.date >= start_date)
+        & (finished_all["date"].dt.date <= end_date)
+    ].copy()
+    if selected_stages:
+        method_finished_scope = method_finished_scope[method_finished_scope["inspection_stage"].isin(selected_stages)]
+    if selected_processes:
+        method_finished_scope = method_finished_scope[method_finished_scope["process"].isin(selected_processes)]
+    if product_search.strip():
+        method_needle = product_search.strip().lower()
+        method_finished_scope = method_finished_scope[
+            method_finished_scope["product_code"].astype(str).str.lower().str.contains(method_needle, na=False)
+            | method_finished_scope["product_label"].astype(str).str.lower().str.contains(method_needle, na=False)
+        ]
+    method_incoming_scope = incoming_all[
+        (incoming_all["date"].dt.date >= start_date)
+        & (incoming_all["date"].dt.date <= end_date)
+    ].copy()
+
+    method_factory_options = method_finished_scope["factory_code"].dropna().astype(str).drop_duplicates().tolist()
+    if st.session_state.get("method_factory_filter") not in method_factory_options:
+        st.session_state.pop("method_factory_filter", None)
+    method_factory = st.selectbox(
+        t("分析工厂", "Analysis Factory"),
+        method_factory_options,
+        format_func=lambda code: FACTORIES.get(code, {}).get("name", code),
+        key="method_factory_filter",
+    )
+    method_finished = method_finished_scope[method_finished_scope["factory_code"] == method_factory].copy()
+    method_incoming = method_incoming_scope[method_incoming_scope["factory_code"] == method_factory].copy()
+    process_shift = compute_process_shift(method_finished)
+    abnormal_orders = detect_abnormal_work_orders(method_finished)
+    weekly_material_process = compute_weekly_material_process(method_finished, method_incoming)
+    cap_effectiveness = compute_cap_effectiveness(method_finished)
+    method_factory_name = FACTORIES.get(method_factory, {}).get("name", method_factory)
+    method_date_min = method_finished["date"].min()
+    method_date_max = method_finished["date"].max()
+    method_period = (
+        f"{method_date_min:%Y-%m-%d} - {method_date_max:%Y-%m-%d}"
+        if pd.notna(method_date_min) and pd.notna(method_date_max)
+        else "-"
+    )
+    st.caption(
+        t(
+            f"当前分析范围：{method_factory_name}｜QC记录 {len(method_finished):,} 条｜来料问题 {len(method_incoming):,} 条｜数据周期 {method_period}。工厂选择仅影响07方法，日期、检验阶段、工序和款式沿用左侧筛选。",
+            f"Current scope: {method_factory_name} | {len(method_finished):,} QC records | {len(method_incoming):,} incoming issues | {method_period}. Factory selection only affects 07 Methods; date, stage, process, and product follow the sidebar filters.",
+        )
+    )
+
     left, right = st.columns(2)
     with left:
         st.subheader(t("近30天过程变化｜双窗口差分模型", "Recent Process Shift | Two-Window Delta"))
         if process_shift.empty:
-            st.info(t("当前数据不足以比较近30天与前30天。", "Not enough data to compare recent 30 days with prior 30 days."))
+            st.info(t(f"{method_factory_name} 当前数据不足以比较近30天与前30天。", f"{method_factory_name} does not have enough data to compare recent and prior 30-day windows."))
         else:
             shift_plot = pd.concat([process_shift.head(8), process_shift.tail(4)]).drop_duplicates("process_view")
             fig = px.bar(
@@ -3722,12 +3767,12 @@ with tabs[6]:
             )
             fig.update_xaxes(tickformat="+.1%")
             plot_chart(fig, 390)
-            st.caption(t("数据来源：QC data。算法：近30天不良率 - 前30天不良率；向右/红色代表过程恶化，向左/绿色代表改善。", "Source: QC data. Logic: recent 30-day defect rate minus prior 30-day defect rate; red/right means worse, green/left means better."))
+            st.caption(t(f"数据来源：{method_factory} QC data。算法：近30天不良率 - 前30天不良率；向右/红色代表过程恶化，向左/绿色代表改善。", f"Source: {method_factory} QC data. Logic: recent 30-day defect rate minus prior 30-day defect rate; red/right means worse, green/left means better."))
 
     with right:
         st.subheader(t("异常工单分布｜鲁棒 Z-Score 离群检测", "Work-Order Anomaly | Robust Z-Score Outlier"))
         if abnormal_orders.empty:
-            st.info(t("当前筛选范围未识别到显著离群工单。", "No obvious abnormal work order was detected."))
+            st.info(t(f"{method_factory_name} 当前未识别到显著离群工单。", f"No obvious abnormal work order was detected for {method_factory_name}."))
         else:
             anomaly_plot = abnormal_orders.copy()
             anomaly_plot["plot_size"] = np.sqrt(anomaly_plot["defect_qty"].clip(lower=1)) * 9 + 12
@@ -3743,13 +3788,13 @@ with tabs[6]:
             )
             fig.update_yaxes(tickformat=".1%")
             plot_chart(fig, 390)
-            st.caption(t("数据来源：QC work order data。算法：对检验量、不良率、疵点数做鲁棒 Z-Score 离群检测；点越大代表疵点压力越高，越靠上不良率越高。", "Source: QC work-order data. Logic: robust Z-Score outlier detection using inspected qty, defect rate, and defect count; larger points mean higher defect pressure, higher position means higher defect rate."))
+            st.caption(t(f"数据来源：{method_factory} QC work order data。算法：对检验量、不良率、疵点数做鲁棒 Z-Score 离群检测；点越大代表疵点压力越高，越靠上不良率越高。", f"Source: {method_factory} QC work-order data. Logic: robust Z-Score outlier detection using inspected qty, defect rate, and defect count; larger points mean higher defect pressure, higher position means higher defect rate."))
 
     left, right = st.columns(2)
     with left:
         st.subheader(t("来料与过程周度关系｜周度关联分析", "Material vs Process by Week | Weekly Association"))
         if weekly_material_process.empty:
-            st.info(t("当前筛选范围没有可连接的来料和过程周度数据。", "No weekly material/process data is available under current filters."))
+            st.info(t(f"{method_factory_name} 当前没有可连接的来料和过程周度数据。", f"No linked weekly material/process data is available for {method_factory_name}."))
         else:
             weekly_plot = weekly_material_process.copy()
             weekly_plot["plot_size"] = np.log1p(weekly_plot["qty"].clip(lower=1)) * 7 + 12
@@ -3765,12 +3810,12 @@ with tabs[6]:
             )
             fig.update_yaxes(tickformat=".1%")
             plot_chart(fig, 390)
-            st.caption(t("数据来源：ZX/TF Material data + QC data。算法：按周连接来料问题批次与同周过程/成品不良率；右上角代表来料问题多且质量表现差，适合优先复盘。", "Source: ZX/TF Material data + QC data. Logic: weekly material issue batches are linked with same-week QC defect rate; upper-right means more material issues and worse quality."))
+            st.caption(t(f"数据来源：{method_factory} Material data + QC data。算法：按周连接来料问题批次与同周过程/成品不良率；右上角代表来料问题多且质量表现差，适合优先复盘。", f"Source: {method_factory} Material data + QC data. Logic: weekly material issue batches are linked with same-week QC defect rate; upper-right means more material issues and worse quality."))
 
     with right:
         st.subheader(t("整改前后效果｜Before/After 对照评分", "Before / After Effect | Matched Period Scoring"))
         if cap_effectiveness.empty:
-            st.info(t("当前数据不足以形成前后周期对比。", "Not enough data for before/after comparison."))
+            st.info(t(f"{method_factory_name} 当前数据不足以形成前后周期对比。", f"{method_factory_name} does not have enough data for a before/after comparison."))
         else:
             cap_plot = cap_effectiveness.copy()
             cap_plot["process_view"] = cap_plot["factory_code"] + " / " + cap_plot["process"].astype(str)
@@ -3783,7 +3828,7 @@ with tabs[6]:
                 labels={"effectiveness_score": t("有效性评分", "Effectiveness score"), "process_view": t("工厂 / 工序", "Factory / Process")},
             )
             plot_chart(fig, 390)
-            st.caption(t("数据来源：QC data。算法：对比整改前后周期不良率并计算有效性评分；分数越高代表改善越明显，复发项需要继续追踪。", "Source: QC data. Logic: compares before/after defect rates and converts improvement into an effectiveness score; higher is better, recurring items need follow-up."))
+            st.caption(t(f"数据来源：{method_factory} QC data。算法：对比整改前后周期不良率并计算有效性评分；分数越高代表改善越明显，复发项需要继续追踪。", f"Source: {method_factory} QC data. Logic: compares before/after defect rates and converts improvement into an effectiveness score; higher is better, recurring items need follow-up."))
 
             with st.expander(t("整改效果明细（可选）", "Effectiveness detail (optional)")):
                 cap_view = cap_effectiveness.rename(
