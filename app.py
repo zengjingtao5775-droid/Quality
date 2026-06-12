@@ -2711,12 +2711,12 @@ render_hero(start_date, end_date, supplier_summary["factory_code"].nunique(), to
 tabs = st.tabs(
     [
         t("01 总览", "01 Overview"),
-        t("02 地图", "02 Map"),
-        t("03 供应商", "03 Supplier"),
-        t("04 产品", "04 Product"),
+        t("02 数据地图", "02 Data Map"),
+        t("03 供应商面板", "03 Supplier Panel"),
+        t("04 产品面板", "04 Product Panel"),
         t("05 Panel管理", "05 Panel"),
-        t("06 过程/来料", "06 P/M"),
-        t("07 方法", "07 Methods"),
+        t("06 过程/来料面板", "06 Process/Material Panel"),
+        t("07 分析工具", "07 Analysis Tools"),
     ]
 )
 
@@ -3257,8 +3257,8 @@ with tabs[3]:
         )
         st.caption(
             t(
-                f"当前产品分析范围：{product_factory_name}｜QC记录 {len(product_finished):,} 条｜客户端记录 {len(product_voice):,} 条｜产品 {len(product_factory_summary):,} 个｜数据周期 {product_period}。工厂选择仅影响04产品，日期、检验阶段、工序和款式沿用左侧筛选。",
-                f"Current product scope: {product_factory_name} | {len(product_finished):,} QC records | {len(product_voice):,} client records | {len(product_factory_summary):,} products | {product_period}. Factory selection only affects 04 Product; date, stage, process, and product follow the sidebar filters.",
+                f"当前产品分析范围：{product_factory_name}｜QC记录 {len(product_finished):,} 条｜客户端记录 {len(product_voice):,} 条｜产品 {len(product_factory_summary):,} 个｜数据周期 {product_period}。工厂选择仅影响04产品面板，日期、检验阶段、工序和款式沿用左侧筛选。",
+                f"Current product scope: {product_factory_name} | {len(product_finished):,} QC records | {len(product_voice):,} client records | {len(product_factory_summary):,} products | {product_period}. Factory selection only affects 04 Product Panel; date, stage, process, and product follow the sidebar filters.",
             )
         )
         product_logic_cn = (
@@ -3610,7 +3610,7 @@ with tabs[4]:
 
     else:
         panel_process = process_summary.copy()
-        st.caption(t("展示所有供应商的 Top 工序风险，不再锁定单个工序；适合先看 general，再下钻到 06 过程/来料。", "Shows top process risks across suppliers instead of one selected process; use this for general scanning, then drill into 06 Process/Material."))
+        st.caption(t("展示所有供应商的 Top 工序风险，不再锁定单个工序；适合先看 general，再下钻到 06 过程/来料面板。", "Shows top process risks across suppliers instead of one selected process; use this for general scanning, then drill into 06 Process/Material Panel."))
         panel_process = panel_process.sort_values("risk_score", ascending=False).head(16).copy()
         panel_process["process_view"] = panel_process["factory_code"] + " / " + panel_process["process"].astype(str)
         fig = px.bar(
@@ -3828,8 +3828,8 @@ with tabs[6]:
     )
     st.caption(
         t(
-            f"当前分析范围：{method_factory_name}｜QC记录 {len(method_finished):,} 条｜来料问题 {len(method_incoming):,} 条｜数据周期 {method_period}。工厂选择仅影响07方法，日期、检验阶段、工序和款式沿用左侧筛选。",
-            f"Current scope: {method_factory_name} | {len(method_finished):,} QC records | {len(method_incoming):,} incoming issues | {method_period}. Factory selection only affects 07 Methods; date, stage, process, and product follow the sidebar filters.",
+            f"当前分析范围：{method_factory_name}｜QC记录 {len(method_finished):,} 条｜来料问题 {len(method_incoming):,} 条｜数据周期 {method_period}。工厂选择仅影响07分析工具，日期、检验阶段、工序和款式沿用左侧筛选。",
+            f"Current scope: {method_factory_name} | {len(method_finished):,} QC records | {len(method_incoming):,} incoming issues | {method_period}. Factory selection only affects 07 Analysis Tools; date, stage, process, and product follow the sidebar filters.",
         )
     )
 
