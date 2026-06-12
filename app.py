@@ -681,6 +681,19 @@ def risk_level_text(level: str) -> str:
     return labels.get(level, level)
 
 
+def quality_grade(score: object) -> str:
+    if pd.isna(score):
+        return "-"
+    score = float(score)
+    if score >= 85:
+        return "A"
+    if score >= 70:
+        return "B"
+    if score >= 55:
+        return "C"
+    return "D"
+
+
 def risk_class(level: object) -> str:
     return str(level if pd.notna(level) else "Medium").lower()
 
@@ -2712,11 +2725,11 @@ tabs = st.tabs(
     [
         t("01 总览", "01 Overview"),
         t("02 数据地图", "02 Data Map"),
-        t("03 供应商面板", "03 Supplier Panel"),
-        t("04 产品面板", "04 Product Panel"),
+        t("03 CC行动清单", "03 CC Action List"),
+        t("04 产品分析", "04 Product Analysis"),
         t("05 Panel管理", "05 Panel"),
         t("06 过程/来料面板", "06 Process/Material Panel"),
-        t("07 分析工具", "07 Analysis Tools"),
+        t("07 改善追踪", "07 Improvement Tracking"),
     ]
 )
 
@@ -2725,11 +2738,26 @@ tabs = st.tabs(
 # 7. Executive overview
 # ==========================================
 with tabs[0]:
+    st.subheader(t("QM 供应商质量总览", "QM Supplier Quality Overview"))
+    st.caption(
+        t(
+            "面向质量经理：在同一页查看多供应商质量趋势、质量评分、质量等级和评分权重，并下钻主要质量问题。",
+            "For quality managers: review supplier trends, quality scores, grades, scoring weights, and key issues on one page.",
+        )
+    )
+    risk_settings = render_risk_settings_panel()
+    supplier_summary = compute_supplier_summary(finished, voice, incoming, risk_settings)
+    supplier_prod_w = effective_weight_pct(risk_settings, "supplier_weights", "production_score")
+    supplier_client_w = effective_weight_pct(risk_settings, "supplier_weights", "client_score")
+    supplier_summary["quality_score"] = (100 - supplier_summary["risk_score"]).clip(0, 100)
+    supplier_summary["quality_grade"] = supplier_summary["quality_score"].map(quality_grade)
+
     total_qty = finished["qty_inspected"].sum()
     total_defects = finished["defect_qty"].sum()
     total_defect_rate = total_defects / total_qty if total_qty else 0
     high_supplier_count = supplier_summary[supplier_summary["risk_level"].isin(["High", "Critical"])].shape[0]
     high_product_count = product_summary[product_summary["risk_level"].isin(["High", "Critical"])].shape[0] if not product_summary.empty else 0
+    average_quality_score = supplier_summary["quality_score"].mean() if not supplier_summary.empty else np.nan
     top_supplier = supplier_summary.iloc[0] if not supplier_summary.empty else None
     top_product = product_summary.iloc[0] if not product_summary.empty else None
     top_process = process_summary.iloc[0] if not process_summary.empty else None
@@ -2747,9 +2775,9 @@ with tabs[0]:
                 "level": "low",
             },
             {
-                "label": t("检验总数", "Inspected Qty"),
-                "value": compact_num(total_qty),
-                "note": f"{compact_num(total_defects)} defects captured",
+                "label": t("平均质量评分", "Average Quality Score"),
+                "value": num(average_quality_score, 1),
+                "note": t("100 - 综合风险分", "100 - overall risk score"),
                 "level": "medium",
             },
             {
@@ -2759,9 +2787,9 @@ with tabs[0]:
                 "level": "high" if total_defect_rate >= 0.015 else "low",
             },
             {
-                "label": t("高风险产品", "High-Risk Products"),
-                "value": str(high_product_count),
-                "note": f"{high_supplier_count} {t('个高风险供应商', 'high-risk suppliers')}",
+                "label": t("需管理层关注", "Management Attention"),
+                "value": str(high_supplier_count),
+                "note": f"{high_product_count} {t('个高风险CC', 'high-risk CCs')}",
                 "level": kpi_level,
             },
         ]
@@ -2769,33 +2797,33 @@ with tabs[0]:
 
     left, right = st.columns([1.05, 1])
     with left:
-        st.subheader(t("供应商风险排序", "Supplier Risk Ranking"))
+        st.subheader(t("供应商质量评分与等级", "Supplier Quality Score and Grade"))
         supplier_plot = supplier_summary.copy()
         supplier_col = t("供应商", "Supplier")
-        risk_level_col = t("风险等级", "Risk Level")
+        grade_col = t("质量等级", "Quality Grade")
         supplier_plot[supplier_col] = supplier_plot["factory_name"]
-        supplier_plot[risk_level_col] = supplier_plot["risk_level"].map(risk_level_text)
+        supplier_plot[grade_col] = supplier_plot["quality_grade"]
         fig = px.bar(
             supplier_plot,
             x=supplier_col,
-            y="risk_score",
-            color=risk_level_col,
-            color_discrete_map={risk_level_text(level): color for level, color in LEVEL_COLORS.items()},
-            text=supplier_plot["risk_score"].round(1),
-            labels={"risk_score": t("综合风险分", "Risk Score"), supplier_col: supplier_col, risk_level_col: risk_level_col},
+            y="quality_score",
+            color=grade_col,
+            color_discrete_map={"A": "#168a5b", "B": "#65a30d", "C": "#d99a00", "D": "#c01048"},
+            text=supplier_plot.apply(lambda row: f"{row['quality_score']:.1f} / {row['quality_grade']}", axis=1),
+            labels={"quality_score": t("质量评分", "Quality Score"), supplier_col: supplier_col, grade_col: grade_col},
         )
         fig.update_traces(textposition="outside")
-        fig.update_yaxes(range=[0, max(100, supplier_plot["risk_score"].max() * 1.15)])
+        fig.update_yaxes(range=[0, 110])
         plot_chart(fig, 380)
         st.caption(
             t(
-                f"数据来源：{', '.join(selected_factories)} QC data + RPM + Intern Voice。计算逻辑：综合风险 = 生产端质量风险 {supplier_prod_w:.0f}% + 客户端风险 {supplier_client_w:.0f}%；生产端来自半检/总检不良率，客户端来自 RPM 百万退货率和 IV 退货发起次数。",
-                f"Source: {', '.join(selected_factories)} QC data + RPM + Intern Voice. Logic: overall risk = production risk {supplier_prod_w:.0f}% + client risk {supplier_client_w:.0f}%; production uses online/final defect rate, client uses RPM and IV return initiations.",
+                f"数据来源：{', '.join(selected_factories)} QC data + RPM + Intern Voice。质量评分 = 100 - 综合风险分；综合风险 = 生产端 {supplier_prod_w:.0f}% + 客户端 {supplier_client_w:.0f}%。等级：A≥85，B≥70，C≥55，D<55。",
+                f"Source: {', '.join(selected_factories)} QC data + RPM + Intern Voice. Quality score = 100 - overall risk; risk weights are production {supplier_prod_w:.0f}% and client {supplier_client_w:.0f}%. Grades: A>=85, B>=70, C>=55, D<55.",
             )
         )
 
     with right:
-        st.subheader(t("质量趋势", "Quality Trend"))
+        st.subheader(t("供应商质量趋势", "Supplier Quality Trend"))
         trend = (
             finished.groupby(["month", "factory_code", "inspection_stage"], as_index=False)
             .agg(qty_inspected=("qty_inspected", "sum"), defect_qty=("defect_qty", "sum"))
@@ -2816,33 +2844,107 @@ with tabs[0]:
         plot_chart(fig, 380)
         st.caption(t(f"数据来源：{', '.join(selected_factories)} QC data；按 Online QC / End QC-FQC 分线展示。", f"Source: {', '.join(selected_factories)} QC data; split by Online QC and End QC/FQC."))
 
-    with st.expander(t("产品风险明细（可选）", "Product risk detail (optional)")):
-        alert_cols = [
-            "factory_name",
-            "product_code",
-            "product_label",
-            "risk_level",
-            "risk_score",
-            "defect_rate",
-            "rpm_now",
-            "avg_score_now",
-            "intern_voice_count",
-            "alert_reason",
-        ]
-        alerts = product_summary.head(12).copy()
-        alerts["risk_level"] = alerts["risk_level"].map(risk_level_text)
-        dataframe_with_format(
-            alerts[[c for c in alert_cols if c in alerts.columns]],
-            column_config={
-                "risk_score": st.column_config.NumberColumn(t("风险分", "Risk Score"), format="%.1f"),
-                "defect_rate": st.column_config.ProgressColumn(t("QC 不良率", "QC Defect Rate"), format="%.2f%%", min_value=0, max_value=0.08),
-                "rpm_now": st.column_config.NumberColumn("RPM N0", format="%.0f"),
-                "avg_score_now": st.column_config.NumberColumn(t("客户评分", "Customer Score"), format="%.2f"),
-                "intern_voice_count": st.column_config.NumberColumn("Intern Voice", format="%d"),
-            },
-            height=360,
+    st.subheader(t("供应商评分拆解与问题下钻", "Supplier Score Breakdown and Issue Drill-down"))
+    breakdown_left, breakdown_right = st.columns([1.1, 1])
+    with breakdown_left:
+        component = supplier_summary.melt(
+            id_vars=["factory_name"],
+            value_vars=[c for c in ["production_score", "rpm_score", "intern_voice_score", "client_score"] if c in supplier_summary.columns],
+            var_name="component",
+            value_name="score",
         )
+        component["component"] = component["component"].map(
+            {
+                "production_score": t("生产端风险", "Production Risk"),
+                "rpm_score": "RPM",
+                "intern_voice_score": "Intern Voice",
+                "client_score": t("客户端合成风险", "Client Composite Risk"),
+            }
+        )
+        component["score_label"] = component["score"].map(lambda value: f"{value:.0f}")
+        fig = px.bar(
+            component,
+            x="factory_name",
+            y="score",
+            color="component",
+            barmode="group",
+            text="score_label",
+            labels={"factory_name": t("供应商", "Supplier"), "score": t("风险分", "Risk Score")},
+            color_discrete_sequence=["#2563eb", "#d97706", "#c01048", "#059669"],
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_yaxes(range=[0, 115])
+        plot_chart(fig, 390)
+        st.caption(t("分项风险越高，代表该信号越需要管理层关注或安排质量专员下钻。", "Higher component risk indicates a stronger need for management attention or specialist drill-down."))
 
+    with breakdown_right:
+        overview_supplier = st.selectbox(
+            t("供应商问题下钻", "Supplier Issue Drill-down"),
+            supplier_summary["factory_code"].tolist(),
+            format_func=lambda code: FACTORIES[code]["name"],
+            key="overview_supplier_drilldown",
+        )
+        overview_focus = finished[finished["factory_code"] == overview_supplier].copy()
+        if not overview_focus.empty:
+            defect_mix = (
+                overview_focus[overview_focus["defect_qty"] > 0]
+                .groupby("defect_type", as_index=False)["defect_qty"]
+                .sum()
+                .sort_values("defect_qty", ascending=False)
+                .head(10)
+            )
+            fig = px.bar(
+                defect_mix,
+                x="defect_qty",
+                y="defect_type",
+                orientation="h",
+                text="defect_qty",
+                labels={"defect_qty": t("疵点数", "Defects"), "defect_type": t("疵点类型", "Defect Type")},
+                color_discrete_sequence=["#c01048"],
+            )
+            fig.update_traces(textposition="outside")
+            fig.update_yaxes(autorange="reversed")
+            plot_chart(fig, 390)
+            st.caption(t(f"数据来源：{overview_supplier} QC data。展示主要疵点，为质量专员后续CC行动提供方向。", f"Source: {overview_supplier} QC data. Shows key defects to guide specialist CC actions."))
+
+    with st.expander(t("供应商评分明细", "Supplier score detail")):
+        supplier_score_table = supplier_summary[
+            [
+                "factory_name",
+                "quality_score",
+                "quality_grade",
+                "risk_score",
+                "production_score",
+                "client_score",
+                "defect_rate",
+                "avg_rpm",
+                "intern_voice_count",
+                "risk_trend",
+            ]
+        ].rename(
+            columns={
+                "factory_name": t("供应商", "Supplier"),
+                "quality_score": t("质量评分", "Quality Score"),
+                "quality_grade": t("质量等级", "Quality Grade"),
+                "risk_score": t("综合风险分", "Overall Risk"),
+                "production_score": t("生产端风险", "Production Risk"),
+                "client_score": t("客户端风险", "Client Risk"),
+                "defect_rate": t("QC不良率", "QC Defect Rate"),
+                "avg_rpm": "Avg RPM",
+                "intern_voice_count": "Intern Voice",
+                "risk_trend": t("趋势", "Trend"),
+            }
+        )
+        dataframe_with_format(
+            supplier_score_table,
+            column_config={
+                t("质量评分", "Quality Score"): st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                t("综合风险分", "Overall Risk"): st.column_config.NumberColumn(format="%.1f"),
+                t("QC不良率", "QC Defect Rate"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.08),
+                "Avg RPM": st.column_config.NumberColumn(format="%.0f"),
+            },
+            height=250,
+        )
 
 # ==========================================
 # 8. Data map
@@ -2883,6 +2985,33 @@ with tabs[1]:
             },
         ]
     )
+    st.subheader(t("供应商数据可用性", "Supplier Data Availability"))
+    availability_rows = []
+    for code, cfg in FACTORIES.items():
+        factory_finished = finished_all[finished_all["factory_code"] == code]
+        factory_voice = voice_all[voice_all["factory_code"] == code]
+        factory_incoming = incoming_all[incoming_all["factory_code"] == code] if not incoming_all.empty else pd.DataFrame()
+        rpm_rows = factory_voice[factory_voice.get("voice_source", "") == "YTD Compare"] if not factory_voice.empty else pd.DataFrame()
+        iv_rows = factory_voice[factory_voice.get("voice_source", "") == "Intern Voice"] if not factory_voice.empty else pd.DataFrame()
+        iv_count = int(iv_rows["intern_voice_count"].sum()) if not iv_rows.empty else 0
+        availability_rows.append(
+            {
+                t("供应商", "Supplier"): cfg["name"],
+                "QC": t(f"已接入 · {len(factory_finished):,}行", f"Loaded · {len(factory_finished):,} rows") if len(factory_finished) else t("暂无", "Unavailable"),
+                "RPM": t(f"已接入 · {len(rpm_rows):,}行", f"Loaded · {len(rpm_rows):,} rows") if len(rpm_rows) else t("暂无", "Unavailable"),
+                "Intern Voice": t(f"已接入 · {iv_count:,}次", f"Loaded · {iv_count:,}") if iv_count else t("暂无", "Unavailable"),
+                t("来料/材料", "Incoming/Material"): t(f"已接入 · {len(factory_incoming):,}行", f"Loaded · {len(factory_incoming):,} rows") if len(factory_incoming) else t("暂无", "Unavailable"),
+                t("QC日期范围", "QC Date Range"): source_date_range(factory_finished),
+            }
+        )
+    dataframe_with_format(pd.DataFrame(availability_rows), height=220)
+    st.caption(
+        t(
+            "质量经理可直接看到每家供应商现有数据覆盖；“暂无”表示当前数据集中没有对应数据，不代表质量表现为零。",
+            "Quality managers can see current coverage by supplier; Unavailable means the dataset is missing, not that quality risk is zero.",
+        )
+    )
+
     source_rows = []
     for code, cfg in FACTORIES.items():
         f_finished = finished_all[finished_all["factory_code"] == code]
@@ -2975,16 +3104,16 @@ with tabs[1]:
                 "level": "done" if 10 <= sku_count <= 30 else "watch",
             },
             {
-                "item": t("By Supplier 看板", "By Supplier dashboard"),
+                "item": t("供应商管理总览", "Supplier management overview"),
                 "target": t("可用 MVP", "Usable MVP"),
-                "current": t("已完成：风险拆解 + 权重方案", "Done: risk components + profiles"),
+                "current": t("已并入01：趋势 + 评分 + 等级 + 权重", "Integrated into 01: trend + score + grade + weights"),
                 "status": t("达成", "Met"),
                 "level": "done",
             },
             {
-                "item": t("By Product 看板", "By Product dashboard"),
+                "item": t("CC行动与产品分析", "CC action and product analysis"),
                 "target": t("可用 MVP", "Usable MVP"),
-                "current": t("已完成：聚焦矩阵 + Top CC", "Done: focus matrix + top CC"),
+                "current": t("03行动清单 + 04原因分析", "03 action list + 04 cause analysis"),
                 "status": t("达成", "Met"),
                 "level": "done",
             },
@@ -3032,161 +3161,144 @@ with tabs[1]:
 
 
 # ==========================================
-# 9. By Supplier
+# 9. CC action list
 # ==========================================
 with tabs[2]:
-    st.subheader(t("By Supplier 供应商质量风险看板", "By Supplier Quality Risk Dashboard"))
-    risk_settings = render_risk_settings_panel()
-    active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
-    supplier_prod_w = effective_weight_pct(risk_settings, "supplier_weights", "production_score")
-    supplier_client_w = effective_weight_pct(risk_settings, "supplier_weights", "client_score")
-    client_rpm_w = effective_weight_pct(risk_settings, "client_weights", "rpm_score")
-    client_iv_w = effective_weight_pct(risk_settings, "client_weights", "intern_voice_score")
-    score_logic_cn = (
-        f"<div>当前编辑方案：<span class='formula-highlight'>{html.escape(active_profile_label)}</span>。</div>"
-        f"<div>综合风险分 = <span class='formula-highlight'>生产端 {supplier_prod_w:.0f}% + 客户端 {supplier_client_w:.0f}%</span>。</div>"
-        f"<div>生产端 = min(半检/总检QC不良率 / {risk_settings['qc_benchmark_pct']:.1f}% * 100, 100)。</div>"
-        f"<div>客户端 = 标准化后的 RPM风险分 {client_rpm_w:.0f}% + 标准化后的 Intern Voice风险分 {client_iv_w:.0f}%。</div>"
-        f"<div>RPM风险分 = min(RPM百万退货率 / {risk_settings['rpm_cap']:.0f} * 100, 100)，{risk_settings['rpm_cap']:.0f} 是当前POC的100分封顶阈值，可在“更多评分基准”调整。</div>"
-        f"<div>Intern Voice风险分 = min(退货发起次数 / {risk_settings['intern_voice_cap']} * 100, 100)，{risk_settings['intern_voice_cap']} 是当前POC的100分封顶阈值。</div>"
-        "<div>说明：权重是按 0-100 风险分加权，不是直接按原始数量相加；默认 RPM 30% / IV 70% 是为了让更直接的退货发起信号在POC里更敏感。</div>"
-    )
-    score_logic_en = (
-        f"<div>Editing profile: <span class='formula-highlight'>{html.escape(active_profile_label)}</span>.</div>"
-        f"<div>Overall risk = <span class='formula-highlight'>Production {supplier_prod_w:.0f}% + Client {supplier_client_w:.0f}%</span>.</div>"
-        f"<div>Production = min(online/final QC defect rate / {risk_settings['qc_benchmark_pct']:.1f}% * 100, 100).</div>"
-        f"<div>Client = normalized RPM risk {client_rpm_w:.0f}% + normalized Intern Voice risk {client_iv_w:.0f}%.</div>"
-        f"<div>RPM risk = min(RPM returns per million / {risk_settings['rpm_cap']:.0f} * 100, 100); {risk_settings['rpm_cap']:.0f} is the current POC cap for 100 points and can be adjusted in More benchmarks.</div>"
-        f"<div>Intern Voice risk = min(return initiations / {risk_settings['intern_voice_cap']} * 100, 100); {risk_settings['intern_voice_cap']} is the current POC cap for 100 points.</div>"
-        "<div>Note: weights apply to normalized 0-100 risk scores, not directly to raw counts. The default RPM 30% / IV 70% makes direct return-initiation evidence more sensitive in this POC.</div>"
-    )
-    st.markdown(
-        f"""
-        <div class="action-strip">
-            <b>{t('风险分说明', 'Score logic')}:</b>
-            <div class="score-logic-lines">{t(score_logic_cn, score_logic_en)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    supplier_display = supplier_summary.copy()
-    supplier_display[t("风险等级", "Risk Level")] = supplier_display["risk_level"].map(risk_level_text)
-    supplier_table = supplier_display[
-        [
-            "factory_name",
-            "supplier",
-            t("风险等级", "Risk Level"),
-            "risk_score",
-            "production_score",
-            "client_score",
-            "rpm_score",
-            "defect_rate",
-            "rft",
-            "qty_inspected",
-            "defect_qty",
-            "avg_rpm",
-            "avg_score",
-            "intern_voice_count",
-            "intern_voice_score",
-            "incoming_issues",
-            "risk_trend",
-        ]
-    ].rename(
-        columns={
-            "factory_name": t("工厂", "Factory"),
-            "supplier": t("供应商", "Supplier"),
-            "risk_score": t("综合风险分", "Risk Score"),
-            "production_score": t("生产端风险", "Production Risk"),
-            "client_score": t("客户端风险", "Client Risk"),
-            "rpm_score": "RPM 风险分",
-            "defect_rate": t("QC 不良率", "QC Defect Rate"),
-            "rft": "RFT",
-            "qty_inspected": t("检验数量", "Inspected Qty"),
-            "defect_qty": t("疵点数", "Defects"),
-            "avg_rpm": "Avg RPM",
-            "avg_score": t("客户评分", "Customer Score"),
-            "intern_voice_count": "Intern Voice",
-            "intern_voice_score": t("Intern Voice 风险分", "Intern Voice Risk"),
-            "incoming_issues": t("来料问题", "Incoming Issues"),
-            "risk_trend": t("趋势", "Trend"),
-        }
+    st.subheader(t("质量专员 CC 行动清单", "Quality Specialist CC Action List"))
+    st.caption(
+        t(
+            "回答“我现在需要对哪些 CC 采取行动”。先按风险和证据排序，再到 04 产品分析查看该 CC 的生产端与客户端原因。",
+            "Answers which CCs need action now. Prioritize by risk and evidence, then use 04 Product Analysis to inspect production and client-side causes.",
+        )
     )
 
-    left, right = st.columns([1.1, 1])
-    with left:
-        component = supplier_summary.melt(
-            id_vars=["factory_name"],
-            value_vars=[c for c in ["production_score", "rpm_score", "intern_voice_score", "client_score"] if c in supplier_summary.columns],
-            var_name="component",
-            value_name="score",
+    action_factory_options = ["ALL"] + product_summary["factory_code"].dropna().astype(str).drop_duplicates().tolist()
+    action_filter_col, level_filter_col = st.columns([1, 1.4])
+    with action_filter_col:
+        action_factory = st.selectbox(
+            t("行动工厂", "Action Factory"),
+            action_factory_options,
+            format_func=lambda code: t("全部供应商", "All Suppliers") if code == "ALL" else FACTORIES.get(code, {}).get("name", code),
+            key="cc_action_factory",
         )
-        component["component"] = component["component"].map(
-            {
-                "production_score": t("生产端", "Production"),
-                "rpm_score": "RPM",
-                "intern_voice_score": "Intern Voice",
-                "client_score": t("客户端合成", "Client composite"),
-            }
+    with level_filter_col:
+        action_levels = st.multiselect(
+            t("行动等级", "Action Levels"),
+            ["Critical", "High", "Medium", "Low"],
+            default=["Critical", "High"],
+            format_func=risk_level_text,
+            key="cc_action_levels",
         )
-        component["score_label"] = component["score"].map(lambda x: f"{x:.0f}")
+
+    action_view = product_summary.copy()
+    if action_factory != "ALL":
+        action_view = action_view[action_view["factory_code"] == action_factory]
+    if action_levels:
+        action_view = action_view[action_view["risk_level"].isin(action_levels)]
+    action_view = action_view.sort_values(["risk_score", "defect_rate", "intern_voice_count"], ascending=False)
+
+    if action_view.empty:
+        st.info(t("当前条件下没有需要列入行动清单的 CC。", "No CCs require action under the current filters."))
+    else:
+        critical_count = int((action_view["risk_level"] == "Critical").sum())
+        high_count = int((action_view["risk_level"] == "High").sum())
+        render_kpi_cards(
+            [
+                {
+                    "label": t("待行动 CC", "CCs Requiring Action"),
+                    "value": str(len(action_view)),
+                    "note": t("按综合风险分排序", "Ranked by overall risk"),
+                    "level": "high" if len(action_view) else "low",
+                },
+                {
+                    "label": t("严重", "Critical"),
+                    "value": str(critical_count),
+                    "note": t("建议立即确认责任人与时限", "Assign owner and deadline now"),
+                    "level": "critical" if critical_count else "low",
+                },
+                {
+                    "label": t("高风险", "High Risk"),
+                    "value": str(high_count),
+                    "note": t("进入本周改善计划", "Add to this week's action plan"),
+                    "level": "high" if high_count else "low",
+                },
+                {
+                    "label": t("涉及供应商", "Suppliers Involved"),
+                    "value": str(action_view["factory_code"].nunique()),
+                    "note": t("支持按工厂分派质量专员", "Supports assignment by factory"),
+                    "level": "medium",
+                },
+            ]
+        )
+
+        action_chart = action_view.head(15).copy()
+        action_chart["cc_view"] = action_chart["factory_code"] + " / " + action_chart["product_code"].astype(str)
+        action_chart[t("行动等级", "Action Level")] = action_chart["risk_level"].map(risk_level_text)
         fig = px.bar(
-            component,
-            x="factory_name",
-            y="score",
-            color="component",
-            barmode="group",
-            text="score_label",
-            labels={"factory_name": t("工厂", "Factory"), "score": t("分项风险分", "Component Risk")},
-            color_discrete_sequence=["#2563eb", "#d97706", "#c01048", "#059669"],
+            action_chart.sort_values("risk_score"),
+            x="risk_score",
+            y="cc_view",
+            color=t("行动等级", "Action Level"),
+            orientation="h",
+            text=action_chart.sort_values("risk_score")["risk_score"].map(lambda value: f"{value:.1f}"),
+            color_discrete_map={risk_level_text(level): color for level, color in LEVEL_COLORS.items()},
+            labels={"risk_score": t("产品风险分", "Product Risk Score"), "cc_view": "CC"},
         )
         fig.update_traces(textposition="outside")
-        fig.update_yaxes(range=[0, 115])
-        plot_chart(fig, 390)
-        st.caption(t(f"数据来源：{', '.join(selected_factories)} QC data + RPM + Intern Voice。分项风险越高，代表该信号越需要优先下钻。", f"Source: {', '.join(selected_factories)} QC data + RPM + Intern Voice. Higher component score means higher drill-down priority."))
-
-    with right:
-        selected_supplier = st.selectbox(
-            t("供应商下钻", "Supplier Drill-down"),
-            supplier_summary["factory_code"].tolist(),
-            format_func=lambda code: FACTORIES[code]["name"],
+        fig.update_xaxes(range=[0, 110])
+        plot_chart(fig, 430)
+        st.caption(
+            t(
+                f"数据来源：{', '.join(selected_factories)} QC data + RPM + Intern Voice。Top CC 按标准化后的综合风险分排序，分数越高越应优先安排改善行动。",
+                f"Source: {', '.join(selected_factories)} QC data + RPM + Intern Voice. Top CCs are ranked by normalized overall risk; higher scores require earlier action.",
+            )
         )
-        focus = finished[finished["factory_code"] == selected_supplier].copy()
-        if not focus.empty:
-            defect_mix = (
-                focus[focus["defect_qty"] > 0]
-                .groupby("defect_type", as_index=False)["defect_qty"]
-                .sum()
-                .sort_values("defect_qty", ascending=False)
-                .head(10)
-            )
-            fig = px.bar(
-                defect_mix,
-                x="defect_qty",
-                y="defect_type",
-                orientation="h",
-                text="defect_qty",
-                labels={"defect_qty": t("疵点数", "Defects"), "defect_type": t("疵点类型", "Defect Type")},
-                color_discrete_sequence=["#c01048"],
-            )
-            fig.update_traces(textposition="outside")
-            fig.update_yaxes(autorange="reversed")
-            plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{selected_supplier} QC data。展示该供应商 Top 疵点类型和疵点数。", f"Source: {selected_supplier} QC data. Shows top defect types and defect counts for the selected supplier."))
 
-    with st.expander(t("供应商明细（可选）", "Supplier detail (optional)")):
+        action_table = action_view.head(30).copy()
+        action_table[t("行动等级", "Action Level")] = action_table["risk_level"].map(risk_level_text)
+        action_table[t("建议动作", "Recommended Action")] = action_table.apply(
+            lambda row: t(
+                f"复盘 {row.get('top_defect', '-') or '-'}；确认生产端QC与客户端信号，并在07追踪改善前后变化",
+                f"Review {row.get('top_defect', '-') or '-'}; confirm QC and client signals, then track before/after change in 07",
+            ),
+            axis=1,
+        )
+        action_table = action_table[
+            [
+                "factory_name",
+                "product_code",
+                "product_label",
+                t("行动等级", "Action Level"),
+                "risk_score",
+                "defect_rate",
+                "top_defect",
+                "rpm_now",
+                "intern_voice_count",
+                "alert_reason",
+                t("建议动作", "Recommended Action"),
+            ]
+        ].rename(
+            columns={
+                "factory_name": t("工厂", "Factory"),
+                "product_code": "CC",
+                "product_label": t("产品", "Product"),
+                "risk_score": t("风险分", "Risk Score"),
+                "defect_rate": t("QC不良率", "QC Defect Rate"),
+                "top_defect": t("主要疵点", "Top Defect"),
+                "rpm_now": "RPM",
+                "intern_voice_count": "Intern Voice",
+                "alert_reason": t("行动证据", "Action Evidence"),
+            }
+        )
         dataframe_with_format(
-            supplier_table,
+            action_table,
             column_config={
-                t("综合风险分", "Risk Score"): st.column_config.NumberColumn(format="%.1f"),
-                t("生产端风险", "Production Risk"): st.column_config.NumberColumn(format="%.1f"),
-                t("客户端风险", "Client Risk"): st.column_config.NumberColumn(format="%.1f"),
-                "RPM 风险分": st.column_config.NumberColumn(format="%.1f"),
-                t("QC 不良率", "QC Defect Rate"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.06),
-                "RFT": st.column_config.ProgressColumn(format="%.2f%%", min_value=0.9, max_value=1),
-                "Avg RPM": st.column_config.NumberColumn(format="%.0f"),
-                t("Intern Voice 风险分", "Intern Voice Risk"): st.column_config.NumberColumn(format="%.1f"),
+                t("风险分", "Risk Score"): st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                t("QC不良率", "QC Defect Rate"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.08),
+                "RPM": st.column_config.NumberColumn(format="%.0f"),
+                "Intern Voice": st.column_config.NumberColumn(format="%d"),
             },
-            height=260,
+            height=460,
         )
 
 
@@ -3194,7 +3306,13 @@ with tabs[2]:
 # 10. By Product
 # ==========================================
 with tabs[3]:
-    st.subheader(t("By Product 产品风险看板", "By Product Risk Dashboard"))
+    st.subheader(t("质量专员产品原因分析", "Quality Specialist Product Cause Analysis"))
+    st.caption(
+        t(
+            "用于解释 03 行动清单中的 CC 为什么需要行动：同时查看生产端 QC、RPM 和 Intern Voice 信号，并支持按工厂单独分析。",
+            "Explains why CCs in the 03 action list require action by combining production QC, RPM, and Intern Voice with a factory-specific view.",
+        )
+    )
 
     product_finished_scope = finished_all[
         (finished_all["date"].dt.date >= start_date)
@@ -3257,8 +3375,8 @@ with tabs[3]:
         )
         st.caption(
             t(
-                f"当前产品分析范围：{product_factory_name}｜QC记录 {len(product_finished):,} 条｜客户端记录 {len(product_voice):,} 条｜产品 {len(product_factory_summary):,} 个｜数据周期 {product_period}。工厂选择仅影响04产品面板，日期、检验阶段、工序和款式沿用左侧筛选。",
-                f"Current product scope: {product_factory_name} | {len(product_finished):,} QC records | {len(product_voice):,} client records | {len(product_factory_summary):,} products | {product_period}. Factory selection only affects 04 Product Panel; date, stage, process, and product follow the sidebar filters.",
+                f"当前产品分析范围：{product_factory_name}｜QC记录 {len(product_finished):,} 条｜客户端记录 {len(product_voice):,} 条｜产品 {len(product_factory_summary):,} 个｜数据周期 {product_period}。工厂选择仅影响04产品分析，日期、检验阶段、工序和款式沿用左侧筛选。",
+                f"Current product scope: {product_factory_name} | {len(product_finished):,} QC records | {len(product_voice):,} client records | {len(product_factory_summary):,} products | {product_period}. Factory selection only affects 04 Product Analysis; date, stage, process, and product follow the sidebar filters.",
             )
         )
         product_logic_cn = (
@@ -3639,10 +3757,16 @@ with tabs[4]:
 # 12. By Process and material
 # ==========================================
 with tabs[5]:
-    st.subheader(t("ZX + TF Process / Material 风险看板", "ZX + TF Process / Material Risk Dashboard"))
+    st.subheader(t("供应商改善行动定位", "Supplier Improvement Action Location"))
     st.caption(
         t(
-            f"当前编辑方案：{active_profile_label}。工序风险分 = min(工序不良率 / {risk_settings['process_benchmark_pct']:.1f}% * 100, 100)；基准可在左侧“风险分设置”保存，工厂专属方案会自动套用到对应工序。",
+            "面向供应商：明确改善行动应落在哪个工序、哪个主要疵点或哪个来料问题，而不是只看一个综合分数。",
+            "For suppliers: identify the exact process, primary defect, or incoming issue where improvement action should be placed.",
+        )
+    )
+    st.caption(
+        t(
+            f"当前编辑方案：{active_profile_label}。工序风险分 = min(工序不良率 / {risk_settings['process_benchmark_pct']:.1f}% * 100, 100)；基准可在01总览的权重方案中保存，工厂专属方案会自动套用到对应工序。",
             f"Editing profile: {active_profile_label}. Process risk = min(process defect rate / {risk_settings['process_benchmark_pct']:.1f}% * 100, 100); factory-specific profiles apply to matching processes.",
         )
     )
@@ -3691,6 +3815,48 @@ with tabs[5]:
                     "level": "medium",
                 },
             ]
+        )
+
+        st.subheader(t("过程改善行动清单", "Process Improvement Action List"))
+        process_actions = pm_process_summary.head(15).copy()
+        process_actions[t("改善优先级", "Improvement Priority")] = process_actions["risk_level"].map(risk_level_text)
+        process_actions[t("建议改善动作", "Recommended Improvement Action")] = process_actions.apply(
+            lambda row: t(
+                f"在 {row.get('process', '-')} 工序优先复盘“{row.get('top_defect', '-') or '-'}”；确认作业标准、首件和巡检控制点",
+                f"Prioritize {row.get('top_defect', '-') or '-'} in {row.get('process', '-')}; verify work standard, first-piece approval, and patrol inspection controls",
+            ),
+            axis=1,
+        )
+        process_action_table = process_actions[
+            [
+                "factory_name",
+                "process",
+                t("改善优先级", "Improvement Priority"),
+                "risk_score",
+                "defect_rate",
+                "top_defect",
+                "defect_qty",
+                "product_count",
+                t("建议改善动作", "Recommended Improvement Action"),
+            ]
+        ].rename(
+            columns={
+                "factory_name": t("工厂", "Factory"),
+                "process": t("改善工序", "Target Process"),
+                "risk_score": t("工序风险分", "Process Risk Score"),
+                "defect_rate": t("不良率", "Defect Rate"),
+                "top_defect": t("主要疵点", "Top Defect"),
+                "defect_qty": t("疵点数", "Defects"),
+                "product_count": t("涉及CC数", "CC Count"),
+            }
+        )
+        dataframe_with_format(
+            process_action_table,
+            column_config={
+                t("工序风险分", "Process Risk Score"): st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                t("不良率", "Defect Rate"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.12),
+            },
+            height=390,
         )
 
         left, right = st.columns([1.05, 1])
@@ -3782,7 +3948,13 @@ with tabs[5]:
 # 13. Analysis methods
 # ==========================================
 with tabs[6]:
-    st.subheader(t("分析方法", "Analysis Methods"))
+    st.subheader(t("改善效果追踪", "Improvement Effectiveness Tracking"))
+    st.caption(
+        t(
+            "用于追踪所有改善是否真正有效：先看整改前后不良率、有效性评分和复发情况，再用异常与关联分析解释未改善原因。",
+            "Tracks whether improvements actually work: start with before/after defect rates, effectiveness, and recurrence, then use anomaly and association analysis to explain weak results.",
+        )
+    )
 
     method_finished_scope = finished_all[
         (finished_all["date"].dt.date >= start_date)
@@ -3828,110 +4000,149 @@ with tabs[6]:
     )
     st.caption(
         t(
-            f"当前分析范围：{method_factory_name}｜QC记录 {len(method_finished):,} 条｜来料问题 {len(method_incoming):,} 条｜数据周期 {method_period}。工厂选择仅影响07分析工具，日期、检验阶段、工序和款式沿用左侧筛选。",
-            f"Current scope: {method_factory_name} | {len(method_finished):,} QC records | {len(method_incoming):,} incoming issues | {method_period}. Factory selection only affects 07 Analysis Tools; date, stage, process, and product follow the sidebar filters.",
+            f"当前追踪范围：{method_factory_name}｜QC记录 {len(method_finished):,} 条｜来料问题 {len(method_incoming):,} 条｜数据周期 {method_period}。工厂选择仅影响07改善追踪，日期、检验阶段、工序和款式沿用左侧筛选。",
+            f"Current tracking scope: {method_factory_name} | {len(method_finished):,} QC records | {len(method_incoming):,} incoming issues | {method_period}. Factory selection only affects 07 Improvement Tracking; date, stage, process, and product follow the sidebar filters.",
         )
     )
 
-    left, right = st.columns(2)
-    with left:
-        st.subheader(t("近30天过程变化｜双窗口差分模型", "Recent Process Shift | Two-Window Delta"))
-        if process_shift.empty:
-            st.info(t(f"{method_factory_name} 当前数据不足以比较近30天与前30天。", f"{method_factory_name} does not have enough data to compare recent and prior 30-day windows."))
-        else:
-            shift_plot = pd.concat([process_shift.head(8), process_shift.tail(4)]).drop_duplicates("process_view")
-            fig = px.bar(
-                shift_plot.sort_values("delta_rate"),
-                x="delta_rate",
-                y="process_view",
-                color="change_type",
-                orientation="h",
-                color_discrete_map={t("上升", "Worse"): "#c01048", t("下降", "Better"): "#059669"},
-                labels={"delta_rate": t("不良率变化", "Defect-rate change"), "process_view": t("工厂 / 工序", "Factory / Process")},
-            )
-            fig.update_xaxes(tickformat="+.1%")
-            plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{method_factory} QC data。算法：近30天不良率 - 前30天不良率；向右/红色代表过程恶化，向左/绿色代表改善。", f"Source: {method_factory} QC data. Logic: recent 30-day defect rate minus prior 30-day defect rate; red/right means worse, green/left means better."))
+    if cap_effectiveness.empty:
+        st.info(t(f"{method_factory_name} 当前数据不足以形成改善前后周期对比。", f"{method_factory_name} does not have enough data for a before/after improvement comparison."))
+    else:
+        effective_count = int((cap_effectiveness["effectiveness_score"] >= 75).sum())
+        weak_count = int((cap_effectiveness["effectiveness_score"] < 55).sum())
+        recurring_count = int((cap_effectiveness["recurrence"] == t("有复发", "Recurring")).sum())
+        average_effectiveness = cap_effectiveness["effectiveness_score"].mean()
+        render_kpi_cards(
+            [
+                {
+                    "label": t("追踪改善项", "Tracked Improvements"),
+                    "value": str(len(cap_effectiveness)),
+                    "note": t("基于前后45天窗口", "Based on matched 45-day windows"),
+                    "level": "medium",
+                },
+                {
+                    "label": t("改善有效", "Effective"),
+                    "value": str(effective_count),
+                    "note": t("有效性评分 ≥ 75", "Effectiveness score >= 75"),
+                    "level": "low",
+                },
+                {
+                    "label": t("需升级CAP", "CAP Escalation"),
+                    "value": str(weak_count),
+                    "note": t("有效性评分 < 55", "Effectiveness score < 55"),
+                    "level": "critical" if weak_count else "low",
+                },
+                {
+                    "label": t("出现复发", "Recurring"),
+                    "value": str(recurring_count),
+                    "note": t("整改后仍检出疵点", "Defects remain after action"),
+                    "level": "high" if recurring_count else "low",
+                },
+                {
+                    "label": t("平均有效性", "Average Effectiveness"),
+                    "value": num(average_effectiveness, 1),
+                    "note": t("0-100，越高越有效", "0-100, higher is better"),
+                    "level": "low" if average_effectiveness >= 75 else "medium",
+                },
+            ]
+        )
 
-    with right:
-        st.subheader(t("异常工单分布｜鲁棒 Z-Score 离群检测", "Work-Order Anomaly | Robust Z-Score Outlier"))
-        if abnormal_orders.empty:
-            st.info(t(f"{method_factory_name} 当前未识别到显著离群工单。", f"No obvious abnormal work order was detected for {method_factory_name}."))
-        else:
-            anomaly_plot = abnormal_orders.copy()
-            anomaly_plot["plot_size"] = np.sqrt(anomaly_plot["defect_qty"].clip(lower=1)) * 9 + 12
-            fig = px.scatter(
-                anomaly_plot,
-                x="qty_inspected",
-                y="defect_rate",
-                size="plot_size",
-                size_max=36,
-                color="factory_name",
-                hover_data=["work_order", "product_code", "product_label", "process"],
-                labels={"qty_inspected": t("检验数量", "Inspected qty"), "defect_rate": t("不良率", "Defect rate")},
-            )
-            fig.update_yaxes(tickformat=".1%")
-            plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{method_factory} QC work order data。算法：对检验量、不良率、疵点数做鲁棒 Z-Score 离群检测；点越大代表疵点压力越高，越靠上不良率越高。", f"Source: {method_factory} QC work-order data. Logic: robust Z-Score outlier detection using inspected qty, defect rate, and defect count; larger points mean higher defect pressure, higher position means higher defect rate."))
+        st.subheader(t("改善前后效果｜Before/After 对照评分", "Before / After Effect | Matched Period Scoring"))
+        cap_plot = cap_effectiveness.copy()
+        cap_plot["process_view"] = cap_plot["factory_code"] + " / " + cap_plot["process"].astype(str)
+        fig = px.bar(
+            cap_plot.sort_values("effectiveness_score"),
+            x="effectiveness_score",
+            y="process_view",
+            color="recurrence",
+            orientation="h",
+            text=cap_plot.sort_values("effectiveness_score")["effectiveness_score"].map(lambda value: f"{value:.0f}"),
+            labels={"effectiveness_score": t("有效性评分", "Effectiveness score"), "process_view": t("工厂 / 改善项", "Factory / Improvement Item")},
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_xaxes(range=[0, 110])
+        plot_chart(fig, 440)
+        st.caption(t(f"数据来源：{method_factory} QC data。算法：比较改善前后各45天不良率；评分≥75可关闭并监控，55-74继续观察，<55升级CAP。", f"Source: {method_factory} QC data. Logic: compares matched 45-day defect rates; >=75 close with monitoring, 55-74 continue monitoring, <55 escalate CAP."))
 
-    left, right = st.columns(2)
-    with left:
-        st.subheader(t("来料与过程周度关系｜周度关联分析", "Material vs Process by Week | Weekly Association"))
-        if weekly_material_process.empty:
-            st.info(t(f"{method_factory_name} 当前没有可连接的来料和过程周度数据。", f"No linked weekly material/process data is available for {method_factory_name}."))
-        else:
-            weekly_plot = weekly_material_process.copy()
-            weekly_plot["plot_size"] = np.log1p(weekly_plot["qty"].clip(lower=1)) * 7 + 12
-            fig = px.scatter(
-                weekly_plot,
-                x="material_issues",
-                y="defect_rate",
-                size="plot_size",
-                size_max=38,
-                color="factory",
-                hover_data=["week", "defects"],
-                labels={"material_issues": t("来料问题数", "Material issues"), "defect_rate": t("过程/成品不良率", "QC defect rate")},
-            )
-            fig.update_yaxes(tickformat=".1%")
-            plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{method_factory} Material data + QC data。算法：按周连接来料问题批次与同周过程/成品不良率；右上角代表来料问题多且质量表现差，适合优先复盘。", f"Source: {method_factory} Material data + QC data. Logic: weekly material issue batches are linked with same-week QC defect rate; upper-right means more material issues and worse quality."))
+        cap_view = cap_effectiveness.rename(
+            columns={
+                "factory_code": t("工厂", "Factory"),
+                "process": t("改善项", "Improvement Item"),
+                "before_rate": t("改善前不良率", "Before"),
+                "after_rate": t("改善后不良率", "After"),
+                "effectiveness_score": t("有效性评分", "Effectiveness Score"),
+                "recurrence": t("复发", "Recurrence"),
+                "next_decision": t("下一步", "Next Decision"),
+            }
+        )
+        dataframe_with_format(
+            cap_view,
+            column_config={
+                t("改善前不良率", "Before"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.1),
+                t("改善后不良率", "After"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.1),
+                t("有效性评分", "Effectiveness Score"): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+            },
+            height=320,
+        )
 
-    with right:
-        st.subheader(t("整改前后效果｜Before/After 对照评分", "Before / After Effect | Matched Period Scoring"))
-        if cap_effectiveness.empty:
-            st.info(t(f"{method_factory_name} 当前数据不足以形成前后周期对比。", f"{method_factory_name} does not have enough data for a before/after comparison."))
-        else:
-            cap_plot = cap_effectiveness.copy()
-            cap_plot["process_view"] = cap_plot["factory_code"] + " / " + cap_plot["process"].astype(str)
-            fig = px.bar(
-                cap_plot.sort_values("effectiveness_score"),
-                x="effectiveness_score",
-                y="process_view",
-                color="recurrence",
-                orientation="h",
-                labels={"effectiveness_score": t("有效性评分", "Effectiveness score"), "process_view": t("工厂 / 工序", "Factory / Process")},
-            )
-            plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{method_factory} QC data。算法：对比整改前后周期不良率并计算有效性评分；分数越高代表改善越明显，复发项需要继续追踪。", f"Source: {method_factory} QC data. Logic: compares before/after defect rates and converts improvement into an effectiveness score; higher is better, recurring items need follow-up."))
+    st.subheader(t("持续监控信号", "Ongoing Monitoring Signals"))
+    if process_shift.empty:
+        st.info(t(f"{method_factory_name} 当前数据不足以比较近30天与前30天。", f"{method_factory_name} does not have enough data to compare recent and prior 30-day windows."))
+    else:
+        shift_plot = pd.concat([process_shift.head(8), process_shift.tail(4)]).drop_duplicates("process_view")
+        fig = px.bar(
+            shift_plot.sort_values("delta_rate"),
+            x="delta_rate",
+            y="process_view",
+            color="change_type",
+            orientation="h",
+            color_discrete_map={t("上升", "Worse"): "#c01048", t("下降", "Better"): "#059669"},
+            labels={"delta_rate": t("近30天不良率变化", "Recent 30-day Defect-rate Change"), "process_view": t("工厂 / 工序", "Factory / Process")},
+        )
+        fig.update_xaxes(tickformat="+.1%")
+        plot_chart(fig, 400)
+        st.caption(t(f"数据来源：{method_factory} QC data。近30天不良率减去前30天；红色上升项代表改善可能失效或出现复发。", f"Source: {method_factory} QC data. Recent 30-day rate minus prior 30-day rate; red increases may indicate ineffective or recurring improvements."))
 
-            with st.expander(t("整改效果明细（可选）", "Effectiveness detail (optional)")):
-                cap_view = cap_effectiveness.rename(
-                    columns={
-                        "factory_code": t("工厂", "Factory"),
-                        "process": t("相关风险", "Related Risk"),
-                        "before_rate": t("整改前不良率", "Before"),
-                        "after_rate": t("整改后不良率", "After"),
-                        "effectiveness_score": t("有效性评分", "Effectiveness Score"),
-                        "recurrence": t("复发", "Recurrence"),
-                        "next_decision": t("下一步", "Next Decision"),
-                    }
+    with st.expander(t("辅助原因诊断：异常工单与来料关联", "Supporting Diagnosis: Work-order Anomalies and Material Association")):
+        diagnosis_left, diagnosis_right = st.columns(2)
+        with diagnosis_left:
+            st.subheader(t("异常工单｜鲁棒 Z-Score", "Work-order Anomaly | Robust Z-Score"))
+            if abnormal_orders.empty:
+                st.info(t(f"{method_factory_name} 当前未识别到显著离群工单。", f"No obvious abnormal work order was detected for {method_factory_name}."))
+            else:
+                anomaly_plot = abnormal_orders.copy()
+                anomaly_plot["plot_size"] = np.sqrt(anomaly_plot["defect_qty"].clip(lower=1)) * 9 + 12
+                fig = px.scatter(
+                    anomaly_plot,
+                    x="qty_inspected",
+                    y="defect_rate",
+                    size="plot_size",
+                    size_max=36,
+                    color="factory_name",
+                    hover_data=["work_order", "product_code", "product_label", "process"],
+                    labels={"qty_inspected": t("检验数量", "Inspected qty"), "defect_rate": t("不良率", "Defect rate")},
                 )
-                dataframe_with_format(
-                    cap_view,
-                    column_config={
-                        t("整改前不良率", "Before"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.1),
-                        t("整改后不良率", "After"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.1),
-                        t("有效性评分", "Effectiveness Score"): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
-                    },
-                    height=300,
+                fig.update_yaxes(tickformat=".1%")
+                plot_chart(fig, 390)
+                st.caption(t(f"数据来源：{method_factory} QC work order data。用于识别可能导致改善失效的异常工单。", f"Source: {method_factory} QC work-order data. Identifies abnormal work orders that may explain weak improvement."))
+
+        with diagnosis_right:
+            st.subheader(t("来料与过程周度关系｜关联分析", "Material vs Process by Week | Association"))
+            if weekly_material_process.empty:
+                st.info(t(f"{method_factory_name} 当前没有可连接的来料和过程周度数据。", f"No linked weekly material/process data is available for {method_factory_name}."))
+            else:
+                weekly_plot = weekly_material_process.copy()
+                weekly_plot["plot_size"] = np.log1p(weekly_plot["qty"].clip(lower=1)) * 7 + 12
+                fig = px.scatter(
+                    weekly_plot,
+                    x="material_issues",
+                    y="defect_rate",
+                    size="plot_size",
+                    size_max=38,
+                    color="factory",
+                    hover_data=["week", "defects"],
+                    labels={"material_issues": t("来料问题数", "Material issues"), "defect_rate": t("过程/成品不良率", "QC defect rate")},
                 )
+                fig.update_yaxes(tickformat=".1%")
+                plot_chart(fig, 390)
+                st.caption(t(f"数据来源：{method_factory} Material data + QC data。用于判断改善未生效是否与同期来料问题有关。", f"Source: {method_factory} Material data + QC data. Helps assess whether weak improvement is associated with incoming issues."))
