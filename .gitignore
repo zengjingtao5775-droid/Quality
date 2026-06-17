@@ -9,3 +9,6 @@ __pycache__/
 venv/
 env/
 TF Database/**/status.png
+POC_Raw_Data/
+# 本地脚本：含硬编码 API 密钥，勿提交（密钥请放 .streamlit/secrets.toml 或环境变量）
+sync_data.py.py
