@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import html
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -694,6 +695,56 @@ def weighted_score(row: pd.Series, weights: dict[str, float]) -> float:
             total_score += float(value) * weight
             total_weight += weight
     return total_score / total_weight if total_weight else np.nan
+
+
+# 贝叶斯收缩的伪样本量：检验量远小于该值时，不良率主要向基准回归，
+# 检验量远大于该值时主要采信实测值；约等于"需要多少检验量才足够采信实测不良率"。
+SAMPLE_PSEUDO_COUNT = 200
+
+
+def defect_risk_score(defect_rate: object, benchmark_pct: object) -> float:
+    """把不良率换算成 0-100 风险分（分段线性）。
+
+    基准线 benchmark_pct = 50 分（告警线，落在 Medium）；3× 基准 = 100 分。
+    基准以上仍按差距线性拉开，避免旧版 min(rate/benchmark*100, 100) 在基准以上一律封顶 100、
+    把所有高风险对象抹平成同一档。
+    """
+    if pd.isna(defect_rate):
+        return np.nan
+    rate = max(float(defect_rate), 0.0)
+    benchmark = max(float(benchmark_pct) / 100, 0.0001)
+    if rate <= benchmark:
+        return rate / benchmark * 50
+    return min(50 + (rate - benchmark) / (2 * benchmark) * 50, 100)
+
+
+def shrunk_defect_rate(
+    defect_qty: object,
+    qty_inspected: object,
+    benchmark_pct: object,
+    pseudo: float = SAMPLE_PSEUDO_COUNT,
+) -> float:
+    """对不良率做贝叶斯收缩：小批量向基准回归，避免少量样本把分数推到极端。
+
+    用于打分；展示用的原始 defect_rate 保持不变。
+    """
+    qty = 0.0 if pd.isna(qty_inspected) else max(float(qty_inspected), 0.0)
+    defects = 0.0 if pd.isna(defect_qty) else max(float(defect_qty), 0.0)
+    prior = max(float(benchmark_pct) / 100, 0.0)
+    denom = qty + pseudo
+    if denom <= 0:
+        return np.nan
+    return (defects + prior * pseudo) / denom
+
+
+def volume_confidence(qty_inspected: object) -> str:
+    """根据检验量给出样本置信度标签。"""
+    qty = 0.0 if pd.isna(qty_inspected) else float(qty_inspected)
+    if qty >= 500:
+        return t("高", "High")
+    if qty >= 100:
+        return t("中", "Medium")
+    return t("低（样本不足）", "Low (sparse)")
 
 
 def default_risk_settings() -> dict:
@@ -1415,13 +1466,6 @@ def load_customer_voice() -> pd.DataFrame:
             }
         )
         voice["product_key"] = voice["product_code"].map(extract_product_key)
-        voice["customer_score"] = (
-            np.minimum(voice["rpm_now"].fillna(0).clip(lower=0) / 4000 * 35, 35)
-            + np.minimum(voice["delta_rpm"].fillna(0).clip(lower=0) / 1500 * 20, 20)
-            + np.minimum(voice["returned_now"].fillna(0).clip(lower=0) / 150 * 15, 15)
-            + np.minimum((4.5 - voice["avg_score_now"].fillna(4.5)).clip(lower=0) / 1.0 * 20, 20)
-            + np.minimum(voice["nqc_now"].fillna(0).clip(lower=0) / 1000 * 10, 10)
-        )
         frames.append(voice)
 
     intern_file = ROOT / FACTORIES["ZX"]["intern_voice_file"]
@@ -1506,7 +1550,6 @@ def load_customer_voice() -> pd.DataFrame:
                 }
             )
             voice["product_key"] = voice["product_code"].map(extract_product_key)
-            voice["customer_score"] = np.minimum(voice["intern_voice_count"].fillna(0) / 3 * 45, 45)
             frames.append(voice)
 
     if not frames:
@@ -1789,11 +1832,13 @@ def compute_supplier_summary(
     summary["defect_rate"] = safe_rate(summary["defect_qty"], summary["qty_inspected"])
     summary["rft"] = 1 - summary["defect_rate"]
     summary["qc_score"] = summary.apply(
-        lambda row: min(
-            row["defect_rate"]
-            / max(float(settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0)) / 100, 0.0001)
-            * 100,
-            100,
+        lambda row: defect_risk_score(
+            shrunk_defect_rate(
+                row["defect_qty"],
+                row["qty_inspected"],
+                settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
+            ),
+            settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
         ),
         axis=1,
     )
@@ -1806,14 +1851,11 @@ def compute_supplier_summary(
                 avg_score=("avg_score_now", "mean"),
                 returned_now=("returned_now", "sum"),
                 nqc_now=("nqc_now", "sum"),
-                customer_score=("customer_score", "mean"),
                 voice_products=("product_key", pd.Series.nunique),
                 intern_voice_count=("intern_voice_count", "sum"),
             )
         )
         summary = summary.merge(voice_summary, on="factory_code", how="left")
-    else:
-        summary["customer_score"] = np.nan
 
     if not incoming.empty:
         incoming_summary = (
@@ -1824,23 +1866,11 @@ def compute_supplier_summary(
                 material_suppliers=("material_supplier", pd.Series.nunique),
             )
         )
-        incoming_summary["incoming_score"] = incoming_summary.apply(
-            lambda row: min(
-                row["incoming_returns"]
-                / max(float(settings_for_factory(risk_settings, row["factory_code"]).get("incoming_reject_cap", 25)), 1)
-                * 70
-                + row["incoming_issues"]
-                / max(float(settings_for_factory(risk_settings, row["factory_code"]).get("incoming_issue_cap", 120)), 1)
-                * 30,
-                100,
-            ),
-            axis=1,
-        )
+        # 注：来料问题数（incoming_issues / returns）仅用于供应商表展示；
+        # 来料尚未纳入风险总分（仅 ZX/TF 有来料数据，纳入会让 DS/JS 失真），故不再计算未使用的 incoming_score。
         summary = summary.merge(incoming_summary, on="factory_code", how="left")
-    else:
-        summary["incoming_score"] = np.nan
 
-    for col in ["customer_score", "avg_rpm", "incoming_score", "intern_voice_count"]:
+    for col in ["avg_rpm", "intern_voice_count"]:
         if col not in summary.columns:
             summary[col] = np.nan
     for col in ["voice_products", "intern_voice_count", "incoming_issues", "incoming_returns", "material_suppliers"]:
@@ -1927,7 +1957,6 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
                 avg_score_now=("avg_score_now", "mean"),
                 returned_now=("returned_now", "sum"),
                 nqc_now=("nqc_now", "sum"),
-                customer_score=("customer_score", "mean"),
                 intern_voice_count=("intern_voice_count", "sum"),
             )
         )
@@ -1938,7 +1967,6 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
         product = cust.copy()
     elif cust.empty:
         product = qc.copy()
-        product["customer_score"] = np.nan
     else:
         product = qc.merge(
             cust,
@@ -1953,7 +1981,7 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
         product.get("voice_product_name", pd.Series(index=product.index, dtype=object))
     )
     has_client_data = pd.Series(False, index=product.index)
-    for column in ["voice_product_code", "voice_product_name", "rpm_now", "customer_score", "intern_voice_count"]:
+    for column in ["voice_product_code", "voice_product_name", "rpm_now", "intern_voice_count"]:
         if column in product.columns:
             has_client_data |= product[column].notna()
     product["qty_inspected"] = product.get("qty_inspected", 0).fillna(0)
@@ -1969,18 +1997,20 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
     }.items():
         if column not in product.columns:
             product[column] = default
+    product["qc_confidence"] = product["qty_inspected"].map(volume_confidence)
     product["qc_score"] = product.apply(
-        lambda row: min(
-            (row["defect_rate"] if pd.notna(row.get("defect_rate")) else 0)
-            / max(float(settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0)) / 100, 0.0001)
-            * 100,
-            100,
+        lambda row: defect_risk_score(
+            shrunk_defect_rate(
+                row.get("defect_qty", 0),
+                row.get("qty_inspected", 0),
+                settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
+            ),
+            settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
         ),
         axis=1,
     )
     product.loc[product["qty_inspected"] == 0, "qc_score"] = np.nan
-    if "customer_score" not in product.columns:
-        product["customer_score"] = np.nan
+    product.loc[product["qty_inspected"] == 0, "qc_confidence"] = t("无 QC", "No QC")
     if "intern_voice_count" not in product.columns:
         product["intern_voice_count"] = 0
     product["intern_voice_count"] = product["intern_voice_count"].fillna(0)
@@ -2051,11 +2081,13 @@ def compute_process_summary(finished: pd.DataFrame, risk_settings: dict) -> pd.D
     process = process[process["qty_inspected"] > 0].copy()
     process["defect_rate"] = safe_rate(process["defect_qty"], process["qty_inspected"])
     process["risk_score"] = process.apply(
-        lambda row: min(
-            row["defect_rate"]
-            / max(float(settings_for_factory(risk_settings, row["factory_code"]).get("process_benchmark_pct", 5.0)) / 100, 0.0001)
-            * 100,
-            100,
+        lambda row: defect_risk_score(
+            shrunk_defect_rate(
+                row["defect_qty"],
+                row["qty_inspected"],
+                settings_for_factory(risk_settings, row["factory_code"]).get("process_benchmark_pct", 5.0),
+            ),
+            settings_for_factory(risk_settings, row["factory_code"]).get("process_benchmark_pct", 5.0),
         ),
         axis=1,
     )
@@ -2096,15 +2128,26 @@ def compute_worker_clusters(finished: pd.DataFrame) -> pd.DataFrame:
     return worker.sort_values("defect_rate", ascending=False)
 
 
-def compute_cap_effectiveness(finished: pd.DataFrame) -> pd.DataFrame:
+def compute_cap_effectiveness(finished: pd.DataFrame, cap_date: object = None, window_days: int = 45) -> pd.DataFrame:
+    """整改前后对照评分。
+
+    cap_date：整改实施日期。给定时按该日期切前后窗（before = 日期前 window 天，
+    after = 日期后 window 天），真正对齐到具体整改；未给定时退回"数据末期前后对比"的模拟口径。
+    并对每个工序做两比例 z 检验，区分"统计显著的改善"与"样本波动"。
+    """
     if finished.empty:
         return pd.DataFrame()
 
     latest_date = finished["date"].max()
-    after_start = latest_date - pd.Timedelta(days=45)
-    before_start = after_start - pd.Timedelta(days=45)
-    before = finished[(finished["date"] >= before_start) & (finished["date"] < after_start)]
-    after = finished[finished["date"] >= after_start]
+    if cap_date is not None:
+        split = pd.Timestamp(cap_date)
+        before = finished[(finished["date"] >= split - pd.Timedelta(days=window_days)) & (finished["date"] < split)]
+        after = finished[(finished["date"] >= split) & (finished["date"] <= split + pd.Timedelta(days=window_days))]
+    else:
+        after_start = latest_date - pd.Timedelta(days=window_days)
+        before_start = after_start - pd.Timedelta(days=window_days)
+        before = finished[(finished["date"] >= before_start) & (finished["date"] < after_start)]
+        after = finished[finished["date"] >= after_start]
     if before.empty or after.empty:
         return pd.DataFrame()
 
@@ -2121,11 +2164,29 @@ def compute_cap_effectiveness(finished: pd.DataFrame) -> pd.DataFrame:
 
     improvement = (eff["before_rate"] - eff["after_rate"]) / eff["before_rate"].replace(0, np.nan)
     eff["effectiveness_score"] = np.clip(50 + improvement.fillna(0) * 60, 0, 100)
+
+    # 两比例 z 检验：改善是否统计显著，而非仅样本波动
+    tests = eff.apply(
+        lambda row: two_proportion_test(row["before_defects"], row["before_qty"], row["after_defects"], row["after_qty"]),
+        axis=1,
+    )
+    eff["z_stat"] = [tp[0] for tp in tests]
+    eff["p_value"] = [tp[1] for tp in tests]
+    eff["significant"] = (eff["p_value"] < 0.05) & (eff["after_rate"] < eff["before_rate"])
+
     eff["recurrence"] = np.where(eff["after_defects"] > 0, t("有复发", "Recurring"), t("未复发", "No recurrence"))
-    eff["next_decision"] = np.where(
-        eff["effectiveness_score"] >= 75,
-        t("关闭后继续监控", "Close with monitoring"),
-        np.where(eff["effectiveness_score"] >= 55, t("继续观察两周", "Monitor two weeks"), t("升级 CAP", "Escalate CAP")),
+    eff["next_decision"] = np.select(
+        [
+            eff["significant"] & (eff["effectiveness_score"] >= 75),
+            eff["significant"] & (eff["effectiveness_score"] >= 55),
+            (eff["after_rate"] < eff["before_rate"]) & ~eff["significant"],
+        ],
+        [
+            t("关闭后继续监控", "Close with monitoring"),
+            t("继续观察两周", "Monitor two weeks"),
+            t("改善未显著，继续观察", "Not significant, keep monitoring"),
+        ],
+        default=t("升级 CAP", "Escalate CAP"),
     )
     return eff.sort_values("effectiveness_score", ascending=True).head(8)
 
@@ -2203,23 +2264,85 @@ def compute_process_shift(finished: pd.DataFrame, days: int = 30) -> pd.DataFram
     return shift.sort_values("delta_rate", ascending=False)
 
 
-def compute_weekly_material_process(finished: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+def compute_weekly_material_process(finished: pd.DataFrame, incoming: pd.DataFrame, lag_weeks: int = 0) -> pd.DataFrame:
+    """按周连接来料问题与过程/成品不良率。
+
+    lag_weeks：来料滞后周数。把第 N 周的来料问题对齐到第 N+lag 周的过程不良率，
+    因为来料缺陷通常滞后若干周才在产线/成品暴露；lag=0 即旧版的同周对齐。
+    """
     if finished.empty or incoming.empty:
         return pd.DataFrame()
 
     qc = finished.copy()
-    qc["week"] = qc["date"].dt.to_period("W").astype(str)
-    qc_week = qc.groupby(["factory_code", "week"], as_index=False).agg(qty=("qty_inspected", "sum"), defects=("defect_qty", "sum"))
+    qc["week_period"] = qc["date"].dt.to_period("W")
+    qc_week = qc.groupby(["factory_code", "week_period"], as_index=False).agg(
+        qty=("qty_inspected", "sum"), defects=("defect_qty", "sum")
+    )
     qc_week["defect_rate"] = safe_rate(qc_week["defects"], qc_week["qty"])
 
     mat = incoming.copy()
-    mat["week"] = mat["date"].dt.to_period("W").astype(str)
-    mat_week = mat.groupby(["factory_code", "week"], as_index=False).size().rename(columns={"size": "material_issues"})
+    mat["week_period"] = mat["date"].dt.to_period("W")
+    mat_week = (
+        mat.groupby(["factory_code", "week_period"], as_index=False)
+        .size()
+        .rename(columns={"size": "material_issues"})
+    )
+    # 来料第 N 周 → 对齐到过程第 N+lag 周
+    mat_week["material_week"] = mat_week["week_period"].astype(str)
+    mat_week["week_period"] = mat_week["week_period"] + int(lag_weeks)
 
-    weekly = qc_week.merge(mat_week, on=["factory_code", "week"], how="left")
+    weekly = qc_week.merge(
+        mat_week[["factory_code", "week_period", "material_issues", "material_week"]],
+        on=["factory_code", "week_period"],
+        how="left",
+    )
     weekly["material_issues"] = weekly["material_issues"].fillna(0)
+    weekly["lag_weeks"] = int(lag_weeks)
+    weekly["week"] = weekly["week_period"].astype(str)
     weekly["factory"] = weekly["factory_code"].map(lambda code: FACTORIES.get(code, {}).get("name", code))
     return weekly
+
+
+def material_process_correlations(finished: pd.DataFrame, incoming: pd.DataFrame, max_lag: int = 3) -> list[dict]:
+    """对 0..max_lag 周滞后分别计算"来料问题数 vs 过程不良率"的皮尔逊相关系数。"""
+    results: list[dict] = []
+    for lag in range(0, max_lag + 1):
+        weekly = compute_weekly_material_process(finished, incoming, lag)
+        if weekly.empty:
+            continue
+        valid = weekly[weekly["qty"] > 0].dropna(subset=["defect_rate"])
+        n = int(len(valid))
+        r = np.nan
+        if n >= 4 and valid["material_issues"].nunique() >= 2 and valid["defect_rate"].nunique() >= 2:
+            r = float(valid["material_issues"].corr(valid["defect_rate"]))
+        results.append({"lag": lag, "r": r, "n": n})
+    return results
+
+
+def best_material_lag(correlations: list[dict]) -> dict | None:
+    """在已算出的相关性里挑 |r| 最强的滞后；都不可用则返回 None。"""
+    candidates = [c for c in correlations if pd.notna(c.get("r"))]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: abs(c["r"]))
+
+
+def two_proportion_test(defects_before: object, qty_before: object, defects_after: object, qty_after: object) -> tuple[float, float]:
+    """两比例 z 检验：返回 (z, 双侧 p)。z>0 表示整改后不良率下降（改善）。"""
+    n1 = float(qty_before or 0)
+    n2 = float(qty_after or 0)
+    if n1 <= 0 or n2 <= 0:
+        return (np.nan, np.nan)
+    d1 = float(defects_before or 0)
+    d2 = float(defects_after or 0)
+    p1, p2 = d1 / n1, d2 / n2
+    pooled = (d1 + d2) / (n1 + n2)
+    se = math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2)) if 0 < pooled < 1 else 0.0
+    if se <= 0:
+        return (np.nan, np.nan)
+    z = (p1 - p2) / se
+    p_value = math.erfc(abs(z) / math.sqrt(2))  # 双侧正态近似
+    return (z, p_value)
 
 
 # ==========================================
@@ -2533,7 +2656,7 @@ def product_alert_cards(product_summary: pd.DataFrame, limit: int = 4) -> list[d
 def prepare_product_risk_view(product_summary: pd.DataFrame) -> tuple[pd.DataFrame, float, float]:
     view = product_summary.copy()
     view["qc_rate"] = pd.to_numeric(view.get("defect_rate", 0), errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0)
-    view["customer_signal"] = pd.to_numeric(view.get("client_score", view.get("customer_score", 0)), errors="coerce").fillna(0).clip(0, 100)
+    view["customer_signal"] = pd.to_numeric(view.get("client_score", 0), errors="coerce").fillna(0).clip(0, 100)
     view["qty_inspected"] = pd.to_numeric(view.get("qty_inspected", 0), errors="coerce").fillna(0)
     view["defect_qty"] = pd.to_numeric(view.get("defect_qty", 0), errors="coerce").fillna(0)
     view["intern_voice_count"] = pd.to_numeric(view.get("intern_voice_count", 0), errors="coerce").fillna(0)
@@ -3005,7 +3128,7 @@ with tabs[1]:
             {
                 "item": t("整改有效性反馈", "CAP effectiveness"),
                 "target": t("看板验证", "Dashboard validation"),
-                "current": t("已用前后周期模拟，待真实 CAP 闭环数据", "Period-based simulation; awaiting live CAP closure data"),
+                "current": t("支持按整改日期锚定 + 两比例 z 检验显著性，待真实 CAP 闭环数据自动接入", "Remediation-date anchoring + two-proportion significance test; awaiting auto CAP closure feed"),
                 "status": t("演示可用", "Demo-ready"),
                 "level": "watch",
             },
@@ -3045,7 +3168,7 @@ with tabs[2]:
     score_logic_cn = (
         f"<div>当前编辑方案：<span class='formula-highlight'>{html.escape(active_profile_label)}</span>。</div>"
         f"<div>综合风险分 = <span class='formula-highlight'>生产端 {supplier_prod_w:.0f}% + 客户端 {supplier_client_w:.0f}%</span>。</div>"
-        f"<div>生产端 = min(半检/总检QC不良率 / {risk_settings['qc_benchmark_pct']:.1f}% * 100, 100)。</div>"
+        f"<div>生产端 = 不良率风险分：基准 {risk_settings['qc_benchmark_pct']:.1f}% = 50分告警线，3× 基准 = 100分；基准以上仍按差距拉开，不再一律封顶100。小批量不良率按检验量向基准收缩。</div>"
         f"<div>客户端 = 标准化后的 RPM风险分 {client_rpm_w:.0f}% + 标准化后的 Intern Voice风险分 {client_iv_w:.0f}%。</div>"
         f"<div>RPM风险分 = min(RPM百万退货率 / {risk_settings['rpm_cap']:.0f} * 100, 100)，{risk_settings['rpm_cap']:.0f} 是当前POC的100分封顶阈值，可在“更多评分基准”调整。</div>"
         f"<div>Intern Voice风险分 = min(退货发起次数 / {risk_settings['intern_voice_cap']} * 100, 100)，{risk_settings['intern_voice_cap']} 是当前POC的100分封顶阈值。</div>"
@@ -3054,7 +3177,7 @@ with tabs[2]:
     score_logic_en = (
         f"<div>Editing profile: <span class='formula-highlight'>{html.escape(active_profile_label)}</span>.</div>"
         f"<div>Overall risk = <span class='formula-highlight'>Production {supplier_prod_w:.0f}% + Client {supplier_client_w:.0f}%</span>.</div>"
-        f"<div>Production = min(online/final QC defect rate / {risk_settings['qc_benchmark_pct']:.1f}% * 100, 100).</div>"
+        f"<div>Production = defect-rate risk score: benchmark {risk_settings['qc_benchmark_pct']:.1f}% = 50 (alert line), 3x benchmark = 100; stays discriminative above the benchmark instead of all capping at 100. Low-volume rates are shrunk toward the benchmark.</div>"
         f"<div>Client = normalized RPM risk {client_rpm_w:.0f}% + normalized Intern Voice risk {client_iv_w:.0f}%.</div>"
         f"<div>RPM risk = min(RPM returns per million / {risk_settings['rpm_cap']:.0f} * 100, 100); {risk_settings['rpm_cap']:.0f} is the current POC cap for 100 points and can be adjusted in More benchmarks.</div>"
         f"<div>Intern Voice risk = min(return initiations / {risk_settings['intern_voice_cap']} * 100, 100); {risk_settings['intern_voice_cap']} is the current POC cap for 100 points.</div>"
@@ -3264,7 +3387,7 @@ with tabs[3]:
         product_logic_cn = (
             f"<div>当前编辑方案：<span class='formula-highlight'>{html.escape(active_profile_label)}</span>。</div>"
             f"<div>产品风险分 = <span class='formula-highlight'>生产端 {product_prod_w:.0f}% + 客户端 {product_client_w:.0f}%</span>。</div>"
-            "<div>生产端来自该 CC 的半检/总检 QC 不良率。</div>"
+            f"<div>生产端 = 该 CC 的半检/总检 QC 不良率风险分：基准 {risk_settings['qc_benchmark_pct']:.1f}% = 50分告警线，3× 基准 = 100分；不再一律封顶100。小批量不良率向基准收缩，并在明细表标注 QC 置信度，避免少量样本误判为高风险。</div>"
             f"<div>客户端 = 标准化后的 RPM风险分 {client_rpm_w:.0f}% + 标准化后的 Intern Voice风险分 {client_iv_w:.0f}%。</div>"
             f"<div>RPM和Intern Voice先各自换算成0-100风险分，再按权重加权；不是按原始数量直接相加。</div>"
             f"<div>缺少客户端数据时，综合分仅按现有生产端数据自动归一，不把缺失值计为0分。</div>"
@@ -3272,7 +3395,7 @@ with tabs[3]:
         product_logic_en = (
             f"<div>Editing profile: <span class='formula-highlight'>{html.escape(active_profile_label)}</span>.</div>"
             f"<div>Product risk = <span class='formula-highlight'>production {product_prod_w:.0f}% + client {product_client_w:.0f}%</span>.</div>"
-            "<div>Production uses the CC-level online/final QC defect rate.</div>"
+            f"<div>Production = the CC-level online/final QC defect-rate risk score: benchmark {risk_settings['qc_benchmark_pct']:.1f}% = 50 (alert line), 3x benchmark = 100; no longer all capped at 100. Low-volume rates are shrunk toward the benchmark and the detail table shows a QC confidence label so sparse samples are not misread as high risk.</div>"
             f"<div>Client = normalized RPM risk {client_rpm_w:.0f}% + normalized Intern Voice risk {client_iv_w:.0f}%.</div>"
             "<div>RPM and Intern Voice are each converted to 0-100 risk scores before weighting; raw values are not added directly.</div>"
             "<div>When client data is unavailable, the score is normalized over available production data instead of treating missing values as zero.</div>"
@@ -3387,6 +3510,7 @@ with tabs[3]:
                     "risk_level",
                     "risk_score",
                     "qty_inspected",
+                    "qc_confidence",
                     "defect_rate",
                     "top_defect",
                     "rpm_now",
@@ -3400,6 +3524,7 @@ with tabs[3]:
                 product_table,
                 column_config={
                     "risk_score": st.column_config.NumberColumn(t("风险分", "Risk Score"), format="%.1f"),
+                    "qc_confidence": st.column_config.TextColumn(t("QC 置信度", "QC Confidence")),
                     "defect_rate": st.column_config.ProgressColumn(t("QC 不良率", "QC Defect Rate"), format="%.2f%%", min_value=0, max_value=0.08),
                     "rpm_now": st.column_config.NumberColumn("RPM N0", format="%.0f"),
                     "delta_rpm": st.column_config.NumberColumn("Delta RPM", format="%.0f"),
@@ -3816,8 +3941,10 @@ with tabs[6]:
     method_incoming = method_incoming_scope[method_incoming_scope["factory_code"] == method_factory].copy()
     process_shift = compute_process_shift(method_finished)
     abnormal_orders = detect_abnormal_work_orders(method_finished)
-    weekly_material_process = compute_weekly_material_process(method_finished, method_incoming)
-    cap_effectiveness = compute_cap_effectiveness(method_finished)
+    material_correlations = material_process_correlations(method_finished, method_incoming)
+    material_best_lag = best_material_lag(material_correlations)
+    material_lag = material_best_lag["lag"] if material_best_lag else 0
+    weekly_material_process = compute_weekly_material_process(method_finished, method_incoming, material_lag)
     method_factory_name = FACTORIES.get(method_factory, {}).get("name", method_factory)
     method_date_min = method_finished["date"].min()
     method_date_max = method_finished["date"].max()
@@ -3889,39 +4016,85 @@ with tabs[6]:
                 size="plot_size",
                 size_max=38,
                 color="factory",
-                hover_data=["week", "defects"],
+                hover_data=["week", "material_week", "defects"],
                 labels={"material_issues": t("来料问题数", "Material issues"), "defect_rate": t("过程/成品不良率", "QC defect rate")},
             )
             fig.update_yaxes(tickformat=".1%")
             plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{method_factory} Material data + QC data。算法：按周连接来料问题批次与同周过程/成品不良率；右上角代表来料问题多且质量表现差，适合优先复盘。", f"Source: {method_factory} Material data + QC data. Logic: weekly material issue batches are linked with same-week QC defect rate; upper-right means more material issues and worse quality."))
+            corr_bits_cn = "，".join(
+                (f"{c['lag']}周 r={c['r']:.2f}" if pd.notna(c["r"]) else f"{c['lag']}周 r=NA")
+                for c in material_correlations
+            ) or "样本不足"
+            corr_bits_en = ", ".join(
+                (f"lag{c['lag']} r={c['r']:.2f}" if pd.notna(c["r"]) else f"lag{c['lag']} r=NA")
+                for c in material_correlations
+            ) or "insufficient sample"
+            best_n = material_best_lag["n"] if material_best_lag else 0
+            st.caption(t(
+                f"数据来源：{method_factory} Material data + QC data。算法：来料问题第 N 周对齐到过程第 N+{material_lag} 周（{material_lag} 周滞后），各滞后皮尔逊相关性 [{corr_bits_cn}]；当前图为相关性最强的滞后，N={best_n} 周。样本周数少，仅供探索、不作因果结论；右上角=来料问题多且不良率高。",
+                f"Source: {method_factory} Material data + QC data. Logic: material issues in week N aligned to QC week N+{material_lag} ({material_lag}-week lag); Pearson by lag [{corr_bits_en}]; chart shows the strongest-correlating lag, N={best_n} weeks. Few weeks—exploratory only, not causal; upper-right = more material issues and higher defect rate."
+            ))
 
     with right:
         st.subheader(t("整改前后效果｜Before/After 对照评分", "Before / After Effect | Matched Period Scoring"))
+        cap_use_date = st.checkbox(
+            t("按整改实施日期对比", "Anchor on remediation date"),
+            value=False,
+            key="cap_use_date",
+            help=t(
+                "勾选后按你指定的整改实施日期切前后窗（各45天），真正对齐到具体 CAP；否则按数据末期前后对比（模拟）。",
+                "When checked, the before/after split (±45 days) anchors on the remediation date you set, aligning to a specific CAP; otherwise it uses the data's most-recent-period split (simulation).",
+            ),
+        )
+        cap_date = None
+        if cap_use_date and pd.notna(method_date_min) and pd.notna(method_date_max) and method_date_min < method_date_max:
+            default_cap_date = min(
+                max((method_date_max - pd.Timedelta(days=45)).date(), method_date_min.date()),
+                method_date_max.date(),
+            )
+            cap_date = st.date_input(
+                t("整改实施日期", "Remediation date"),
+                value=default_cap_date,
+                min_value=method_date_min.date(),
+                max_value=method_date_max.date(),
+                key="cap_date_input",
+            )
+        cap_effectiveness = compute_cap_effectiveness(method_finished, cap_date=cap_date)
         if cap_effectiveness.empty:
             st.info(t(f"{method_factory_name} 当前数据不足以形成前后周期对比。", f"{method_factory_name} does not have enough data for a before/after comparison."))
         else:
             cap_plot = cap_effectiveness.copy()
             cap_plot["process_view"] = cap_plot["factory_code"] + " / " + cap_plot["process"].astype(str)
+            cap_plot["sig_tag"] = np.where(cap_plot["significant"], t("显著改善", "Significant"), t("未达显著", "Not significant"))
             fig = px.bar(
                 cap_plot.sort_values("effectiveness_score"),
                 x="effectiveness_score",
                 y="process_view",
-                color="recurrence",
+                color="sig_tag",
+                color_discrete_map={t("显著改善", "Significant"): "#059669", t("未达显著", "Not significant"): "#d99a00"},
                 orientation="h",
-                labels={"effectiveness_score": t("有效性评分", "Effectiveness score"), "process_view": t("工厂 / 工序", "Factory / Process")},
+                labels={"effectiveness_score": t("有效性评分", "Effectiveness score"), "process_view": t("工厂 / 工序", "Factory / Process"), "sig_tag": t("显著性", "Significance")},
             )
             plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{method_factory} QC data。算法：对比整改前后周期不良率并计算有效性评分；分数越高代表改善越明显，复发项需要继续追踪。", f"Source: {method_factory} QC data. Logic: compares before/after defect rates and converts improvement into an effectiveness score; higher is better, recurring items need follow-up."))
+            cap_mode_cn = f"以整改日期 {cap_date} 为界，前后各45天" if cap_date else "按数据末期前后各45天（未指定整改日期，模拟口径）"
+            cap_mode_en = f"split at remediation date {cap_date}, ±45 days" if cap_date else "most-recent ±45-day split (no remediation date set, simulation)"
+            st.caption(t(
+                f"数据来源：{method_factory} QC data。算法：{cap_mode_cn}，对比工序整改前后不良率并做两比例 z 检验；绿色=改善达统计显著(p<0.05)，黄色=可能仅样本波动。有效性评分越高改善越明显。",
+                f"Source: {method_factory} QC data. Logic: {cap_mode_en}; compares per-process before/after defect rates with a two-proportion z-test; green = statistically significant improvement (p<0.05), yellow = possibly just sample noise. Higher effectiveness score means clearer improvement.",
+            ))
 
             with st.expander(t("整改效果明细（可选）", "Effectiveness detail (optional)")):
-                cap_view = cap_effectiveness.rename(
+                cap_view = cap_effectiveness[
+                    ["factory_code", "process", "before_rate", "after_rate", "effectiveness_score", "p_value", "significant", "recurrence", "next_decision"]
+                ].rename(
                     columns={
                         "factory_code": t("工厂", "Factory"),
                         "process": t("相关风险", "Related Risk"),
                         "before_rate": t("整改前不良率", "Before"),
                         "after_rate": t("整改后不良率", "After"),
                         "effectiveness_score": t("有效性评分", "Effectiveness Score"),
+                        "p_value": t("p 值", "p-value"),
+                        "significant": t("显著改善", "Significant"),
                         "recurrence": t("复发", "Recurrence"),
                         "next_decision": t("下一步", "Next Decision"),
                     }
@@ -3932,6 +4105,8 @@ with tabs[6]:
                         t("整改前不良率", "Before"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.1),
                         t("整改后不良率", "After"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.1),
                         t("有效性评分", "Effectiveness Score"): st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+                        t("p 值", "p-value"): st.column_config.NumberColumn(format="%.3f"),
+                        t("显著改善", "Significant"): st.column_config.CheckboxColumn(),
                     },
                     height=300,
                 )
