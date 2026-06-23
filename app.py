@@ -4,8 +4,10 @@ import datetime as dt
 import html
 import json
 import math
+import os
 import re
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Iterable
 
@@ -561,6 +563,20 @@ FACTORIES = {
         ],
     },
 }
+
+JIANDAOYUN_SOURCES = {
+    "ZX_FQC": {
+        "label": "Gloves / ZX FQC检验表",
+        "app_id": "660389615b25f1d03168b4c9",
+        "entry_id": "6722d8ffaff0bfe163575eee",
+        "directory": Path("POC_Raw_Data/04_Gloves/ZX_FQC"),
+        "flat_pattern": "ZX_FQC_Jiandaoyun_flat_*.csv",
+        "raw_pattern": "ZX_FQC_Jiandaoyun_raw_*.json",
+        "fields_pattern": "ZX_FQC_Jiandaoyun_fields_*.json",
+        "source_name": "Jiandaoyun Gloves / ZX FQC",
+    }
+}
+JIANDAOYUN_CACHE_VERSION = 2
 
 LEVEL_COLORS = {
     "Low": "#168a5b",
@@ -1152,6 +1168,11 @@ def read_excel_any(path: Path, **kwargs) -> pd.DataFrame:
     return pd.read_excel(path, engine=engine, **kwargs)
 
 
+def latest_matching_file(directory: Path, pattern: str) -> Path | None:
+    files = sorted(directory.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
 def configured_source_count() -> int:
     count = 0
     for cfg in FACTORIES.values():
@@ -1171,6 +1192,10 @@ def configured_source_count() -> int:
         ) or (
             intern_manifest is not None and (ROOT / intern_manifest).exists()
         ):
+            count += 1
+    for source in JIANDAOYUN_SOURCES.values():
+        directory = ROOT / source["directory"]
+        if directory.exists() and latest_matching_file(directory, source["flat_pattern"]) is not None:
             count += 1
     return count
 
@@ -1775,6 +1800,448 @@ def load_incoming_material() -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_all_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return load_finished_qc(), load_customer_voice(), load_incoming_material()
+
+
+def coalesce_columns(df: pd.DataFrame, names: list[str], default: object = np.nan) -> pd.Series:
+    result = pd.Series([default] * len(df), index=df.index, dtype=object)
+    for name in names:
+        candidates = [col for col in df.columns if col == name or col.startswith(f"{name} (")]
+        for col in candidates:
+            series = df[col]
+            mask = result.isna() | (result.astype(str).str.strip().isin(["", "nan", "None"]))
+            result = result.where(~mask, series)
+    return result
+
+
+def coalesce_numeric(df: pd.DataFrame, names: list[str], default: float = 0.0) -> pd.Series:
+    return pd.to_numeric(coalesce_columns(df, names, np.nan), errors="coerce").fillna(default)
+
+
+def normalize_jdy_result(value: object) -> str:
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none"}:
+        return t("未记录", "Unknown")
+    upper = text.upper()
+    if "PASS" in upper or "合格" in text:
+        return "PASS"
+    if "FAIL" in upper or "NG" in upper or "不合格" in text or "拒" in text:
+        return "FAIL"
+    return text
+
+
+def get_jdy_api_key(runtime_key: str = "") -> str:
+    if runtime_key and runtime_key.strip():
+        return runtime_key.strip()
+    for name in ["JIANDAOYUN_API_KEY", "JIANYUN_API_KEY", "JDY_API_KEY"]:
+        env_value = os.environ.get(name, "").strip()
+        if env_value:
+            return env_value
+        try:
+            secret_value = st.secrets.get(name, "")
+        except Exception:
+            secret_value = ""
+        if isinstance(secret_value, str) and secret_value.strip():
+            return secret_value.strip()
+    return ""
+
+
+def jdy_api_post(api_key: str, api_path: str, payload: dict) -> dict:
+    request = urllib.request.Request(
+        f"https://api.jiandaoyun.com{api_path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept-Charset": "UTF-8",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def flatten_jdy_records(records: list[dict], widgets: list[dict]) -> pd.DataFrame:
+    label_map: dict[str, str] = {}
+
+    def walk(items: list[dict]):
+        for widget in items or []:
+            label = widget.get("label") or widget.get("name") or widget.get("widgetName")
+            if label:
+                for key in ["name", "widgetName", "widget_id", "_id", "id"]:
+                    value = widget.get(key)
+                    if value:
+                        label_map[str(value)] = str(label)
+            for child_key in ["items", "widgets", "children", "sub_widgets"]:
+                children = widget.get(child_key)
+                if isinstance(children, list):
+                    walk(children)
+
+    walk(widgets)
+
+    def simplify(value: object) -> object:
+        if isinstance(value, dict):
+            for key in ["name", "text", "label", "value", "nickname", "username"]:
+                candidate = value.get(key)
+                if isinstance(candidate, (str, int, float, bool)):
+                    return candidate
+            if isinstance(value.get("dept_path"), list):
+                return " / ".join(map(str, value["dept_path"]))
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if isinstance(value, list):
+            return "; ".join(str(simplify(item)) for item in value)
+        return value
+
+    rows: list[dict] = []
+    for record in records:
+        row: dict[str, object] = {}
+        for key, value in record.items():
+            column = {
+                "_id": "data_id",
+                "creator": "创建人",
+                "updater": "更新人",
+                "deleter": "删除人",
+                "createTime": "创建时间",
+                "updateTime": "更新时间",
+                "deleteTime": "删除时间",
+                "flowState": "流程状态",
+                "appId": "app_id",
+                "entryId": "entry_id",
+            }.get(key, label_map.get(key, key))
+            if column in row:
+                column = f"{column} ({key})"
+            row[column] = simplify(value)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def normalize_jdy_flat(raw: pd.DataFrame, meta: dict) -> tuple[pd.DataFrame, dict]:
+    raw = raw.copy()
+    raw.columns = [str(col).strip() for col in raw.columns]
+    row_count = len(raw)
+    index = raw.index
+
+    source = JIANDAOYUN_SOURCES["ZX_FQC"]
+    critical = coalesce_numeric(raw, ["严重疵点汇总 （Critical）", "严重疵点汇总（Critical）"], 0)
+    major = coalesce_numeric(raw, ["大疵点汇总（Major）"], 0)
+    minor = coalesce_numeric(raw, ["小疵点汇总（Minor）"], 0)
+    section_defects = {
+        "GTD / 包装": (
+            coalesce_numeric(raw, ["GTD严重疵点（Critical）"], 0)
+            + coalesce_numeric(raw, ["GTD大疵点（Major）"], 0)
+            + coalesce_numeric(raw, ["包装小疵点（Minor）"], 0)
+        ),
+        "外观做工": (
+            coalesce_numeric(raw, ["外观严重疵点（Critical）"], 0)
+            + coalesce_numeric(raw, ["外观大疵点（Major）"], 0)
+            + coalesce_numeric(raw, ["外观小疵点（Minor）"], 0)
+        ),
+        "功能检查": (
+            coalesce_numeric(raw, ["功能严重疵点（Critical）"], 0)
+            + coalesce_numeric(raw, ["功能大疵点（Major）"], 0)
+            + coalesce_numeric(raw, ["功能小疵点（Minor）"], 0)
+        ),
+        "内里检查": (
+            coalesce_numeric(raw, ["内里严重疵点（Critical）"], 0)
+            + coalesce_numeric(raw, ["内里大疵点（Major）"], 0)
+            + coalesce_numeric(raw, ["内里小疵点（Minor）"], 0)
+        ),
+        "尺寸检查": (
+            coalesce_numeric(raw, ["尺寸严重疵点（Critical）"], 0)
+            + coalesce_numeric(raw, ["尺寸大疵点（Major）"], 0)
+            + coalesce_numeric(raw, ["尺寸小疵点（Minor）"], 0)
+        ),
+    }
+    section_total = pd.DataFrame(section_defects).sum(axis=1)
+    total_defects = (critical + major + minor).where((critical + major + minor) > 0, section_total)
+
+    inspection_qty = coalesce_numeric(
+        raw,
+        [
+            "检查数量 Sampling Size",
+            "抽样数 inspected qty",
+            "抽样数（G-I）inspected qty",
+            "抽样数（S-2）Inspected qty",
+        ],
+        0,
+    )
+    result_text = coalesce_columns(raw, ["检验结果 Result", "验货结果 Inspected results"], "")
+    normalized_result = result_text.map(normalize_jdy_result)
+
+    fqc = pd.DataFrame(
+        {
+            "source": source["source_name"],
+            "record_id": raw.get("data_id", pd.Series([""] * row_count, index=index)).astype(str),
+            "supplier": coalesce_columns(raw, ["供应商 Supplier"], ""),
+            "inspector": coalesce_columns(raw, ["检查人员 Inspector", "检验员 Inspector"], ""),
+            "date": pd.to_datetime(coalesce_columns(raw, ["验货日期", "查货日期时间 Inspected Date"], pd.NaT), errors="coerce"),
+            "cc": coalesce_columns(raw, ["CC"], "").astype(str),
+            "model": coalesce_columns(raw, ["Model"], "").astype(str),
+            "color": coalesce_columns(raw, ["颜色"], "").astype(str),
+            "po": coalesce_columns(raw, ["PO号 (不合并订单）", "订单号"], "").astype(str),
+            "po_qty": coalesce_numeric(raw, ["PO数量", "订单件数 TLT pcs"], 0),
+            "glove_type": coalesce_columns(raw, ["手套类型"], "").astype(str),
+            "order_type": coalesce_columns(raw, ["查货性质", "查货性质 Order type"], "").astype(str),
+            "sampling_size": inspection_qty,
+            "critical_defects": critical,
+            "major_defects": major,
+            "minor_defects": minor,
+            "defect_qty": total_defects,
+            "result": normalized_result,
+            "result_raw": result_text.astype(str),
+            "gtd_defects": section_defects["GTD / 包装"],
+            "visual_defects": section_defects["外观做工"],
+            "functional_defects": section_defects["功能检查"],
+            "liner_defects": section_defects["内里检查"],
+            "size_defects": section_defects["尺寸检查"],
+            "gtd_issue": coalesce_columns(raw, ["GTD疵点描述"], "").astype(str),
+            "visual_issue": coalesce_columns(raw, ["外观和做工疵点描述"], "").astype(str),
+            "functional_issue": coalesce_columns(raw, ["配件功能疵点描述"], "").astype(str),
+            "liner_issue": coalesce_columns(raw, ["内里做工疵点描述"], "").astype(str),
+            "size_issue": coalesce_columns(raw, ["尺寸问题备注"], "").astype(str),
+            "important_issue": coalesce_columns(raw, ["整单重要疵点备注"], "").astype(str),
+        }
+    )
+    fqc["defect_rate"] = safe_rate(fqc["defect_qty"], fqc["sampling_size"])
+    fqc["month"] = fqc["date"].dt.to_period("M").astype(str)
+    fqc["risk_level"] = fqc["defect_rate"].map(lambda value: risk_level(defect_risk_score(value, 4.0)))
+    fqc["has_defect"] = fqc["defect_qty"] > 0
+    fqc["is_fail"] = fqc["result"].astype(str).str.contains("FAIL", case=False, na=False)
+    meta["records"] = len(fqc)
+    meta["columns"] = raw.shape[1]
+    meta["period"] = source_date_range(fqc)
+    return fqc, meta
+
+
+@st.cache_data(show_spinner=False)
+def load_jiandaoyun_zx_fqc(cache_version: int = JIANDAOYUN_CACHE_VERSION) -> tuple[pd.DataFrame, dict]:
+    source = JIANDAOYUN_SOURCES["ZX_FQC"]
+    directory = ROOT / source["directory"]
+    flat_file = latest_matching_file(directory, source["flat_pattern"])
+    raw_file = latest_matching_file(directory, source["raw_pattern"]) if directory.exists() else None
+    fields_file = latest_matching_file(directory, source["fields_pattern"]) if directory.exists() else None
+    meta = {
+        "source_label": source["label"],
+        "source_name": source["source_name"],
+        "mode": "local_csv",
+        "cache_version": cache_version,
+        "flat_file": str(flat_file.relative_to(ROOT)) if flat_file else "",
+        "raw_file": str(raw_file.relative_to(ROOT)) if raw_file else "",
+        "fields_file": str(fields_file.relative_to(ROOT)) if fields_file else "",
+    }
+    if flat_file is None:
+        return pd.DataFrame(), meta
+    raw = pd.read_csv(flat_file, encoding="utf-8-sig", low_memory=False)
+    return normalize_jdy_flat(raw, meta)
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_version: int = JIANDAOYUN_CACHE_VERSION) -> tuple[pd.DataFrame, dict]:
+    source = JIANDAOYUN_SOURCES["ZX_FQC"]
+    fields_payload = {
+        "app_id": source["app_id"],
+        "entry_id": source["entry_id"],
+    }
+    fields_res = jdy_api_post(api_key, "/api/v5/app/entry/widget/list", fields_payload)
+    widgets = fields_res.get("widgets") or []
+
+    all_records: list[dict] = []
+    last_data_id = None
+    page_count = 0
+    while True:
+        payload = {
+            "app_id": source["app_id"],
+            "entry_id": source["entry_id"],
+            "filter": {},
+            "limit": 100,
+        }
+        if last_data_id:
+            payload["data_id"] = last_data_id
+        data_res = jdy_api_post(api_key, "/api/v5/app/entry/data/list", payload)
+        batch = data_res.get("data") or []
+        if not batch:
+            break
+        all_records.extend(batch)
+        page_count += 1
+        if len(batch) < 100:
+            break
+        last_data_id = batch[-1].get("_id")
+        if not last_data_id:
+            break
+
+    raw = flatten_jdy_records(all_records, widgets)
+    meta = {
+        "source_label": source["label"],
+        "source_name": source["source_name"],
+        "mode": "live_api",
+        "cache_version": cache_version,
+        "flat_file": "",
+        "raw_file": "",
+        "fields_file": "",
+        "app_id": source["app_id"],
+        "entry_id": source["entry_id"],
+        "pages": page_count,
+    }
+    fqc, meta = normalize_jdy_flat(raw, meta)
+    meta["pulled_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return fqc, meta
+
+
+def jdy_section_pareto(fqc: pd.DataFrame) -> pd.DataFrame:
+    if fqc.empty:
+        return pd.DataFrame()
+    rows = []
+    for section, column in [
+        ("GTD / 包装", "gtd_defects"),
+        ("外观做工", "visual_defects"),
+        ("功能检查", "functional_defects"),
+        ("内里检查", "liner_defects"),
+        ("尺寸检查", "size_defects"),
+    ]:
+        rows.append({"section": section, "defect_qty": fqc[column].sum()})
+    section = pd.DataFrame(rows).sort_values("defect_qty", ascending=False)
+    total = section["defect_qty"].sum()
+    if total <= 0:
+        return pd.DataFrame()
+    section["share"] = section["defect_qty"] / total
+    return section
+
+
+def jdy_cc_summary(fqc: pd.DataFrame) -> pd.DataFrame:
+    if fqc.empty:
+        return pd.DataFrame()
+    summary = (
+        fqc.groupby(["cc", "model"], dropna=False, as_index=False)
+        .agg(
+            records=("record_id", "count"),
+            po_count=("po", pd.Series.nunique),
+            sampling_size=("sampling_size", "sum"),
+            defect_qty=("defect_qty", "sum"),
+            fail_count=("is_fail", "sum"),
+            latest_date=("date", "max"),
+        )
+        .sort_values("defect_qty", ascending=False)
+    )
+    summary["defect_rate"] = safe_rate(summary["defect_qty"], summary["sampling_size"])
+    summary["fail_rate"] = safe_rate(summary["fail_count"], summary["records"])
+    summary["risk_score"] = summary["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
+    summary["risk_level"] = summary["risk_score"].map(risk_level)
+    return summary
+
+
+def build_jdy_ai_report(fqc: pd.DataFrame) -> pd.DataFrame:
+    if fqc.empty:
+        return pd.DataFrame()
+
+    rows: list[dict[str, object]] = []
+    source = "Jiandaoyun Gloves / ZX FQC"
+
+    def add(priority: str, topic: str, finding: str, evidence: str, action: str, owner: str = "QPS / QM"):
+        rows.append(
+            {
+                t("优先级", "Priority"): priority,
+                t("分析主题", "Analysis Topic"): topic,
+                t("AI发现", "AI Finding"): finding,
+                t("证据", "Evidence"): evidence,
+                t("建议行动", "Recommended Action"): action,
+                "Owner": owner,
+                t("数据来源", "Source"): source,
+            }
+        )
+
+    records = len(fqc)
+    sample_qty = fqc["sampling_size"].sum()
+    defect_qty = fqc["defect_qty"].sum()
+    defect_rate = defect_qty / sample_qty if sample_qty else 0
+    fail_count = int(fqc["is_fail"].sum())
+    fail_rate = fail_count / records if records else 0
+    cc_count = fqc["cc"].replace("", np.nan).dropna().nunique()
+    overall_priority = t("高", "High") if defect_rate >= 0.04 or fail_rate >= 0.08 else t("中", "Medium") if defect_qty > 0 else t("低", "Low")
+    add(
+        overall_priority,
+        t("整体FQC健康度", "Overall FQC Health"),
+        t("当前筛选范围存在可量化的FQC质量压力。", "The current scope has measurable FQC quality pressure."),
+        t(
+            f"记录 {records:,} 条；抽样 {sample_qty:,.0f}；疵点 {defect_qty:,.0f}；抽样疵点率 {defect_rate:.2%}；Fail {fail_count:,} 条（{fail_rate:.2%}）；覆盖 CC {cc_count:,} 个。",
+            f"{records:,} records; sampled {sample_qty:,.0f}; defects {defect_qty:,.0f}; defect density {defect_rate:.2%}; Fail {fail_count:,} ({fail_rate:.2%}); {cc_count:,} CCs.",
+        ),
+        t("先看 Top CC 和疵点位置集中项，再决定是否发起针对性CAP。", "Review Top CC and concentrated defect areas first, then decide whether targeted CAP is needed."),
+    )
+
+    section = jdy_section_pareto(fqc)
+    if not section.empty:
+        top_section = section.iloc[0]
+        add(
+            t("高", "High") if top_section["share"] >= 0.45 else t("中", "Medium"),
+            t("疵点集中位置", "Defect Concentration"),
+            t(f"疵点主要集中在 {top_section['section']}。", f"Defects are mainly concentrated in {top_section['section']}."),
+            t(
+                f"{top_section['section']} 疵点 {top_section['defect_qty']:,.0f}，占五类检查项 {top_section['share']:.1%}。",
+                f"{top_section['section']} has {top_section['defect_qty']:,.0f} defects, {top_section['share']:.1%} of the five check areas.",
+            ),
+            t("用该检查项下钻对应备注和图片证据，确认是作业方法、材料、包装还是判定标准问题。", "Drill into notes/photos for this area to separate method, material, packaging, or standard issues."),
+        )
+
+    cc_summary = jdy_cc_summary(fqc)
+    cc_risk = cc_summary[(cc_summary["sampling_size"] > 0) & (cc_summary["defect_qty"] > 0)].head(5)
+    for _, row in cc_risk.iterrows():
+        priority = t("高", "High") if row["defect_rate"] >= 0.04 or row["fail_count"] > 0 else t("中", "Medium")
+        add(
+            priority,
+            t("Top CC风险", "Top CC Risk"),
+            t(f"CC {row['cc']} 是当前筛选范围的重点风险款。", f"CC {row['cc']} is a priority risk style in the current scope."),
+            t(
+                f"Model {row['model']}；疵点 {row['defect_qty']:,.0f}；抽样 {row['sampling_size']:,.0f}；不良率 {row['defect_rate']:.2%}；Fail {row['fail_count']:,.0f}。",
+                f"Model {row['model']}; defects {row['defect_qty']:,.0f}; sampled {row['sampling_size']:,.0f}; defect density {row['defect_rate']:.2%}; Fail {row['fail_count']:,.0f}.",
+            ),
+            t("优先复盘该CC最近PO的检验备注、疵点图片和对应工序控制计划。", "Review recent PO notes, defect photos, and control plan for this CC first."),
+        )
+
+    critical_cc = (
+        fqc[fqc["critical_defects"] > 0]
+        .groupby(["cc", "model"], as_index=False)
+        .agg(critical_defects=("critical_defects", "sum"), records=("record_id", "count"), latest_date=("date", "max"))
+        .sort_values("critical_defects", ascending=False)
+        .head(3)
+    )
+    for _, row in critical_cc.iterrows():
+        add(
+            t("严重", "Critical"),
+            t("Critical疵点", "Critical Defects"),
+            t(f"CC {row['cc']} 有 Critical 疵点记录，需要单独闭环。", f"CC {row['cc']} has Critical defects and needs separate closure."),
+            t(
+                f"Critical {row['critical_defects']:,.0f}；记录 {row['records']:,} 条；最新日期 {row['latest_date']:%Y-%m-%d}。",
+                f"Critical {row['critical_defects']:,.0f}; {row['records']:,} records; latest date {row['latest_date']:%Y-%m-%d}.",
+            ),
+            t("确认是否已完成隔离、返工/报废、复检和客户风险评估。", "Confirm isolation, rework/scrap, re-inspection, and customer risk assessment."),
+        )
+
+    dated = fqc.dropna(subset=["date"]).copy()
+    if not dated.empty and dated["date"].max() - dated["date"].min() >= pd.Timedelta(days=45):
+        latest = dated["date"].max()
+        recent = dated[dated["date"] >= latest - pd.Timedelta(days=30)]
+        prior = dated[(dated["date"] < latest - pd.Timedelta(days=30)) & (dated["date"] >= latest - pd.Timedelta(days=60))]
+        if not recent.empty and not prior.empty:
+            recent_rate = recent["defect_qty"].sum() / recent["sampling_size"].sum() if recent["sampling_size"].sum() else 0
+            prior_rate = prior["defect_qty"].sum() / prior["sampling_size"].sum() if prior["sampling_size"].sum() else 0
+            delta = recent_rate - prior_rate
+            if abs(delta) >= 0.002:
+                add(
+                    t("高", "High") if delta > 0 else t("低", "Low"),
+                    t("近30天变化", "Recent 30-Day Change"),
+                    t("近30天质量有恶化信号。", "Recent 30 days show a worsening signal.") if delta > 0 else t("近30天质量有改善信号。", "Recent 30 days show an improvement signal."),
+                    t(
+                        f"近30天不良率 {recent_rate:.2%}；前30天 {prior_rate:.2%}；变化 {delta:+.2%}。",
+                        f"Recent 30-day defect rate {recent_rate:.2%}; prior 30-day {prior_rate:.2%}; delta {delta:+.2%}.",
+                    ),
+                    t("若恶化，锁定近期新增PO/款式/检查项；若改善，沉淀有效动作并持续监控。", "If worse, isolate recent PO/style/check-area changes; if better, capture effective actions and keep monitoring."),
+                )
+
+    report = pd.DataFrame(rows)
+    if report.empty:
+        return report
+    priority_order = {t("严重", "Critical"): 0, t("高", "High"): 1, t("中", "Medium"): 2, t("低", "Low"): 3}
+    report["_order"] = report[t("优先级", "Priority")].map(priority_order).fillna(9)
+    return report.sort_values("_order").drop(columns="_order").reset_index(drop=True)
 
 
 # ==========================================
@@ -2406,6 +2873,13 @@ def plotly_hover_labels() -> dict[str, str]:
         "delta_rate": t("不良率变化", "Defect-Rate Change"),
         "week": t("周", "Week"),
         "defects": t("疵点数", "Defects"),
+        "records": t("记录数", "Records"),
+        "result": t("检验结果", "Result"),
+        "sampling_size": t("抽样数", "Sampling Size"),
+        "fail_rate": t("Fail 占比", "Fail Share"),
+        "po_count": t("PO 数", "PO Count"),
+        "latest_date": t("最新日期", "Latest Date"),
+        "section": t("检查项", "Check Area"),
         "effectiveness_score": t("有效性评分", "Effectiveness Score"),
         "recurrence": t("复发状态", "Recurrence"),
     }
@@ -2431,6 +2905,10 @@ def plotly_hover_formats() -> dict[str, str]:
         t("批次数", "Batches"): ",.0f",
         t("问题批次", "Issue Batches"): ",.0f",
         t("来料问题数", "Material Issues"): ",.0f",
+        t("记录数", "Records"): ",.0f",
+        t("抽样数", "Sampling Size"): ",.0f",
+        t("PO 数", "PO Count"): ",.0f",
+        t("Fail 占比", "Fail Share"): ".2%",
         "RPM N0": ",.0f",
         "Intern Voice": ",.0f",
         t("RPM 变化", "RPM Change"): ",.0f",
@@ -2840,6 +3318,7 @@ tabs = st.tabs(
         t("05 Panel管理", "05 Panel"),
         t("06 过程/来料面板", "06 Process/Material Panel"),
         t("07 分析工具", "07 Analysis Tools"),
+        t("08 简道云报表", "08 Jiandaoyun Reports"),
     ]
 )
 
@@ -4109,4 +4588,386 @@ with tabs[6]:
                         t("显著改善", "Significant"): st.column_config.CheckboxColumn(),
                     },
                     height=300,
+                )
+
+
+# ==========================================
+# 14. Jiandaoyun report module
+# ==========================================
+with tabs[7]:
+    st.subheader(t("简道云报表 / ZX FQC AI分析", "Jiandaoyun Reports / ZX FQC AI Analysis"))
+
+    stored_jdy_key = get_jdy_api_key()
+    api_mode_label = t("实时 API", "Live API")
+    csv_mode_label = t("本地 CSV", "Local CSV")
+    default_jdy_mode = api_mode_label if stored_jdy_key else csv_mode_label
+    mode_col, key_col, refresh_col = st.columns([1.1, 1.3, 0.8])
+    with mode_col:
+        jdy_data_mode = st.radio(
+            t("数据模式", "Data Mode"),
+            [api_mode_label, csv_mode_label],
+            index=[api_mode_label, csv_mode_label].index(default_jdy_mode),
+            horizontal=True,
+            key="jdy_data_mode",
+        )
+
+    runtime_jdy_key = ""
+    with key_col:
+        if jdy_data_mode == api_mode_label and not stored_jdy_key:
+            runtime_jdy_key = st.text_input(
+                t("简道云 API Key（仅本次会话）", "Jiandaoyun API Key (session only)"),
+                type="password",
+                key="jdy_runtime_api_key",
+                help=t("不会写入代码或Git；多人部署请放到 Streamlit secrets。", "Not written to code or Git; use Streamlit secrets for shared deployment."),
+            )
+        elif jdy_data_mode == api_mode_label:
+            st.caption(t("已检测到本地或Cloud Secrets中的简道云 API Key。", "Jiandaoyun API Key detected from local or Cloud secrets."))
+        else:
+            st.caption(t("使用最近一次导出的本地 CSV，适合离线演示。", "Using the latest exported local CSV, good for offline demo."))
+
+    if "jdy_refresh_token" not in st.session_state:
+        st.session_state.jdy_refresh_token = 0
+    with refresh_col:
+        st.write("")
+        st.write("")
+        if st.button(t("刷新API", "Refresh API"), key="jdy_refresh_api_button", disabled=(jdy_data_mode != api_mode_label)):
+            st.session_state.jdy_refresh_token += 1
+            load_jiandaoyun_zx_fqc_api.clear()
+            load_jiandaoyun_zx_fqc.clear()
+            st.rerun()
+
+    jdy_api_key = get_jdy_api_key(runtime_jdy_key)
+    jdy_api_error = ""
+    if jdy_data_mode == api_mode_label and jdy_api_key:
+        try:
+            with st.spinner(t("正在实时读取简道云 ZX FQC 数据...", "Reading Jiandaoyun ZX FQC data via API...")):
+                jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc_api(jdy_api_key, st.session_state.jdy_refresh_token)
+        except Exception as exc:
+            jdy_api_error = str(exc)
+            jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc()
+    else:
+        jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc()
+
+    if jdy_data_mode == api_mode_label and not jdy_api_key:
+        st.warning(t("当前没有 API Key，已暂时使用本地 CSV。要实时调用，请输入临时 Key 或配置 Streamlit secrets。", "No API Key was found, so local CSV is used for now. Enter a session key or configure Streamlit secrets for live API."))
+    if jdy_api_error:
+        st.warning(t(f"实时 API 调用失败，已回退到本地 CSV。错误：{jdy_api_error}", f"Live API failed, falling back to local CSV. Error: {jdy_api_error}"))
+
+    if jdy_fqc.empty:
+        st.info(
+            t(
+                "还没有检测到简道云 ZX FQC 数据。请使用实时 API，或先把简道云数据导出到 POC_Raw_Data/04_Gloves/ZX_FQC。",
+                "No Jiandaoyun ZX FQC data was found. Use Live API or export data to POC_Raw_Data/04_Gloves/ZX_FQC first.",
+            )
+        )
+        st.caption(
+            t(
+                "目标文件名格式：ZX_FQC_Jiandaoyun_flat_YYYYMMDD.csv。",
+                "Expected file name: ZX_FQC_Jiandaoyun_flat_YYYYMMDD.csv.",
+            )
+        )
+    else:
+        source_mode_text = t("实时 API", "Live API") if jdy_meta.get("mode") == "live_api" else t("本地 CSV", "Local CSV")
+        st.caption(
+            t(
+                f"数据来源：{jdy_meta['source_name']}；模式：{source_mode_text}；记录 {jdy_meta.get('records', len(jdy_fqc)):,} 条；周期 {jdy_meta.get('period', '-')}；文件：{jdy_meta.get('flat_file') or 'API实时读取'}。",
+                f"Source: {jdy_meta['source_name']}; mode: {source_mode_text}; {jdy_meta.get('records', len(jdy_fqc)):,} records; period {jdy_meta.get('period', '-')}; file: {jdy_meta.get('flat_file') or 'Live API'}.",
+            )
+        )
+
+        filter_cols = st.columns([1.2, 1, 1.2])
+        valid_jdy_dates = jdy_fqc["date"].dropna()
+        if valid_jdy_dates.empty:
+            jdy_start, jdy_end = None, None
+        else:
+            jdy_min = valid_jdy_dates.min().date()
+            jdy_max = valid_jdy_dates.max().date()
+            with filter_cols[0]:
+                jdy_date_range = st.date_input(
+                    t("简道云验货日期", "Jiandaoyun Inspection Date"),
+                    value=(jdy_min, jdy_max),
+                    min_value=jdy_min,
+                    max_value=jdy_max,
+                    key="jdy_fqc_date_range",
+                )
+            if isinstance(jdy_date_range, tuple) and len(jdy_date_range) == 2:
+                jdy_start, jdy_end = jdy_date_range
+            else:
+                jdy_start, jdy_end = jdy_min, jdy_max
+
+        result_options = sorted([str(v) for v in jdy_fqc["result"].dropna().unique()])
+        with filter_cols[1]:
+            selected_jdy_results = st.multiselect(
+                t("检验结果", "Inspection Result"),
+                result_options,
+                default=result_options,
+                key="jdy_fqc_result_filter",
+            )
+        with filter_cols[2]:
+            jdy_cc_search = st.text_input(t("CC / Model / PO 搜索", "CC / Model / PO Search"), "", key="jdy_fqc_search")
+
+        jdy_view = jdy_fqc.copy()
+        if jdy_start is not None and jdy_end is not None:
+            jdy_view = jdy_view[
+                (jdy_view["date"].dt.date >= jdy_start)
+                & (jdy_view["date"].dt.date <= jdy_end)
+            ]
+        if selected_jdy_results:
+            jdy_view = jdy_view[jdy_view["result"].astype(str).isin(selected_jdy_results)]
+        if jdy_cc_search.strip():
+            needle = jdy_cc_search.strip().lower()
+            jdy_view = jdy_view[
+                jdy_view["cc"].astype(str).str.lower().str.contains(needle, na=False)
+                | jdy_view["model"].astype(str).str.lower().str.contains(needle, na=False)
+                | jdy_view["po"].astype(str).str.lower().str.contains(needle, na=False)
+            ]
+
+        if jdy_view.empty:
+            st.warning(t("当前简道云筛选条件下没有数据。", "No Jiandaoyun data under the current filters."))
+        else:
+            ai_report = build_jdy_ai_report(jdy_view)
+            st.subheader(t("AI分析报告｜自动生成", "AI Analysis Report | Auto Generated"))
+            if ai_report.empty:
+                st.info(t("当前筛选范围不足以生成分析报告。", "The current scope is not enough to generate an analysis report."))
+            else:
+                dataframe_with_format(ai_report, height=320)
+                st.caption(
+                    t(
+                        "报告基于简道云 ZX FQC 的抽样数、Critical/Major/Minor、PASS/FAIL、CC、Model、PO和日期自动生成；用于快速定位行动方向，不替代现场复核。",
+                        "The report is generated from sampled qty, Critical/Major/Minor, PASS/FAIL, CC, Model, PO, and dates in Jiandaoyun ZX FQC; use it to identify action direction, not to replace on-site verification.",
+                    )
+                )
+                st.download_button(
+                    t("下载AI分析报告 CSV", "Download AI Report CSV"),
+                    data=ai_report.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"ZX_FQC_AI_Report_{dt.date.today():%Y%m%d}.csv",
+                    mime="text/csv",
+                    key="download_jdy_ai_report",
+                )
+
+            jdy_records = len(jdy_view)
+            jdy_sampling = jdy_view["sampling_size"].sum()
+            jdy_defects = jdy_view["defect_qty"].sum()
+            jdy_defect_rate = jdy_defects / jdy_sampling if jdy_sampling else 0
+            jdy_fail_rate = jdy_view["is_fail"].mean() if jdy_records else 0
+            jdy_cc_count = jdy_view["cc"].replace("", np.nan).dropna().nunique()
+            jdy_latest = jdy_view["date"].max()
+            render_kpi_cards(
+                [
+                    {
+                        "label": t("简道云记录数", "Jiandaoyun Records"),
+                        "value": compact_num(jdy_records),
+                        "note": t("ZX FQC 表单明细", "ZX FQC form records"),
+                        "level": "low",
+                    },
+                    {
+                        "label": t("抽样检验量", "Sampled Qty"),
+                        "value": compact_num(jdy_sampling),
+                        "note": t("来自 Sampling Size 字段", "From Sampling Size fields"),
+                        "level": "medium" if jdy_sampling <= 0 else "low",
+                    },
+                    {
+                        "label": t("疵点总数", "Total Defects"),
+                        "value": compact_num(jdy_defects),
+                        "note": t("Critical + Major + Minor", "Critical + Major + Minor"),
+                        "level": "high" if jdy_defects > 0 else "low",
+                    },
+                    {
+                        "label": t("抽样疵点率", "Sample Defect Density"),
+                        "value": pct(jdy_defect_rate),
+                        "note": t("疵点数 / 抽样检验量，不等同于Fail率", "Defects / sampled qty, not equal to Fail share"),
+                        "level": "critical" if jdy_defect_rate >= 0.04 else "medium",
+                    },
+                    {
+                        "label": t("Fail 记录占比", "Fail Record Share"),
+                        "value": pct(jdy_fail_rate),
+                        "note": t("按检验结果 PASS / FAIL", "By PASS / FAIL result"),
+                        "level": "critical" if jdy_fail_rate >= 0.08 else "medium",
+                    },
+                    {
+                        "label": t("覆盖 CC", "Covered CC"),
+                        "value": compact_num(jdy_cc_count),
+                        "note": t(f"最新记录 {jdy_latest:%Y-%m-%d}" if pd.notna(jdy_latest) else "无日期", f"Latest {jdy_latest:%Y-%m-%d}" if pd.notna(jdy_latest) else "No date"),
+                        "level": "low",
+                    },
+                ]
+            )
+
+            left, right = st.columns(2)
+            with left:
+                st.subheader(t("月度质量趋势｜简道云 FQC", "Monthly Quality Trend | Jiandaoyun FQC"))
+                monthly = (
+                    jdy_view.dropna(subset=["date"])
+                    .groupby("month", as_index=False)
+                    .agg(
+                        records=("record_id", "count"),
+                        sampling_size=("sampling_size", "sum"),
+                        defect_qty=("defect_qty", "sum"),
+                        fail_count=("is_fail", "sum"),
+                    )
+                )
+                if monthly.empty:
+                    st.info(t("当前没有可按月展示的验货日期。", "No inspection dates available for monthly view."))
+                else:
+                    monthly["defect_rate"] = safe_rate(monthly["defect_qty"], monthly["sampling_size"])
+                    monthly["fail_rate"] = safe_rate(monthly["fail_count"], monthly["records"])
+                    fig = go.Figure()
+                    fig.add_bar(
+                        x=monthly["month"],
+                        y=monthly["records"],
+                        name=t("记录数", "Records"),
+                        marker_color="#93c5fd",
+                        yaxis="y2",
+                        opacity=0.58,
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=monthly["month"],
+                            y=monthly["defect_rate"],
+                            name=t("抽样疵点率", "Defect Density"),
+                            mode="lines+markers",
+                            line=dict(color="#c01048", width=3),
+                        )
+                    )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=monthly["month"],
+                            y=monthly["fail_rate"],
+                            name=t("Fail占比", "Fail Share"),
+                            mode="lines+markers",
+                            line=dict(color="#d97706", width=2, dash="dot"),
+                        )
+                    )
+                    fig.update_layout(
+                        yaxis=dict(title=t("疵点率 / Fail占比", "Density / Fail share"), tickformat=".1%"),
+                        yaxis2=dict(title=t("记录数", "Records"), overlaying="y", side="right", showgrid=False),
+                    )
+                    plot_chart(fig, 390)
+                    st.caption(t("数据来源：Jiandaoyun Gloves / ZX FQC。算法：按验货月份聚合，抽样疵点率=疵点汇总/抽样检验量，Fail占比=FAIL记录数/记录数。", "Source: Jiandaoyun Gloves / ZX FQC. Logic: grouped by inspection month; defect density = total defects / sampled qty; fail share = FAIL records / records."))
+
+            with right:
+                st.subheader(t("检验结果分布｜PASS / FAIL", "Inspection Result Mix | PASS / FAIL"))
+                result_mix = (
+                    jdy_view.groupby("result", as_index=False)
+                    .agg(records=("record_id", "count"), defect_qty=("defect_qty", "sum"))
+                    .sort_values("records", ascending=False)
+                )
+                fig = px.bar(
+                    result_mix,
+                    x="result",
+                    y="records",
+                    color="result",
+                    text="records",
+                    color_discrete_map={"PASS": "#059669", "FAIL": "#c01048", t("未记录", "Unknown"): "#d99a00"},
+                    labels={"result": t("检验结果", "Result"), "records": t("记录数", "Records")},
+                )
+                fig.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
+                plot_chart(fig, 390)
+                st.caption(t("数据来源：Jiandaoyun Gloves / ZX FQC。用于快速判断当前筛选范围内 PASS / FAIL 结构。", "Source: Jiandaoyun Gloves / ZX FQC. Use this to read the PASS / FAIL structure of the current scope."))
+
+            left, right = st.columns([1, 1.05])
+            with left:
+                st.subheader(t("疵点位置 Pareto｜五类检查项", "Defect Pareto | Five Check Areas"))
+                section = jdy_section_pareto(jdy_view)
+                if section.empty:
+                    st.info(t("当前筛选范围没有疵点位置数据。", "No defect-section data under the current filters."))
+                else:
+                    fig = px.bar(
+                        section.sort_values("defect_qty", ascending=True),
+                        x="defect_qty",
+                        y="section",
+                        orientation="h",
+                        text="defect_qty",
+                        color="defect_qty",
+                        color_continuous_scale=["#eaf7f4", "#ffd166", "#c01048"],
+                        labels={"section": t("检查项", "Check Area"), "defect_qty": t("疵点数", "Defects")},
+                    )
+                    fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False)
+                    plot_chart(fig, 390)
+                    st.caption(t("数据来源：Jiandaoyun Gloves / ZX FQC。算法：分别汇总 GTD/包装、外观做工、功能、内里、尺寸五类检查项的 Critical/Major/Minor 疵点。", "Source: Jiandaoyun Gloves / ZX FQC. Logic: sums Critical/Major/Minor defects by GTD/packing, visual, function, liner, and size areas."))
+
+            with right:
+                st.subheader(t("Top CC 风险｜抽样疵点率", "Top CC Risk | Sample Defect Density"))
+                cc_summary = jdy_cc_summary(jdy_view)
+                cc_plot = cc_summary[(cc_summary["sampling_size"] > 0) & (cc_summary["defect_qty"] > 0)].head(12)
+                if cc_plot.empty:
+                    st.info(t("当前筛选范围没有可排序的 CC 疵点数据。", "No rankable CC defect data under the current filters."))
+                else:
+                    cc_plot = cc_plot.copy()
+                    cc_plot["cc_view"] = cc_plot["cc"].astype(str) + " / " + cc_plot["model"].astype(str).str.slice(0, 26)
+                    fig = px.scatter(
+                        cc_plot,
+                        x="defect_rate",
+                        y="cc_view",
+                        size="sampling_size",
+                        color="risk_level",
+                        color_discrete_map=LEVEL_COLORS,
+                        hover_data=["records", "po_count", "defect_qty", "fail_rate", "latest_date"],
+                        labels={"defect_rate": t("抽样疵点率", "Sample Defect Density"), "cc_view": "CC / Model", "risk_level": t("风险等级", "Risk Level")},
+                    )
+                    fig.update_xaxes(tickformat=".1%")
+                    plot_chart(fig, 390)
+                    st.caption(t("数据来源：Jiandaoyun Gloves / ZX FQC。算法：按 CC + Model 聚合，抽样疵点率=疵点汇总/抽样检验量；点越大代表抽样量越大。", "Source: Jiandaoyun Gloves / ZX FQC. Logic: grouped by CC + Model; sample defect density = defects / sampled qty; larger points mean larger sample size."))
+
+            with st.expander(t("简道云明细", "Jiandaoyun Detail"), expanded=False):
+                detail_cols = [
+                    "date",
+                    "supplier",
+                    "cc",
+                    "model",
+                    "color",
+                    "po",
+                    "order_type",
+                    "sampling_size",
+                    "critical_defects",
+                    "major_defects",
+                    "minor_defects",
+                    "defect_qty",
+                    "defect_rate",
+                    "result",
+                    "important_issue",
+                    "gtd_issue",
+                    "visual_issue",
+                    "functional_issue",
+                    "liner_issue",
+                    "size_issue",
+                    "record_id",
+                ]
+                detail = jdy_view[detail_cols].sort_values("date", ascending=False).rename(
+                    columns={
+                        "date": t("验货日期", "Inspection Date"),
+                        "supplier": t("供应商", "Supplier"),
+                        "cc": "CC",
+                        "model": "Model",
+                        "color": t("颜色", "Color"),
+                        "po": "PO",
+                        "order_type": t("查货性质", "Order Type"),
+                        "sampling_size": t("抽样数", "Sampling Size"),
+                        "critical_defects": "Critical",
+                        "major_defects": "Major",
+                        "minor_defects": "Minor",
+                        "defect_qty": t("疵点数", "Defects"),
+                        "defect_rate": t("不良率", "Defect Rate"),
+                        "result": t("检验结果", "Result"),
+                        "important_issue": t("整单重要备注", "Important Note"),
+                        "gtd_issue": "GTD",
+                        "visual_issue": t("外观做工", "Visual"),
+                        "functional_issue": t("功能", "Function"),
+                        "liner_issue": t("内里", "Liner"),
+                        "size_issue": t("尺寸", "Size"),
+                        "record_id": "data_id",
+                    }
+                )
+                dataframe_with_format(
+                    detail,
+                    column_config={
+                        t("验货日期", "Inspection Date"): st.column_config.DateColumn(format="YYYY-MM-DD"),
+                        t("抽样数", "Sampling Size"): st.column_config.NumberColumn(format="%.0f"),
+                        "Critical": st.column_config.NumberColumn(format="%.0f"),
+                        "Major": st.column_config.NumberColumn(format="%.0f"),
+                        "Minor": st.column_config.NumberColumn(format="%.0f"),
+                        t("疵点数", "Defects"): st.column_config.NumberColumn(format="%.0f"),
+                        t("不良率", "Defect Rate"): st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=0.1),
+                    },
+                    height=420,
                 )
