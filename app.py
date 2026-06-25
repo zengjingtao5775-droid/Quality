@@ -637,6 +637,90 @@ def clean_numeric_series(series: pd.Series) -> pd.Series:
     return series.map(clean_numeric).astype(float)
 
 
+EN_COLOR_REPLACEMENTS = [
+    ("白袜棕条纹", "White Sock / Brown Stripe"),
+    ("黑白红条纹", "Black / White / Red Stripe"),
+    ("白色藏青条纹", "White / Navy Stripe"),
+    ("白色米条纹", "White / Beige Stripe"),
+    ("白色绿条纹", "White / Green Stripe"),
+    ("白袜米条纹", "White Sock / Beige Stripe"),
+    ("黑白条纹", "Black / White Stripe"),
+    ("红白条纹", "Red / White Stripe"),
+    ("白色配藏青", "White / Navy"),
+    ("白色配浅蓝", "White / Light Blue"),
+    ("白色配蓝色", "White / Blue"),
+    ("白色配深蓝", "White / Dark Blue"),
+    ("深灰绿色", "Dark Gray Green"),
+    ("浅藏青", "Light Navy"),
+    ("深藏青", "Dark Navy"),
+    ("钴蓝色", "Cobalt Blue"),
+    ("蓝绿色", "Blue Green"),
+    ("灰绿色", "Gray Green"),
+    ("卡其绿", "Khaki Green"),
+    ("本白色", "Off-white"),
+    ("荧光橘", "Neon Orange"),
+    ("雪松木色", "Cedar"),
+    ("深肤色", "Dark Nude"),
+    ("燕麦色", "Oatmeal"),
+    ("浅咖色", "Light Brown"),
+    ("浅橘色", "Light Orange"),
+    ("浅灰色", "Light Gray"),
+    ("深灰色", "Dark Gray"),
+    ("浅蓝色", "Light Blue"),
+    ("深蓝色", "Dark Blue"),
+    ("桃红色", "Rose Pink"),
+    ("深灰", "Dark Gray"),
+    ("浅灰", "Light Gray"),
+    ("灰蓝", "Gray Blue"),
+    ("深蓝", "Dark Blue"),
+    ("浅蓝", "Light Blue"),
+    ("墨绿", "Dark Green"),
+    ("淡紫", "Light Purple"),
+    ("色纺白", "Heather White"),
+    ("色纺黑", "Heather Black"),
+    ("大独角兽", "Large Unicorn"),
+    ("小爱心", "Small Heart"),
+    ("黑色", "Black"),
+    ("白色", "White"),
+    ("灰色", "Gray"),
+    ("蓝色", "Blue"),
+    ("绿色", "Green"),
+    ("紫色", "Purple"),
+    ("红色", "Red"),
+    ("黄色", "Yellow"),
+    ("粉色", "Pink"),
+    ("橘色", "Orange"),
+    ("棕色", "Brown"),
+    ("米色", "Beige"),
+    ("卡其", "Khaki"),
+    ("条纹", " Stripe"),
+    ("浅黄", "Light Yellow"),
+    ("藏青", "Navy"),
+    ("黑", "Black"),
+    ("白", "White"),
+    ("灰", "Gray"),
+    ("蓝", "Blue"),
+    ("兰", "Blue"),
+    ("绿", "Green"),
+    ("紫", "Purple"),
+    ("红", "Red"),
+    ("黄", "Yellow"),
+    ("粉", "Pink"),
+    ("米", "Beige"),
+]
+
+
+def localize_product_label(value: object) -> str:
+    text = str(value).strip()
+    if st.session_state.lang == "中文" or not text:
+        return text
+    for source, translated in EN_COLOR_REPLACEMENTS:
+        text = text.replace(source, translated)
+    text = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", text)
+    text = text.replace("/", " / ").replace("+", " + ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def extract_product_key(value: object) -> str:
     match = re.search(r"\d+", str(value))
     return match.group(0) if match else ""
@@ -3206,9 +3290,12 @@ def plotly_hover_labels() -> dict[str, str]:
         "customer_signal": t("客户端风险信号", "Client Risk Signal"),
         "risk_zone": t("风险分区", "Risk Zone"),
         "breakdown": t("拆分维度", "Breakdown"),
+        "breakdown_display": t("颜色 / 产品", "Color / Product"),
+        "variant_count": t("颜色 / 产品数", "Color / Product Count"),
         "axis_note": t("坐标说明", "Axis Note"),
         "product_code": t("CC / 款式", "CC / Style"),
         "product_label": t("产品名称 / 颜色", "Product / Color"),
+        "product_label_display": t("产品名称 / 颜色", "Product / Color"),
         "work_order": t("工单", "Work Order"),
         "material_type": t("材料类型", "Material Type"),
         "material_issues": t("来料问题数", "Material Issues"),
@@ -3484,7 +3571,7 @@ def product_alert_cards(product_summary: pd.DataFrame, limit: int = 4) -> list[d
                 "level": level,
                 "pill": risk_level_text(row.get("risk_level", "Medium")),
                 "kicker": f"{row.get('factory_code', '')} / CC {row.get('product_code', '-')}",
-                "title": str(row.get("product_label", row.get("voice_product_name", "")))[:46],
+                "title": localize_product_label(row.get("product_label", row.get("voice_product_name", "")))[:46],
                 "value": f"{row.get('risk_score', 0):.1f}",
                 "evidence": "<br>".join(evidence),
             }
@@ -3572,10 +3659,31 @@ def build_product_qc_breakdown(
     )
     breakdown["defect_rate"] = safe_rate(breakdown["defect_qty"], breakdown["qty_inspected"])
     breakdown["cc_label"] = source["factory_code"].iloc[0] + " / " + breakdown["product_code"]
+    breakdown["breakdown_display"] = (
+        breakdown["breakdown"].map(localize_product_label)
+        if split_column == "product_label"
+        else breakdown["breakdown"]
+    )
     breakdown["cc_total_defects"] = breakdown.groupby("product_code")["defect_qty"].transform("sum")
     breakdown["cc_order"] = breakdown["product_code"].map({code: rank for rank, code in enumerate(top_codes)})
     breakdown = breakdown.sort_values(["cc_order", "defect_qty"], ascending=[False, True])
     return breakdown, top_codes
+
+
+def build_product_cc_totals(breakdown: pd.DataFrame) -> pd.DataFrame:
+    if breakdown.empty:
+        return pd.DataFrame()
+    totals = (
+        breakdown.groupby(["product_code", "cc_label", "cc_order"], as_index=False)
+        .agg(
+            defect_qty=("defect_qty", "sum"),
+            qty_inspected=("qty_inspected", "sum"),
+            variant_count=("breakdown", pd.Series.nunique),
+        )
+        .sort_values("cc_order", ascending=False)
+    )
+    totals["defect_rate"] = safe_rate(totals["defect_qty"], totals["qty_inspected"])
+    return totals
 
 
 def build_product_qc_provenance(finished: pd.DataFrame, product_codes: list[str]) -> pd.DataFrame:
@@ -3614,6 +3722,7 @@ def build_product_qc_provenance(finished: pd.DataFrame, product_codes: list[str]
         how="left",
     )
     detail["top_defect"] = detail["top_defect"].fillna("-")
+    detail["product_label"] = detail["product_label"].map(localize_product_label)
     order = {code: rank for rank, code in enumerate(product_codes)}
     detail["cc_order"] = detail["product_code"].map(order)
     return detail.sort_values(["cc_order", "defect_qty"], ascending=[True, False]).drop(columns=["cc_order"])
@@ -4271,6 +4380,8 @@ with tabs[3]:
     available_product_factories = set(product_finished_scope["factory_code"].dropna().astype(str))
     available_product_factories.update(product_voice_scope["factory_code"].dropna().astype(str))
     product_factory_options = [code for code in FACTORIES if code in available_product_factories]
+    if len(selected_factories) == 1 and selected_factories[0] in product_factory_options:
+        st.session_state["product_factory_filter"] = selected_factories[0]
     if st.session_state.get("product_factory_filter") not in product_factory_options:
         st.session_state.pop("product_factory_filter", None)
 
@@ -4306,8 +4417,8 @@ with tabs[3]:
         )
         st.caption(
             t(
-                f"当前产品分析范围：{product_factory_name}｜QC记录 {len(product_finished):,} 条｜客户端记录 {len(product_voice):,} 条｜产品 {len(product_factory_summary):,} 个｜数据周期 {product_period}。工厂选择仅影响04产品面板，日期、检验阶段、工序和款式沿用左侧筛选。",
-                f"Current product scope: {product_factory_name} | {len(product_finished):,} QC records | {len(product_voice):,} client records | {len(product_factory_summary):,} products | {product_period}. Factory selection only affects 04 Product Panel; date, stage, process, and product follow the sidebar filters.",
+                f"当前产品分析范围：{product_factory_name}｜QC记录 {len(product_finished):,} 条｜客户端记录 {len(product_voice):,} 条｜产品 {len(product_factory_summary):,} 个｜数据周期 {product_period}。左侧仅选一个工厂时会自动同步；多选时可在此单独选择分析工厂。",
+                f"Current product scope: {product_factory_name} | {len(product_finished):,} QC records | {len(product_voice):,} client records | {len(product_factory_summary):,} products | {product_period}. A single factory selected in the sidebar syncs automatically; with multiple factories, choose the analysis factory here.",
             )
         )
         product_logic_cn = (
@@ -4336,6 +4447,7 @@ with tabs[3]:
             unsafe_allow_html=True,
         )
         product_risk_view, x_cap, y_cap = prepare_product_risk_view(product_factory_summary)
+        product_risk_view["product_label_display"] = product_risk_view["product_label"].map(localize_product_label)
         left, right = st.columns([1.2, 1])
         with left:
             zone_colors = {
@@ -4353,7 +4465,8 @@ with tabs[3]:
                 hover_data={
                     "factory_name": True,
                     "product_code": True,
-                    "product_label": True,
+                    "product_label": False,
+                    "product_label_display": True,
                     "qc_rate": ":.2%",
                     "qc_rate_plot": False,
                     "customer_signal": ":.1f",
@@ -4408,39 +4521,168 @@ with tabs[3]:
                 split_column,
                 top_n=5,
             )
-            fig = px.bar(
-                product_breakdown,
-                x="defect_qty",
-                y="cc_label",
-                color="breakdown",
-                orientation="h",
-                text="defect_qty",
-                barmode="stack",
-                hover_data={
-                    "product_code": True,
-                    "breakdown": True,
-                    "record_count": ":,.0f",
-                    "qty_inspected": ":,.0f",
-                    "defect_qty": ":,.0f",
-                    "defect_rate": ":.2%",
-                    "cc_label": False,
-                    "cc_total_defects": False,
-                    "cc_order": False,
-                },
-                labels={
-                    "defect_qty": t("疵点数", "Defects"),
-                    "cc_label": "CC",
-                    "breakdown": split_label,
-                },
-            )
-            fig.update_traces(texttemplate="%{text:.0f}", textposition="inside", insidetextanchor="middle", textfont_color="#ffffff")
-            plot_chart(fig, 430)
-            st.caption(
-                t(
-                    f"数据来源：{product_factory} QC data（原始文件字段：款式、颜色、质检类型、不良工序、检验数量、疵点个数、疵点类型）。每条柱代表一个CC，每个色块按“{split_label}”拆分；色块数值 = 当前筛选范围内原始“疵点个数”求和，不是风险分。",
-                    f"Source: {product_factory} QC data (raw fields: style, product/color, inspection type, defect process, inspected quantity, defect quantity, and defect type). Each bar is one CC and segments use {split_label}; segment values are sums of raw defect quantities, not risk scores.",
+            if split_column == "product_label":
+                cc_totals = build_product_cc_totals(product_breakdown)
+                fig = px.bar(
+                    cc_totals,
+                    x="defect_qty",
+                    y="cc_label",
+                    orientation="h",
+                    text="defect_qty",
+                    color="defect_rate",
+                    color_continuous_scale=["#8bd3c7", "#ffd166", "#c01048"],
+                    hover_data={
+                        "product_code": True,
+                        "variant_count": ":,.0f",
+                        "qty_inspected": ":,.0f",
+                        "defect_qty": ":,.0f",
+                        "defect_rate": ":.2%",
+                        "cc_label": False,
+                        "cc_order": False,
+                    },
+                    labels={
+                        "defect_qty": t("疵点数", "Defects"),
+                        "cc_label": "CC",
+                        "defect_rate": t("不良率", "Defect Rate"),
+                    },
                 )
-            )
+                fig.update_traces(
+                    texttemplate="%{text:,.0f}",
+                    textposition="inside",
+                    insidetextanchor="middle",
+                    textfont_color="#ffffff",
+                )
+                fig.update_layout(coloraxis_showscale=False)
+                plot_chart(fig, 300)
+
+                color_detail_key = f"product_color_detail_{product_factory}"
+                if st.session_state.get(color_detail_key) not in top_product_codes:
+                    st.session_state.pop(color_detail_key, None)
+                selected_color_cc = st.selectbox(
+                    t("查看CC颜色明细", "Inspect CC color detail"),
+                    top_product_codes,
+                    format_func=lambda code: f"{product_factory} / {code}",
+                    key=color_detail_key,
+                )
+                color_detail = product_breakdown[
+                    product_breakdown["product_code"] == selected_color_cc
+                ].copy()
+                color_detail = color_detail.sort_values("defect_qty", ascending=True)
+                detail_height = min(620, max(260, 90 + len(color_detail) * 38))
+                detail_fig = px.bar(
+                    color_detail,
+                    x="defect_qty",
+                    y="breakdown_display",
+                    orientation="h",
+                    text="defect_qty",
+                    color="defect_rate",
+                    color_continuous_scale=["#8bd3c7", "#ffd166", "#c01048"],
+                    hover_data={
+                        "breakdown": False,
+                        "record_count": ":,.0f",
+                        "qty_inspected": ":,.0f",
+                        "defect_qty": ":,.0f",
+                        "defect_rate": ":.2%",
+                        "product_code": False,
+                        "cc_label": False,
+                        "cc_total_defects": False,
+                        "cc_order": False,
+                    },
+                    labels={
+                        "defect_qty": t("疵点数", "Defects"),
+                        "breakdown_display": t("颜色 / 产品", "Color / Product"),
+                        "defect_rate": t("不良率", "Defect Rate"),
+                    },
+                )
+                detail_fig.update_traces(
+                    texttemplate="%{text:,.0f}",
+                    textposition="outside",
+                    cliponaxis=False,
+                )
+                detail_fig.update_layout(
+                    coloraxis_showscale=False,
+                    title=dict(
+                        text=t(
+                            f"{product_factory} / {selected_color_cc} 颜色明细",
+                            f"{product_factory} / {selected_color_cc} color detail",
+                        ),
+                        x=0,
+                        font=dict(size=15),
+                    ),
+                )
+                if not color_detail.empty and color_detail["defect_qty"].max() > 0:
+                    detail_fig.update_xaxes(range=[0, color_detail["defect_qty"].max() * 1.18])
+                plot_chart(detail_fig, detail_height)
+                st.caption(
+                    t(
+                        f"上图先按CC汇总总疵点数；下图把所选CC的每个颜色/产品变体单独展示。数据来自 {product_factory} QC原始字段“疵点个数”，不是风险分。",
+                        f"The upper chart ranks total defects by CC; the lower chart shows every color/product variant for the selected CC. Values are sums of the raw defect-quantity field from {product_factory} QC data, not risk scores.",
+                    )
+                )
+                with st.expander(t("所选CC颜色数据", "Selected CC color data"), expanded=False):
+                    color_table = color_detail[
+                        ["breakdown_display", "record_count", "qty_inspected", "defect_qty", "defect_rate"]
+                    ].rename(columns={"breakdown_display": "product_label"})
+                    dataframe_with_format(
+                        color_table.sort_values("defect_qty", ascending=False),
+                        column_config={
+                            "record_count": st.column_config.NumberColumn(t("原始记录数", "Raw Records"), format="%d"),
+                            "qty_inspected": st.column_config.NumberColumn(t("检验数量", "Inspected Qty"), format="%.0f"),
+                            "defect_qty": st.column_config.NumberColumn(t("疵点数", "Defects"), format="%.0f"),
+                            "defect_rate": st.column_config.NumberColumn(t("不良率", "Defect Rate"), format="%.2f%%"),
+                        },
+                        height=min(420, 70 + len(color_table) * 35),
+                    )
+            else:
+                product_breakdown["segment_share"] = safe_rate(
+                    product_breakdown["defect_qty"],
+                    product_breakdown["cc_total_defects"],
+                )
+                product_breakdown["text_label"] = np.where(
+                    product_breakdown["segment_share"] >= 0.08,
+                    product_breakdown["defect_qty"].round(0).astype(int).astype(str),
+                    "",
+                )
+                fig = px.bar(
+                    product_breakdown,
+                    x="defect_qty",
+                    y="cc_label",
+                    color="breakdown_display",
+                    orientation="h",
+                    text="text_label",
+                    barmode="stack",
+                    hover_data={
+                        "product_code": True,
+                        "breakdown": False,
+                        "record_count": ":,.0f",
+                        "qty_inspected": ":,.0f",
+                        "defect_qty": ":,.0f",
+                        "defect_rate": ":.2%",
+                        "cc_label": False,
+                        "cc_total_defects": False,
+                        "cc_order": False,
+                        "segment_share": False,
+                        "text_label": False,
+                    },
+                    labels={
+                        "defect_qty": t("疵点数", "Defects"),
+                        "cc_label": "CC",
+                        "breakdown_display": split_label,
+                    },
+                )
+                fig.update_traces(
+                    texttemplate="%{text}",
+                    textposition="inside",
+                    insidetextanchor="middle",
+                    textfont_color="#ffffff",
+                )
+                plot_chart(fig, 430)
+                st.caption(
+                    t(
+                        f"数据来源：{product_factory} QC data。每条柱代表一个CC，按“{split_label}”拆分；小于该CC疵点总数8%的区段不在柱内写数值，可悬停查看完整数据。",
+                        f"Source: {product_factory} QC data. Each bar is one CC, split by {split_label}; segments below 8% of the CC total omit in-bar labels but retain full hover detail.",
+                    )
+                )
 
         zone_count = (
             product_risk_view.groupby("risk_zone", as_index=False)
@@ -4484,6 +4726,7 @@ with tabs[3]:
 
         with st.expander(t("产品明细（可选）", "Product detail (optional)")):
             product_table = product_factory_summary.head(30).copy()
+            product_table["product_label"] = product_table["product_label"].map(localize_product_label)
             product_table["risk_level"] = product_table["risk_level"].map(risk_level_text)
             product_table = product_table[
                 [
