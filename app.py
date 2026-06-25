@@ -2390,12 +2390,27 @@ def compute_top_defects(finished: pd.DataFrame, group_cols: list[str]) -> pd.Dat
     return defects.rename(columns={"defect_type": "top_defect", "defect_qty": "top_defect_qty"})
 
 
+def summarize_unique_values(series: pd.Series, limit: int = 4) -> str:
+    values = [
+        value
+        for value in dict.fromkeys(series.fillna("").astype(str).str.strip())
+        if value and value.lower() not in {"nan", "none"}
+    ]
+    if not values:
+        return "-"
+    visible = values[:limit]
+    suffix = f" +{len(values) - limit}" if len(values) > limit else ""
+    return " / ".join(visible) + suffix
+
+
 def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_settings: dict) -> pd.DataFrame:
     qc = pd.DataFrame()
     if not finished.empty:
         qc = (
-            finished.groupby(["factory_code", "factory_name", "supplier", "product_key", "product_code", "product_label"], as_index=False)
+            finished.groupby(["factory_code", "factory_name", "supplier", "product_key", "product_code"], as_index=False)
             .agg(
+                product_label=("product_label", summarize_unique_values),
+                variant_count=("product_label", lambda s: s.fillna("").astype(str).str.strip().replace("", np.nan).nunique()),
                 qty_inspected=("qty_inspected", "sum"),
                 defect_qty=("defect_qty", "sum"),
                 process_count=("process", pd.Series.nunique),
@@ -2406,9 +2421,9 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
         qc["defect_rate"] = safe_rate(qc["defect_qty"], qc["qty_inspected"])
         top_defects = compute_top_defects(
             finished,
-            ["factory_code", "product_key", "product_code", "product_label"],
+            ["factory_code", "product_key", "product_code"],
         )
-        qc = qc.merge(top_defects, on=["factory_code", "product_key", "product_code", "product_label"], how="left")
+        qc = qc.merge(top_defects, on=["factory_code", "product_key", "product_code"], how="left")
 
     cust = pd.DataFrame()
     if not voice.empty:
@@ -2447,6 +2462,9 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
     product["product_label"] = product.get("product_label", pd.Series(index=product.index, dtype=object)).fillna(
         product.get("voice_product_name", pd.Series(index=product.index, dtype=object))
     )
+    if "variant_count" not in product.columns:
+        product["variant_count"] = 0
+    product["variant_count"] = product["variant_count"].fillna(0).astype(int)
     has_client_data = pd.Series(False, index=product.index)
     for column in ["voice_product_code", "voice_product_name", "rpm_now", "intern_voice_count"]:
         if column in product.columns:
@@ -2853,6 +2871,7 @@ def plotly_hover_labels() -> dict[str, str]:
         "qc_rate": t("QC 不良率", "QC Defect Rate"),
         "customer_signal": t("客户端风险信号", "Client Risk Signal"),
         "risk_zone": t("风险分区", "Risk Zone"),
+        "breakdown": t("拆分维度", "Breakdown"),
         "axis_note": t("坐标说明", "Axis Note"),
         "product_code": t("CC / 款式", "CC / Style"),
         "product_label": t("产品名称 / 颜色", "Product / Color"),
@@ -2874,6 +2893,7 @@ def plotly_hover_labels() -> dict[str, str]:
         "week": t("周", "Week"),
         "defects": t("疵点数", "Defects"),
         "records": t("记录数", "Records"),
+        "record_count": t("原始记录数", "Raw Records"),
         "result": t("检验结果", "Result"),
         "sampling_size": t("抽样数", "Sampling Size"),
         "fail_rate": t("Fail 占比", "Fail Share"),
@@ -2967,6 +2987,7 @@ def dataframe_with_format(df: pd.DataFrame, column_config: dict | None = None, h
         "supplier": t("供应商", "Supplier"),
         "product_code": t("CC / 款式", "CC / Style"),
         "product_label": t("产品名称 / 颜色", "Product / Color"),
+        "variant_count": t("产品 / 颜色数", "Product / Color Count"),
         "risk_level": t("风险等级", "Risk Level"),
         "risk_score": t("风险分", "Risk Score"),
         "production_score": t("生产端风险", "Production Risk"),
@@ -2982,9 +3003,15 @@ def dataframe_with_format(df: pd.DataFrame, column_config: dict | None = None, h
         "avg_score_now": t("客户评分", "Customer Score"),
         "intern_voice_count": "Intern Voice",
         "alert_reason": t("风险原因", "Risk Reason"),
+        "inspection_stage": t("检验阶段", "Inspection Stage"),
         "process": t("工序", "Process"),
         "worker_team": t("班组 / 岗位", "Team / Position"),
         "work_order": t("工单", "Work Order"),
+        "work_order_count": t("工单数", "Work Orders"),
+        "record_count": t("原始记录数", "Raw Records"),
+        "first_date": t("起始日期", "Start Date"),
+        "last_date": t("结束日期", "End Date"),
+        "source_file": t("原始文件", "Source File"),
         "material_type": t("材料类型", "Material Type"),
         "material_supplier": t("来料供应商", "Material Supplier"),
         "issue": t("质量问题点", "Quality Issue"),
@@ -3144,7 +3171,7 @@ def prepare_product_risk_view(product_summary: pd.DataFrame) -> tuple[pd.DataFra
     zone_double = t("QC + 客户端双高", "QC + client high")
     zone_qc = t("QC 高", "QC high")
     zone_customer = t("客户端信号高", "Client signal high")
-    zone_normal = t("常规关注", "Routine")
+    zone_normal = t("未达分区阈值", "Below zone thresholds")
     view["risk_zone"] = np.select(
         [
             (view["qc_rate"] >= qc_threshold) & (view["customer_signal"] >= customer_threshold),
@@ -3170,6 +3197,92 @@ def prepare_product_risk_view(product_summary: pd.DataFrame) -> tuple[pd.DataFra
     )
     view["plot_size"] = np.log1p(view["qty_inspected"].clip(lower=0) + view["defect_qty"].clip(lower=0) * 20) + 4
     return view, x_cap, y_cap
+
+
+def build_product_qc_breakdown(
+    finished: pd.DataFrame,
+    split_column: str,
+    top_n: int = 5,
+) -> tuple[pd.DataFrame, list[str]]:
+    if finished.empty:
+        return pd.DataFrame(), []
+
+    source = finished.copy()
+    source["product_code"] = source["product_code"].fillna("").astype(str).str.strip()
+    source = source[source["product_code"] != ""]
+    source["defect_qty"] = pd.to_numeric(source["defect_qty"], errors="coerce").fillna(0)
+    source["qty_inspected"] = pd.to_numeric(source["qty_inspected"], errors="coerce").fillna(0)
+    if source.empty:
+        return pd.DataFrame(), []
+
+    top_codes = (
+        source.groupby("product_code")["defect_qty"]
+        .sum()
+        .nlargest(top_n)
+        .index.astype(str)
+        .tolist()
+    )
+    source = source[source["product_code"].isin(top_codes)].copy()
+    source["breakdown"] = source[split_column].fillna("").astype(str).str.strip()
+    source["breakdown"] = source["breakdown"].replace(
+        {"": t("未记录", "Not recorded"), "nan": t("未记录", "Not recorded")}
+    )
+
+    breakdown = (
+        source.groupby(["product_code", "breakdown"], as_index=False)
+        .agg(
+            record_count=("defect_qty", "size"),
+            qty_inspected=("qty_inspected", "sum"),
+            defect_qty=("defect_qty", "sum"),
+        )
+    )
+    breakdown["defect_rate"] = safe_rate(breakdown["defect_qty"], breakdown["qty_inspected"])
+    breakdown["cc_label"] = source["factory_code"].iloc[0] + " / " + breakdown["product_code"]
+    breakdown["cc_total_defects"] = breakdown.groupby("product_code")["defect_qty"].transform("sum")
+    breakdown["cc_order"] = breakdown["product_code"].map({code: rank for rank, code in enumerate(top_codes)})
+    breakdown = breakdown.sort_values(["cc_order", "defect_qty"], ascending=[False, True])
+    return breakdown, top_codes
+
+
+def build_product_qc_provenance(finished: pd.DataFrame, product_codes: list[str]) -> pd.DataFrame:
+    if finished.empty or not product_codes:
+        return pd.DataFrame()
+
+    source = finished.copy()
+    source["product_code"] = source["product_code"].fillna("").astype(str).str.strip()
+    source = source[source["product_code"].isin(product_codes)].copy()
+    for column in ["product_label", "inspection_stage", "process", "defect_type", "source_file"]:
+        source[column] = source[column].fillna("").astype(str).str.strip().replace("", t("未记录", "Not recorded"))
+
+    detail = (
+        source.groupby(
+            ["product_code", "product_label", "inspection_stage", "process"],
+            as_index=False,
+        )
+        .agg(
+            record_count=("defect_qty", "size"),
+            work_order_count=("work_order", pd.Series.nunique),
+            qty_inspected=("qty_inspected", "sum"),
+            defect_qty=("defect_qty", "sum"),
+            first_date=("date", "min"),
+            last_date=("date", "max"),
+            source_file=("source_file", summarize_unique_values),
+        )
+    )
+    detail["defect_rate"] = safe_rate(detail["defect_qty"], detail["qty_inspected"])
+    top_defects = compute_top_defects(
+        source,
+        ["product_code", "product_label", "inspection_stage", "process"],
+    )
+    detail = detail.merge(
+        top_defects,
+        on=["product_code", "product_label", "inspection_stage", "process"],
+        how="left",
+    )
+    detail["top_defect"] = detail["top_defect"].fillna("-")
+    order = {code: rank for rank, code in enumerate(product_codes)}
+    detail["cc_order"] = detail["product_code"].map(order)
+    return detail.sort_values(["cc_order", "defect_qty"], ascending=[True, False]).drop(columns=["cc_order"])
 
 
 # ==========================================
@@ -3895,7 +4008,7 @@ with tabs[3]:
                 t("QC + 客户端双高", "QC + client high"): "#c01048",
                 t("QC 高", "QC high"): "#dc6803",
                 t("客户端信号高", "Client signal high"): "#d99a00",
-                t("常规关注", "Routine"): "#168a5b",
+                t("未达分区阈值", "Below zone thresholds"): "#168a5b",
             }
             fig = px.scatter(
                 product_risk_view,
@@ -3939,26 +4052,61 @@ with tabs[3]:
             )
             plot_chart(fig, 450)
             st.caption(t(
-                f"数据来源：{product_source}。坐标轴按 P95 聚焦：QC ≤ {pct(x_cap)}，客户端风险信号 ≤ {y_cap:.0f}；超出部分仍在 hover 中保留真实值。",
-                f"Source: {product_source}. Axes focus on P95: QC <= {pct(x_cap)}, client signal <= {y_cap:.0f}; hover keeps actual values for clipped points.",
+                f"数据来源：{product_source}。分区规则：QC高 = QC不良率 ≥ 2%；客户端信号高 = 客户端标准化风险分 ≥ 35；“未达分区阈值”表示两项均未达到上述线。该分区是计算标签，不是原始字段。坐标轴按 P95 聚焦：QC ≤ {pct(x_cap)}，客户端风险信号 ≤ {y_cap:.0f}；hover保留真实值。",
+                f"Source: {product_source}. Zone rules: QC high = QC defect rate >= 2%; client signal high = normalized client risk >= 35; below zone thresholds means neither line is reached. The zone is a calculated label, not a raw field. Axes focus on P95: QC <= {pct(x_cap)}, client signal <= {y_cap:.0f}; hover keeps actual values.",
             ))
 
         with right:
-            top_products = product_risk_view.sort_values(["defect_qty", "customer_signal", "risk_score"], ascending=False).head(8).copy()
-            top_products["label"] = top_products["factory_code"] + " / " + top_products["product_code"].astype(str)
+            split_options = {
+                t("按颜色 / 产品", "By product / color"): "product_label",
+                t("按检验阶段", "By inspection stage"): "inspection_stage",
+                t("按工序", "By process"): "process",
+            }
+            split_label = st.segmented_control(
+                t("疵点拆分方式", "Defect breakdown"),
+                list(split_options),
+                default=list(split_options)[0],
+                key="product_qc_breakdown",
+            )
+            split_column = split_options.get(split_label, "product_label")
+            product_breakdown, top_product_codes = build_product_qc_breakdown(
+                product_finished,
+                split_column,
+                top_n=5,
+            )
             fig = px.bar(
-                top_products.sort_values("defect_qty"),
+                product_breakdown,
                 x="defect_qty",
-                y="label",
-                color="risk_zone",
+                y="cc_label",
+                color="breakdown",
                 orientation="h",
                 text="defect_qty",
-                color_discrete_map=zone_colors,
-                labels={"defect_qty": t("疵点数", "Defects"), "label": "CC", "risk_zone": t("风险分区", "Risk zone")},
+                barmode="stack",
+                hover_data={
+                    "product_code": True,
+                    "breakdown": True,
+                    "record_count": ":,.0f",
+                    "qty_inspected": ":,.0f",
+                    "defect_qty": ":,.0f",
+                    "defect_rate": ":.2%",
+                    "cc_label": False,
+                    "cc_total_defects": False,
+                    "cc_order": False,
+                },
+                labels={
+                    "defect_qty": t("疵点数", "Defects"),
+                    "cc_label": "CC",
+                    "breakdown": split_label,
+                },
             )
             fig.update_traces(texttemplate="%{text:.0f}", textposition="inside", insidetextanchor="middle", textfont_color="#ffffff")
             plot_chart(fig, 430)
-            st.caption(t(f"数据来源：{product_factory} QC data。按疵点数优先展示 Top CC，用于快速找出生产端主问题。", f"Source: {product_factory} QC data. Top CCs by defect count for quick production-side triage."))
+            st.caption(
+                t(
+                    f"数据来源：{product_factory} QC data（原始文件字段：款式、颜色、质检类型、不良工序、检验数量、疵点个数、疵点类型）。每条柱代表一个CC，每个色块按“{split_label}”拆分；色块数值 = 当前筛选范围内原始“疵点个数”求和，不是风险分。",
+                    f"Source: {product_factory} QC data (raw fields: style, product/color, inspection type, defect process, inspected quantity, defect quantity, and defect type). Each bar is one CC and segments use {split_label}; segment values are sums of raw defect quantities, not risk scores.",
+                )
+            )
 
         zone_count = (
             product_risk_view.groupby("risk_zone", as_index=False)
@@ -3978,6 +4126,28 @@ with tabs[3]:
         plot_chart(fig, 300)
         st.caption(t(f"数据来源：{product_source}。展示该工厂产品在各风险分区的数量。", f"Source: {product_source}. Shows the selected factory's product count in each risk zone."))
 
+        st.markdown(t("#### Top CC 原始QC拆解", "#### Top CC raw QC breakdown"))
+        st.caption(
+            t(
+                "下表直接来自当前工厂QC原始记录，并按 CC + 产品/颜色 + 检验阶段 + 不良工序汇总。疵点数取原始字段“疵点个数”之和；不良率 = 疵点数 / 检验数量；主要疵点为该组合疵点数最高的疵点类型。",
+                "The table comes directly from the selected factory's raw QC records and is grouped by CC + product/color + inspection stage + defect process. Defects are summed from the raw defect-quantity field; defect rate = defects / inspected quantity; top defect is the largest defect type in that group.",
+            )
+        )
+        provenance_table = build_product_qc_provenance(product_finished, top_product_codes)
+        dataframe_with_format(
+            provenance_table,
+            column_config={
+                "record_count": st.column_config.NumberColumn(t("原始记录数", "Raw Records"), format="%d"),
+                "work_order_count": st.column_config.NumberColumn(t("工单数", "Work Orders"), format="%d"),
+                "qty_inspected": st.column_config.NumberColumn(t("检验数量", "Inspected Qty"), format="%.0f"),
+                "defect_qty": st.column_config.NumberColumn(t("疵点数", "Defects"), format="%.0f"),
+                "defect_rate": st.column_config.NumberColumn(t("不良率", "Defect Rate"), format="%.2f%%"),
+                "first_date": st.column_config.DateColumn(t("起始日期", "Start Date"), format="YYYY-MM-DD"),
+                "last_date": st.column_config.DateColumn(t("结束日期", "End Date"), format="YYYY-MM-DD"),
+            },
+            height=420,
+        )
+
         with st.expander(t("产品明细（可选）", "Product detail (optional)")):
             product_table = product_factory_summary.head(30).copy()
             product_table["risk_level"] = product_table["risk_level"].map(risk_level_text)
@@ -3986,9 +4156,11 @@ with tabs[3]:
                     "factory_name",
                     "product_code",
                     "product_label",
+                    "variant_count",
                     "risk_level",
                     "risk_score",
                     "qty_inspected",
+                    "defect_qty",
                     "qc_confidence",
                     "defect_rate",
                     "top_defect",
@@ -4002,7 +4174,9 @@ with tabs[3]:
             dataframe_with_format(
                 product_table,
                 column_config={
+                    "variant_count": st.column_config.NumberColumn(t("产品 / 颜色数", "Product / Color Count"), format="%d"),
                     "risk_score": st.column_config.NumberColumn(t("风险分", "Risk Score"), format="%.1f"),
+                    "defect_qty": st.column_config.NumberColumn(t("疵点数", "Defects"), format="%.0f"),
                     "qc_confidence": st.column_config.TextColumn(t("QC 置信度", "QC Confidence")),
                     "defect_rate": st.column_config.ProgressColumn(t("QC 不良率", "QC Defect Rate"), format="%.2f%%", min_value=0, max_value=0.08),
                     "rpm_now": st.column_config.NumberColumn("RPM N0", format="%.0f"),
