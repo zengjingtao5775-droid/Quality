@@ -23,7 +23,29 @@
 JIANDAOYUN_API_KEY = "你的简道云API Key"
 ```
 
-7. 点击 Deploy，等待依赖安装和应用启动。
+也兼容历史键名：
+
+```toml
+JIANDAO_API_KEY = "你的简道云API Key"
+```
+
+7. 如果需要在 `08 简道云报表` 中生成专业大模型报告，选择以下一种方式配置。
+
+直接调用通义千问：
+
+```toml
+DASHSCOPE_API_KEY = "你的阿里云百炼API Key"
+QWEN_MODEL = "qwen-max"
+```
+
+通过 Dify 调用已配置好的通义千问应用：
+
+```toml
+DIFY_API_KEY = "你的Dify应用API Key"
+DIFY_BASE_URL = "https://api.dify.ai/v1"
+```
+
+8. 点击 Deploy，等待依赖安装和应用启动。
 
 ## 数据文件
 
@@ -46,6 +68,17 @@ ZX Intern Voice 当前使用 `ZX Database/2026 ZX Intern Voice.xlsx`，不再上
 - `本地 CSV`：只适合本地离线演示，读取 `POC_Raw_Data/04_Gloves/ZX_FQC/` 下的导出文件。
 
 注意：`POC_Raw_Data/` 被 `.gitignore` 忽略，不会推送到 GitHub；线上如果不配置 `JIANDAOYUN_API_KEY`，08 报表不会有本地 CSV 兜底数据。
+
+推荐使用实时 API，而不是把简道云原始明细提交到 GitHub。这样 Streamlit Cloud 每 15 分钟自动刷新缓存，也不会在仓库中复制一份业务数据。
+
+## 08 专业 AI 报告
+
+报告分为两层：
+
+- `专业AI质量分析`：把当前筛选后的简道云数据先转换成结构化事实包，再交给通义千问或 Dify 生成管理层报告。
+- `规则诊断清单`：完全由代码计算，作为大模型报告的数字核对和降级方案。
+
+大模型报告要求每个定量结论引用事实编号，并区分事实、分析推断和待工厂验证的根因假设。报告包括管理结论、风险诊断、根因假设、24小时/7天/30天行动、验证KPI和数据局限。
 
 ## 权重保存说明
 
