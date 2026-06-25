@@ -1196,22 +1196,14 @@ def render_product_weight_panel(profile: str | None = None) -> dict:
         settings = risk_settings_from_widget_state(profile_settings(payload, active_profile), active_profile)
         payload["profiles"][active_profile] = settings
     widget_prefix = risk_widget_prefix(active_profile)
-    st.markdown(
-        f"""
-        <div class="risk-weight-panel">
-            <div class="risk-weight-title">{t('产品权重方案', 'Product Weight Profile')}</div>
-            <div class="risk-weight-note">
-                {t(
-                    f'当前编辑：{risk_profile_label(active_profile)}。产品风险拆成生产端和客户端：生产端来自半检/总检质量数据；客户端来自 RPM 百万退货率和 Intern Voice 退货发起次数。',
-                    f'Editing: {risk_profile_label(active_profile)}. Product risk is split into production-side QC and client-side RPM plus Intern Voice return initiations.'
-                )}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    st.markdown(t("**权重调整**", "**Weight adjustment**"))
+    st.caption(
+        t(
+            f"当前方案：{risk_profile_label(active_profile)}。右侧权重自动补足至100%。",
+            f"Current profile: {risk_profile_label(active_profile)}. The paired weight automatically completes to 100%.",
+        )
     )
-    cols = st.columns(2)
-    product_production = cols[0].slider(
+    product_production = st.slider(
         t("生产端权重：半检/总检质量数据", "Production weight: online/final QC"),
         0,
         100,
@@ -1219,13 +1211,29 @@ def render_product_weight_panel(profile: str | None = None) -> dict:
         key=f"{widget_prefix}_product_production_weight",
     )
     product_client = 100 - int(product_production)
-    cols[1].metric(t("客户端权重", "Client weight"), f"{product_client}%")
-    st.caption(t(f"当前有效权重：生产端 {product_production}% / 客户端 {product_client}%。客户端内部 RPM/IV 权重沿用当前方案设置。", f"Effective weights: production {product_production}% / client {product_client}%. Client RPM/IV sub-weights use the current profile."))
+    client_rpm = st.slider(
+        t("客户端内RPM权重", "RPM weight within client score"),
+        0,
+        100,
+        int(settings["client_weights"]["rpm_score"]),
+        key=f"{widget_prefix}_client_rpm_weight",
+    )
+    client_iv = 100 - int(client_rpm)
+    st.caption(
+        t(
+            f"生产端 {product_production}% / 客户端 {product_client}%｜客户端内部：RPM {client_rpm}% / Intern Voice {client_iv}%",
+            f"Production {product_production}% / client {product_client}% | Within client: RPM {client_rpm}% / Intern Voice {client_iv}%",
+        )
+    )
 
     current_settings = risk_settings_from_widget_state(settings, active_profile)
     current_settings["product_weights"] = {
         "production_score": int(product_production),
         "client_score": int(product_client),
+    }
+    current_settings["client_weights"] = {
+        "rpm_score": int(client_rpm),
+        "intern_voice_score": int(client_iv),
     }
     runtime_payload = merge_risk_payload(payload)
     runtime_payload["active_profile"] = active_profile
@@ -3289,6 +3297,9 @@ def plotly_hover_labels() -> dict[str, str]:
         "qc_rate": t("QC 不良率", "QC Defect Rate"),
         "customer_signal": t("客户端风险信号", "Client Risk Signal"),
         "risk_zone": t("风险分区", "Risk Zone"),
+        "cluster_name": t("聚类", "Cluster"),
+        "production_centroid": t("生产端中心", "Production Centroid"),
+        "client_centroid": t("客户端中心", "Client Centroid"),
         "breakdown": t("拆分维度", "Breakdown"),
         "breakdown_display": t("颜色 / 产品", "Color / Product"),
         "variant_count": t("颜色 / 产品数", "Color / Product Count"),
@@ -3579,45 +3590,104 @@ def product_alert_cards(product_summary: pd.DataFrame, limit: int = 4) -> list[d
     return cards
 
 
-def prepare_product_risk_view(product_summary: pd.DataFrame) -> tuple[pd.DataFrame, float, float]:
+def deterministic_kmeans(points: np.ndarray, cluster_count: int = 4, max_iter: int = 80) -> tuple[np.ndarray, np.ndarray]:
+    if len(points) == 0:
+        return np.array([], dtype=int), np.empty((0, 2))
+    unique_points = np.unique(points, axis=0)
+    cluster_count = max(1, min(cluster_count, len(unique_points)))
+    scale = points.std(axis=0)
+    scale[scale == 0] = 1
+    normalized = (points - points.mean(axis=0)) / scale
+
+    order = np.argsort(normalized.sum(axis=1))
+    seed_positions = np.linspace(0, len(order) - 1, cluster_count).round().astype(int)
+    centroids = normalized[order[seed_positions]].copy()
+    labels = np.zeros(len(points), dtype=int)
+
+    for _ in range(max_iter):
+        distances = ((normalized[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+        next_labels = distances.argmin(axis=1)
+        next_centroids = centroids.copy()
+        for cluster_id in range(cluster_count):
+            members = normalized[next_labels == cluster_id]
+            if len(members):
+                next_centroids[cluster_id] = members.mean(axis=0)
+            else:
+                farthest = distances.min(axis=1).argmax()
+                next_centroids[cluster_id] = normalized[farthest]
+        if np.array_equal(labels, next_labels) and np.allclose(centroids, next_centroids):
+            labels = next_labels
+            centroids = next_centroids
+            break
+        labels = next_labels
+        centroids = next_centroids
+
+    original_centroids = centroids * scale + points.mean(axis=0)
+    return labels, original_centroids
+
+
+def prepare_product_cluster_view(product_summary: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int]:
     view = product_summary.copy()
-    view["qc_rate"] = pd.to_numeric(view.get("defect_rate", 0), errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0)
-    view["customer_signal"] = pd.to_numeric(view.get("client_score", 0), errors="coerce").fillna(0).clip(0, 100)
-    view["qty_inspected"] = pd.to_numeric(view.get("qty_inspected", 0), errors="coerce").fillna(0)
-    view["defect_qty"] = pd.to_numeric(view.get("defect_qty", 0), errors="coerce").fillna(0)
-    view["intern_voice_count"] = pd.to_numeric(view.get("intern_voice_count", 0), errors="coerce").fillna(0)
+    for column in [
+        "production_score",
+        "client_score",
+        "qty_inspected",
+        "defect_qty",
+        "defect_rate",
+        "rpm_now",
+        "rpm_score",
+        "intern_voice_count",
+        "intern_voice_score",
+        "returned_now",
+        "nqc_now",
+    ]:
+        view[column] = pd.to_numeric(view.get(column, np.nan), errors="coerce")
+    view["product_label_display"] = view["product_label"].map(localize_product_label)
+    view["plot_size"] = np.log1p(view["qty_inspected"].fillna(0).clip(lower=0)) + 5
 
-    qc_threshold = 0.02
-    customer_threshold = 35
-    zone_double = t("QC + 客户端双高", "QC + client high")
-    zone_qc = t("QC 高", "QC high")
-    zone_customer = t("客户端信号高", "Client signal high")
-    zone_normal = t("未达分区阈值", "Below zone thresholds")
-    view["risk_zone"] = np.select(
-        [
-            (view["qc_rate"] >= qc_threshold) & (view["customer_signal"] >= customer_threshold),
-            view["qc_rate"] >= qc_threshold,
-            view["customer_signal"] >= customer_threshold,
-        ],
-        [zone_double, zone_qc, zone_customer],
-        default=zone_normal,
+    clustered = view.dropna(subset=["production_score", "client_score"]).copy()
+    missing_client_count = int(view["client_score"].isna().sum())
+    if clustered.empty:
+        return clustered, pd.DataFrame(), missing_client_count
+
+    points = clustered[["production_score", "client_score"]].to_numpy(dtype=float)
+    labels, centroids = deterministic_kmeans(points, cluster_count=4)
+    clustered["_cluster_id"] = labels
+    centroid_table = pd.DataFrame(
+        {
+            "_cluster_id": range(len(centroids)),
+            "production_centroid": centroids[:, 0],
+            "client_centroid": centroids[:, 1],
+        }
     )
+    production_median = float(clustered["production_score"].median())
+    client_median = float(clustered["client_score"].median())
+    base_names: dict[int, str] = {}
+    for _, row in centroid_table.iterrows():
+        cluster_id = int(row["_cluster_id"])
+        high_production = row["production_centroid"] >= production_median
+        high_client = row["client_centroid"] >= client_median
+        if high_production and high_client:
+            name = t("双端优先", "Dual-side priority")
+        elif high_production:
+            name = t("生产端优先", "Production priority")
+        elif high_client:
+            name = t("客户端优先", "Client priority")
+        else:
+            name = t("相对稳定", "Relatively stable")
+        base_names[cluster_id] = name
 
-    positive_qc = view.loc[view["qc_rate"] > 0, "qc_rate"]
-    x_cap = positive_qc.quantile(0.95) * 1.2 if not positive_qc.empty else 0.04
-    x_cap = float(np.clip(x_cap, 0.04, 0.12))
-    y_cap = view["customer_signal"].quantile(0.95) * 1.15 if not view.empty else 45
-    y_cap = float(np.clip(y_cap, 45, 100))
+    duplicates: dict[str, int] = {}
+    cluster_names: dict[int, str] = {}
+    for cluster_id in sorted(base_names):
+        base = base_names[cluster_id]
+        duplicates[base] = duplicates.get(base, 0) + 1
+        cluster_names[cluster_id] = base if duplicates[base] == 1 else f"{base} {duplicates[base]}"
 
-    view["qc_rate_plot"] = view["qc_rate"].clip(upper=x_cap)
-    view["customer_signal_plot"] = view["customer_signal"].clip(upper=y_cap)
-    view["axis_note"] = np.where(
-        (view["qc_rate"] > x_cap) | (view["customer_signal"] > y_cap),
-        t("超出聚焦区", "Outside focus range"),
-        t("聚焦区内", "In focus range"),
-    )
-    view["plot_size"] = np.log1p(view["qty_inspected"].clip(lower=0) + view["defect_qty"].clip(lower=0) * 20) + 4
-    return view, x_cap, y_cap
+    clustered["cluster_name"] = clustered["_cluster_id"].map(cluster_names)
+    centroid_table["cluster_name"] = centroid_table["_cluster_id"].map(cluster_names)
+    centroid_table["product_count"] = centroid_table["_cluster_id"].map(clustered["_cluster_id"].value_counts())
+    return clustered, centroid_table, missing_client_count
 
 
 def build_product_qc_breakdown(
@@ -4353,6 +4423,7 @@ with tabs[2]:
 # ==========================================
 with tabs[3]:
     st.subheader(t("By Product 产品风险看板", "By Product Risk Dashboard"))
+    st.caption(t("用户：Decathlon QM / Decathlon QPS", "Users: Decathlon QM / Decathlon QPS"))
 
     product_finished_scope = finished_all[
         (finished_all["date"].dt.date >= start_date)
@@ -4398,16 +4469,35 @@ with tabs[3]:
         product_finished = product_finished_scope[product_finished_scope["factory_code"] == product_factory].copy()
         product_voice = product_voice_scope[product_voice_scope["factory_code"] == product_factory].copy()
 
-        risk_settings = render_product_weight_panel(product_factory)
+        weight_col, formula_col = st.columns([1, 1.15])
+        with weight_col:
+            risk_settings = render_product_weight_panel(product_factory)
         product_factory_summary = compute_product_summary(product_finished, product_voice, risk_settings)
         product_source = f"{product_factory} QC data"
         if not product_voice.empty:
             product_source += " + RPM + Intern Voice"
-        active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
         product_prod_w = effective_weight_pct(risk_settings, "product_weights", "production_score")
         product_client_w = effective_weight_pct(risk_settings, "product_weights", "client_score")
         client_rpm_w = effective_weight_pct(risk_settings, "client_weights", "rpm_score")
         client_iv_w = effective_weight_pct(risk_settings, "client_weights", "intern_voice_score")
+        with formula_col:
+            st.markdown(t("**风险分计算公式**", "**Risk score formula**"))
+            formula_cn = (
+                f"<div><b>综合风险分</b> = 生产端风险 × {product_prod_w:.0f}% + 客户端风险 × {product_client_w:.0f}%</div>"
+                f"<div><b>生产端风险</b>：QC不良率经小样本收缩后换算；{risk_settings['qc_benchmark_pct']:.1f}% = 50分，{risk_settings['qc_benchmark_pct'] * 3:.1f}% = 100分</div>"
+                f"<div><b>客户端风险</b> = RPM风险 × {client_rpm_w:.0f}% + Intern Voice风险 × {client_iv_w:.0f}%</div>"
+                f"<div><b>标准化</b>：RPM风险 = min(RPM / {risk_settings['rpm_cap']:.0f} × 100, 100)；IV风险 = min(IV次数 / {risk_settings['intern_voice_cap']:.0f} × 100, 100)</div>"
+            )
+            formula_en = (
+                f"<div><b>Overall risk</b> = production risk × {product_prod_w:.0f}% + client risk × {product_client_w:.0f}%</div>"
+                f"<div><b>Production risk</b>: QC defect rate after low-volume shrinkage; {risk_settings['qc_benchmark_pct']:.1f}% = 50, {risk_settings['qc_benchmark_pct'] * 3:.1f}% = 100</div>"
+                f"<div><b>Client risk</b> = RPM risk × {client_rpm_w:.0f}% + Intern Voice risk × {client_iv_w:.0f}%</div>"
+                f"<div><b>Normalization</b>: RPM risk = min(RPM / {risk_settings['rpm_cap']:.0f} × 100, 100); IV risk = min(IV count / {risk_settings['intern_voice_cap']:.0f} × 100, 100)</div>"
+            )
+            st.markdown(
+                f"<div class='action-strip'><div class='score-logic-lines'>{t(formula_cn, formula_en)}</div></div>",
+                unsafe_allow_html=True,
+            )
         product_date_min = product_finished["date"].min()
         product_date_max = product_finished["date"].max()
         product_period = (
@@ -4421,89 +4511,87 @@ with tabs[3]:
                 f"Current product scope: {product_factory_name} | {len(product_finished):,} QC records | {len(product_voice):,} client records | {len(product_factory_summary):,} products | {product_period}. A single factory selected in the sidebar syncs automatically; with multiple factories, choose the analysis factory here.",
             )
         )
-        product_logic_cn = (
-            f"<div>当前编辑方案：<span class='formula-highlight'>{html.escape(active_profile_label)}</span>。</div>"
-            f"<div>产品风险分 = <span class='formula-highlight'>生产端 {product_prod_w:.0f}% + 客户端 {product_client_w:.0f}%</span>。</div>"
-            f"<div>生产端 = 该 CC 的半检/总检 QC 不良率风险分：基准 {risk_settings['qc_benchmark_pct']:.1f}% = 50分告警线，3× 基准 = 100分；不再一律封顶100。小批量不良率向基准收缩，并在明细表标注 QC 置信度，避免少量样本误判为高风险。</div>"
-            f"<div>客户端 = 标准化后的 RPM风险分 {client_rpm_w:.0f}% + 标准化后的 Intern Voice风险分 {client_iv_w:.0f}%。</div>"
-            f"<div>RPM和Intern Voice先各自换算成0-100风险分，再按权重加权；不是按原始数量直接相加。</div>"
-            f"<div>缺少客户端数据时，综合分仅按现有生产端数据自动归一，不把缺失值计为0分。</div>"
-        )
-        product_logic_en = (
-            f"<div>Editing profile: <span class='formula-highlight'>{html.escape(active_profile_label)}</span>.</div>"
-            f"<div>Product risk = <span class='formula-highlight'>production {product_prod_w:.0f}% + client {product_client_w:.0f}%</span>.</div>"
-            f"<div>Production = the CC-level online/final QC defect-rate risk score: benchmark {risk_settings['qc_benchmark_pct']:.1f}% = 50 (alert line), 3x benchmark = 100; no longer all capped at 100. Low-volume rates are shrunk toward the benchmark and the detail table shows a QC confidence label so sparse samples are not misread as high risk.</div>"
-            f"<div>Client = normalized RPM risk {client_rpm_w:.0f}% + normalized Intern Voice risk {client_iv_w:.0f}%.</div>"
-            "<div>RPM and Intern Voice are each converted to 0-100 risk scores before weighting; raw values are not added directly.</div>"
-            "<div>When client data is unavailable, the score is normalized over available production data instead of treating missing values as zero.</div>"
-        )
-        st.markdown(
-            f"""
-            <div class="action-strip">
-                <b>{t('产品风险分说明', 'Product score logic')}:</b>
-                <div class="score-logic-lines">{t(product_logic_cn, product_logic_en)}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        product_risk_view, x_cap, y_cap = prepare_product_risk_view(product_factory_summary)
-        product_risk_view["product_label_display"] = product_risk_view["product_label"].map(localize_product_label)
+        product_risk_view, product_centroids, missing_client_count = prepare_product_cluster_view(product_factory_summary)
         left, right = st.columns([1.2, 1])
         with left:
-            zone_colors = {
-                t("QC + 客户端双高", "QC + client high"): "#c01048",
-                t("QC 高", "QC high"): "#dc6803",
-                t("客户端信号高", "Client signal high"): "#d99a00",
-                t("未达分区阈值", "Below zone thresholds"): "#168a5b",
-            }
-            fig = px.scatter(
-                product_risk_view,
-                x="qc_rate_plot",
-                y="customer_signal_plot",
-                color="risk_zone",
-                size="plot_size",
-                hover_data={
-                    "factory_name": True,
-                    "product_code": True,
-                    "product_label": False,
-                    "product_label_display": True,
-                    "qc_rate": ":.2%",
-                    "qc_rate_plot": False,
-                    "customer_signal": ":.1f",
-                    "customer_signal_plot": False,
-                    "rpm_now": ":.0f",
-                    "avg_score_now": ":.2f",
-                    "intern_voice_count": ":.0f",
-                    "axis_note": True,
-                    "plot_size": False,
-                    "risk_zone": True,
-                },
-                color_discrete_map=zone_colors,
-                labels={
-                    "qc_rate_plot": t("QC 不良率（聚焦区）", "QC defect rate - focused"),
-                    "customer_signal_plot": t("客户端风险信号（RPM/Intern Voice）", "Client risk signal"),
-                    "risk_zone": t("风险分区", "Risk zone"),
-                },
-            )
-            fig.update_xaxes(tickformat=".1%")
-            fig.update_layout(xaxis_range=[0, x_cap * 1.04], yaxis_range=[0, y_cap * 1.08])
-            fig.add_vline(x=0.02, line_width=1, line_dash="dash", line_color="#dc6803")
-            fig.add_hline(y=35, line_width=1, line_dash="dash", line_color="#dc6803")
-            fig.add_annotation(
-                x=min(0.022, x_cap * 0.72),
-                y=min(38, y_cap * 0.86),
-                text=t("右上角 = QC + 客户端信号双高", "Upper right = QC + client signal"),
-                showarrow=False,
-                font=dict(color="#c01048", size=12),
-                bgcolor="rgba(255,255,255,0.82)",
-            )
-            plot_chart(fig, 450)
+            st.markdown(t("**产品风险聚类｜生产端 vs 客户端**", "**Product risk clusters | Production vs client**"))
+            if product_risk_view.empty:
+                st.info(t("没有同时具备生产端与客户端数据的CC，无法进行聚类。", "No CC has both production and client data for clustering."))
+            else:
+                cluster_colors = ["#168a5b", "#2563eb", "#d99a00", "#c01048"]
+                fig = px.scatter(
+                    product_risk_view,
+                    x="production_score",
+                    y="client_score",
+                    color="cluster_name",
+                    size="plot_size",
+                    size_max=28,
+                    color_discrete_sequence=cluster_colors,
+                    hover_data={
+                        "factory_name": True,
+                        "product_code": True,
+                        "product_label": False,
+                        "product_label_display": True,
+                        "production_score": ":.1f",
+                        "defect_rate": ":.2%",
+                        "qty_inspected": ":,.0f",
+                        "defect_qty": ":,.0f",
+                        "client_score": ":.1f",
+                        "rpm_now": ":,.0f",
+                        "rpm_score": ":.1f",
+                        "intern_voice_count": ":,.0f",
+                        "intern_voice_score": ":.1f",
+                        "returned_now": ":,.0f",
+                        "nqc_now": ":,.0f",
+                        "plot_size": False,
+                        "_cluster_id": False,
+                    },
+                    labels={
+                        "production_score": t("生产端风险分", "Production risk score"),
+                        "client_score": "",
+                        "cluster_name": t("K-means聚类", "K-means cluster"),
+                    },
+                )
+                if not product_centroids.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=product_centroids["production_centroid"],
+                            y=product_centroids["client_centroid"],
+                            mode="markers+text",
+                            text=product_centroids["cluster_name"],
+                            textposition="top center",
+                            marker=dict(symbol="diamond", size=12, color="#111827", line=dict(color="#ffffff", width=1)),
+                            name=t("聚类中心", "Cluster centroid"),
+                            customdata=product_centroids[["product_count"]],
+                            hovertemplate=t(
+                                "聚类中心<br>生产端=%{x:.1f}<br>客户端=%{y:.1f}<br>产品数=%{customdata[0]:.0f}<extra></extra>",
+                                "Cluster centroid<br>Production=%{x:.1f}<br>Client=%{y:.1f}<br>Products=%{customdata[0]:.0f}<extra></extra>",
+                            ),
+                        )
+                    )
+                fig.update_xaxes(range=[0, 105], title_text=t("生产端风险分", "Production risk score"))
+                fig.update_yaxes(range=[0, 105], title_text="")
+                fig.add_annotation(
+                    xref="paper",
+                    yref="paper",
+                    x=0,
+                    y=1.08,
+                    text=t("客户端风险分 ↑", "Client risk score ↑"),
+                    showarrow=False,
+                    font=dict(size=13, color="#475467"),
+                )
+                plot_chart(fig, 470)
             st.caption(t(
-                f"数据来源：{product_source}。分区规则：QC高 = QC不良率 ≥ 2%；客户端信号高 = 客户端标准化风险分 ≥ 35；“未达分区阈值”表示两项均未达到上述线。该分区是计算标签，不是原始字段。坐标轴按 P95 聚焦：QC ≤ {pct(x_cap)}，客户端风险信号 ≤ {y_cap:.0f}；hover保留真实值。",
-                f"Source: {product_source}. Zone rules: QC high = QC defect rate >= 2%; client signal high = normalized client risk >= 35; below zone thresholds means neither line is reached. The zone is a calculated label, not a raw field. Axes focus on P95: QC <= {pct(x_cap)}, client signal <= {y_cap:.0f}; hover keeps actual values.",
+                f"数据来源：{product_source}；每个点代表一个CC，点大小代表检验数量。{missing_client_count}个CC因缺少客户端数据未参与聚类。",
+                f"Source: {product_source}; each point is one CC and point size represents inspected quantity. {missing_client_count} CCs without client data are excluded.",
+            ))
+            st.caption(t(
+                f"计算公式：K-means按欧氏距离聚类；生产端 = QC不良率风险分；客户端 = RPM风险×{client_rpm_w:.0f}% + Intern Voice风险×{client_iv_w:.0f}%。",
+                f"Formula: K-means clustering by Euclidean distance; production = QC defect-rate risk; client = RPM risk × {client_rpm_w:.0f}% + Intern Voice risk × {client_iv_w:.0f}%.",
             ))
 
         with right:
+            st.markdown(t("**QC疵点拆解｜Top CC**", "**QC defect breakdown | Top CC**"))
             split_options = {
                 t("按颜色 / 产品", "By product / color"): "product_label",
                 t("按检验阶段", "By inspection stage"): "inspection_stage",
@@ -4620,6 +4708,7 @@ with tabs[3]:
                     )
                 )
                 with st.expander(t("所选CC颜色数据", "Selected CC color data"), expanded=False):
+                    st.markdown(t("**所选CC颜色明细表**", "**Selected CC color detail table**"))
                     color_table = color_detail[
                         ["breakdown_display", "record_count", "qty_inspected", "defect_qty", "defect_rate"]
                     ].rename(columns={"breakdown_display": "product_label"})
@@ -4684,48 +4773,80 @@ with tabs[3]:
                     )
                 )
 
-        zone_count = (
-            product_risk_view.groupby("risk_zone", as_index=False)
-            .size()
-            .rename(columns={"size": t("产品数", "Products")})
+        st.markdown(t("**产品风险等级分布｜综合风险分阈值**", "**Product risk distribution | Overall-risk thresholds**"))
+        risk_bands = [
+            ("Low", t("低｜0–<35", "Low | 0–<35"), 0, 35),
+            ("Medium", t("中｜35–<55", "Medium | 35–<55"), 35, 55),
+            ("High", t("高｜55–<75", "High | 55–<75"), 55, 75),
+            ("Critical", t("严重｜75–100", "Critical | 75–100"), 75, 101),
+        ]
+        risk_rows = []
+        valid_risk_scores = pd.to_numeric(
+            product_factory_summary.get(
+                "risk_score",
+                pd.Series(index=product_factory_summary.index, dtype=float),
+            ),
+            errors="coerce",
         )
+        for level, band_label, lower, upper in risk_bands:
+            in_band = valid_risk_scores.ge(lower) & valid_risk_scores.lt(upper)
+            band_scores = valid_risk_scores[in_band]
+            risk_rows.append(
+                {
+                    "risk_level": level,
+                    "risk_band": band_label,
+                    "product_count": int(in_band.sum()),
+                    "avg_risk_score": float(band_scores.mean()) if not band_scores.empty else np.nan,
+                    "max_risk_score": float(band_scores.max()) if not band_scores.empty else np.nan,
+                }
+            )
+        risk_distribution = pd.DataFrame(risk_rows)
         fig = px.bar(
-            zone_count,
-            x="risk_zone",
-            y=t("产品数", "Products"),
-            color="risk_zone",
-            text=t("产品数", "Products"),
-            color_discrete_map=zone_colors,
-            labels={"risk_zone": t("风险分区", "Risk zone")},
+            risk_distribution,
+            x="risk_band",
+            y="product_count",
+            color="risk_level",
+            text="product_count",
+            color_discrete_map=LEVEL_COLORS,
+            category_orders={"risk_band": [band[1] for band in risk_bands]},
+            hover_data={
+                "risk_band": False,
+                "risk_level": False,
+                "product_count": ":,.0f",
+                "avg_risk_score": ":.1f",
+                "max_risk_score": ":.1f",
+            },
+            labels={
+                "risk_band": t("风险等级与分数范围", "Risk level and score range"),
+                "product_count": t("产品数", "Products"),
+                "avg_risk_score": t("平均风险分", "Average risk score"),
+                "max_risk_score": t("最高风险分", "Maximum risk score"),
+            },
         )
         fig.update_traces(textposition="outside")
+        fig.update_layout(showlegend=False)
+        fig.update_yaxes(rangemode="tozero")
         plot_chart(fig, 300)
-        st.caption(t(f"数据来源：{product_source}。展示该工厂产品在各风险分区的数量。", f"Source: {product_source}. Shows the selected factory's product count in each risk zone."))
-
-        st.markdown(t("#### Top CC 原始QC拆解", "#### Top CC raw QC breakdown"))
         st.caption(
             t(
-                "下表直接来自当前工厂QC原始记录，并按 CC + 产品/颜色 + 检验阶段 + 不良工序汇总。疵点数取原始字段“疵点个数”之和；不良率 = 疵点数 / 检验数量；主要疵点为该组合疵点数最高的疵点类型。",
-                "The table comes directly from the selected factory's raw QC records and is grouped by CC + product/color + inspection stage + defect process. Defects are summed from the raw defect-quantity field; defect rate = defects / inspected quantity; top defect is the largest defect type in that group.",
+                f"数据来源：{product_source}。综合风险分阈值：低 0–<35；中 35–<55；高 55–<75；严重 75–100。柱高为该等级的CC数量，悬停可看平均分和最高分。",
+                f"Source: {product_source}. Overall-risk thresholds: Low 0–<35; Medium 35–<55; High 55–<75; Critical 75–100. Bar height is the CC count; hover shows average and maximum score.",
             )
         )
-        provenance_table = build_product_qc_provenance(product_finished, top_product_codes)
-        dataframe_with_format(
-            provenance_table,
-            column_config={
-                "record_count": st.column_config.NumberColumn(t("原始记录数", "Raw Records"), format="%d"),
-                "work_order_count": st.column_config.NumberColumn(t("工单数", "Work Orders"), format="%d"),
-                "qty_inspected": st.column_config.NumberColumn(t("检验数量", "Inspected Qty"), format="%.0f"),
-                "defect_qty": st.column_config.NumberColumn(t("疵点数", "Defects"), format="%.0f"),
-                "defect_rate": st.column_config.NumberColumn(t("不良率", "Defect Rate"), format="%.2f%%"),
-                "first_date": st.column_config.DateColumn(t("起始日期", "Start Date"), format="YYYY-MM-DD"),
-                "last_date": st.column_config.DateColumn(t("结束日期", "End Date"), format="YYYY-MM-DD"),
-            },
-            height=420,
-        )
 
-        with st.expander(t("产品明细（可选）", "Product detail (optional)")):
-            product_table = product_factory_summary.head(30).copy()
+        with st.expander(t("Top 风险CC（可选）", "Top risk CCs (optional)")):
+            st.markdown(t("**Top 风险CC｜RPM优先、QTY次序**", "**Top risk CCs | RPM first, QTY second**"))
+            st.caption(
+                t(
+                    "排序规则：先按 RPM 百万退货率从高到低，再按客户端退货 QTY 从高到低；RPM 缺失的CC排在后面。QC检验数量单独保留，不参与第二排序。",
+                    "Sorting: RPM returns per million descending, then client return QTY descending; CCs without RPM are placed last. QC inspected quantity remains visible but is not the second sort key.",
+                )
+            )
+            product_table = product_factory_summary.sort_values(
+                ["rpm_now", "returned_now"],
+                ascending=[False, False],
+                na_position="last",
+            ).head(30).copy()
             product_table["product_label"] = product_table["product_label"].map(localize_product_label)
             product_table["risk_level"] = product_table["risk_level"].map(risk_level_text)
             product_table = product_table[
@@ -4736,16 +4857,16 @@ with tabs[3]:
                     "variant_count",
                     "risk_level",
                     "risk_score",
+                    "production_score",
+                    "client_score",
                     "qty_inspected",
                     "defect_qty",
                     "qc_confidence",
                     "defect_rate",
                     "top_defect",
                     "rpm_now",
-                    "delta_rpm",
-                    "avg_score_now",
+                    "returned_now",
                     "intern_voice_count",
-                    "alert_reason",
                 ]
             ]
             dataframe_with_format(
@@ -4753,12 +4874,14 @@ with tabs[3]:
                 column_config={
                     "variant_count": st.column_config.NumberColumn(t("产品 / 颜色数", "Product / Color Count"), format="%d"),
                     "risk_score": st.column_config.NumberColumn(t("风险分", "Risk Score"), format="%.1f"),
+                    "production_score": st.column_config.NumberColumn(t("生产端风险", "Production Risk"), format="%.1f"),
+                    "client_score": st.column_config.NumberColumn(t("客户端风险", "Client Risk"), format="%.1f"),
+                    "qty_inspected": st.column_config.NumberColumn(t("QC检验数量", "QC Inspected Qty"), format="%.0f"),
                     "defect_qty": st.column_config.NumberColumn(t("疵点数", "Defects"), format="%.0f"),
                     "qc_confidence": st.column_config.TextColumn(t("QC 置信度", "QC Confidence")),
                     "defect_rate": st.column_config.ProgressColumn(t("QC 不良率", "QC Defect Rate"), format="%.2f%%", min_value=0, max_value=0.08),
                     "rpm_now": st.column_config.NumberColumn("RPM N0", format="%.0f"),
-                    "delta_rpm": st.column_config.NumberColumn("Delta RPM", format="%.0f"),
-                    "avg_score_now": st.column_config.NumberColumn(t("客户评分", "Customer Score"), format="%.2f"),
+                    "returned_now": st.column_config.NumberColumn(t("退货QTY", "Return QTY"), format="%.0f"),
                     "intern_voice_count": st.column_config.NumberColumn("Intern Voice", format="%d"),
                 },
                 height=420,
