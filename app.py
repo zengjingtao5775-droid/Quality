@@ -4534,7 +4534,7 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
     )
     fig.update_traces(textposition="top center", marker=dict(opacity=0.76, line=dict(color="#ffffff", width=0.8)))
     fig.update_xaxes(range=[-2, 50])
-    fig.update_yaxes(range=[-4, 80])
+    fig.update_yaxes(range=[-4, 60])
     fig.add_vline(x=50, line_dash="dash", line_color="#8b96b8", opacity=0.45)
     fig.add_hline(y=55, line_dash="dash", line_color="#8b96b8", opacity=0.45)
     fig.add_annotation(
@@ -4550,8 +4550,8 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
     plot_chart(fig, 620)
     st.caption(
         t(
-            f"数据来源：{source_label}。每个点代表一个CC，共 {len(view)} 个，当前显示 {len(plot_view)} 个。算法：K-means按生产端风险分与客户端风险分聚类；综合风险 = 生产端风险 × 70% + 客户端风险 × 30%。默认X轴聚焦0-50、Y轴聚焦0-80，hover保留真实值和计算逻辑。",
-            f"Source: {source_label}. Each point is one CC, {len(view)} total and {len(plot_view)} currently shown. Algorithm: K-means clusters by production risk and client risk; combined risk = production risk x 70% + client risk x 30%. Default X-axis focuses on 0-50 and Y-axis on 0-80; hover keeps true values and calculation logic.",
+            f"数据来源：{source_label}。每个点代表一个CC，共 {len(view)} 个，当前显示 {len(plot_view)} 个。算法：K-means按生产端风险分与客户端风险分聚类；综合风险 = 生产端风险 × 70% + 客户端风险 × 30%。默认X轴聚焦0-50、Y轴聚焦0-60，hover保留真实值和计算逻辑。",
+            f"Source: {source_label}. Each point is one CC, {len(view)} total and {len(plot_view)} currently shown. Algorithm: K-means clusters by production risk and client risk; combined risk = production risk x 70% + client risk x 30%. Default X-axis focuses on 0-50 and Y-axis on 0-60; hover keeps true values and calculation logic.",
         )
     )
 
@@ -5048,16 +5048,36 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
 
     worker_view["defect_rate_numeric"] = pd.to_numeric(worker_view.get("defect_rate", 0), errors="coerce").fillna(0)
     worker_view["qty_inspected"] = pd.to_numeric(worker_view.get("qty_inspected", 0), errors="coerce").fillna(0)
+    worker_view["defect_qty"] = pd.to_numeric(worker_view.get("defect_qty", 0), errors="coerce").fillna(0)
     high_label = t("高危工", "High-Risk Worker")
     medium_label = t("中等工", "Medium Worker")
     skilled_label = t("熟练工人", "Skilled Worker")
+
+    rate_p90 = worker_view["defect_rate_numeric"].quantile(0.90)
+    rate_anchor = max(float(rate_p90), float(worker_view["defect_rate_numeric"].max()), 0.0001)
+    worker_view["defect_risk_axis"] = (worker_view["defect_rate_numeric"] / rate_anchor * 100).clip(0, 100)
+    qty_log = np.log1p(worker_view["qty_inspected"].clip(lower=0))
+    qty_anchor = max(float(qty_log.max()), 0.0001)
+    worker_view["volume_axis"] = (qty_log / qty_anchor * 100).clip(0, 100)
+
     if len(worker_view) >= 3:
-        risk_rank = worker_view["defect_rate_numeric"].rank(pct=True, method="average")
-        worker_view["skill_level"] = np.select(
-            [risk_rank >= 0.67, risk_rank >= 0.34],
-            [high_label, medium_label],
-            default=skilled_label,
+        cluster_input = worker_view[["defect_risk_axis", "volume_axis"]].fillna(0).to_numpy(dtype=float)
+        labels, _ = deterministic_kmeans(cluster_input, cluster_count=3)
+        worker_view["_cluster_id"] = labels
+        cluster_rank = (
+            worker_view.groupby("_cluster_id")["defect_risk_axis"]
+            .mean()
+            .sort_values()
+            .index
+            .tolist()
         )
+        cluster_names = {}
+        if cluster_rank:
+            cluster_names[cluster_rank[0]] = skilled_label
+            cluster_names[cluster_rank[-1]] = high_label
+        for cluster_id in cluster_rank[1:-1]:
+            cluster_names[cluster_id] = medium_label
+        worker_view["skill_level"] = worker_view["_cluster_id"].map(cluster_names).fillna(medium_label)
     else:
         median_rate = worker_view["defect_rate_numeric"].median()
         worker_view["skill_level"] = np.where(worker_view["defect_rate_numeric"] > median_rate, high_label, skilled_label)
@@ -5068,20 +5088,35 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         with col:
             st.metric(label, int(counts.get(label, 0)))
 
-    display_view = worker_view.sort_values(["defect_rate_numeric", "qty_inspected"], ascending=False).head(16).copy()
+    def stable_worker_jitter(value: object, scale: float = 1.1) -> float:
+        seed = int(hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:8], 16)
+        return ((seed % 10000) / 9999 - 0.5) * 2 * scale
+
+    display_view = worker_view.sort_values(["defect_risk_axis", "qty_inspected"], ascending=False).head(28).copy()
     display_view["worker_view"] = display_view["worker_team"].astype(str) + " / " + display_view["process"].astype(str)
-    sorted_view = display_view.sort_values("defect_rate_numeric", ascending=True)
-    fig = px.bar(
-        sorted_view,
-        x="defect_rate_numeric",
-        y="worker_view",
-        orientation="h",
+    display_view["plot_x"] = (display_view["defect_risk_axis"] + display_view["worker_view"].map(stable_worker_jitter)).clip(0, 100)
+    display_view["plot_y"] = (display_view["volume_axis"] + display_view["worker_view"].map(lambda value: stable_worker_jitter(value, 0.9))).clip(0, 100)
+    display_view["bubble_size"] = np.log1p(display_view["defect_qty"].clip(lower=0) + 1)
+    top_worker_index = display_view["defect_risk_axis"].nlargest(min(14, len(display_view))).index
+    display_view["worker_text"] = ""
+    display_view.loc[top_worker_index, "worker_text"] = display_view.loc[top_worker_index, "worker_team"].astype(str).str.slice(0, 10)
+
+    fig = px.scatter(
+        display_view.sort_values("defect_risk_axis", ascending=False),
+        x="plot_x",
+        y="plot_y",
         color="skill_level",
-        text=sorted_view["defect_rate_numeric"].map(pct),
+        size="bubble_size",
+        text="worker_text",
+        size_max=18,
         labels={
-            "defect_rate_numeric": t("不良率", "Defect Rate"),
-            "worker_view": t("工人 / 工序", "Worker / Process"),
+            "plot_x": t("不良率风险分", "Defect-Rate Risk Score"),
+            "plot_y": t("检验量强度", "Inspection Volume Strength"),
             "skill_level": t("技能分层", "Skill Level"),
+            "defect_rate_numeric": t("不良率", "Defect Rate"),
+            "qty_inspected": t("检验数量", "Inspected Qty"),
+            "defect_qty": t("疵点数", "Defects"),
+            "worker_view": t("工人 / 工序", "Worker / Process"),
         },
         color_discrete_map={
             high_label: "#dc2626",
@@ -5089,17 +5124,36 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
             skilled_label: "#16a34a",
         },
         hover_data={
+            "worker_view": True,
+            "defect_rate_numeric": ":.2%",
             "qty_inspected": ":,.0f",
             "defect_qty": ":,.0f",
-            "worker_team": True,
-            "process": True,
+            "defect_risk_axis": ":.1f",
+            "volume_axis": ":.1f",
             "skill_level": True,
-            "worker_view": False,
+            "plot_x": False,
+            "plot_y": False,
+            "bubble_size": False,
+            "worker_text": False,
         },
     )
-    fig.update_xaxes(tickformat=".1%")
-    plot_chart(fig, 360)
-    st.caption(t(f"数据来源：{source_label}。按工人/工序聚合不良率并分为高危工、中等工、熟练工人；优先看高不良且样本量足够的岗位。", f"Source: {source_label}. Aggregates defect rate by worker/process and groups workers into high-risk, medium, and skilled levels; prioritize high-rate positions with enough volume."))
+    fig.update_traces(textposition="top center", marker=dict(opacity=0.78, line=dict(color="#ffffff", width=0.8)))
+    fig.update_xaxes(range=[-4, 104])
+    fig.update_yaxes(range=[-4, 104])
+    fig.add_vline(x=55, line_dash="dash", line_color="#8b96b8", opacity=0.40)
+    fig.add_hline(y=55, line_dash="dash", line_color="#8b96b8", opacity=0.40)
+    fig.add_annotation(
+        xref="paper",
+        yref="paper",
+        x=0.98,
+        y=0.98,
+        text=t("右上：高不良率 + 高检验量", "Upper-right: high defect + high volume"),
+        showarrow=False,
+        font=dict(size=13, color="#dc2626"),
+        bgcolor="rgba(255,255,255,0.72)",
+    )
+    plot_chart(fig, 420)
+    st.caption(t(f"数据来源：{source_label}。每个点代表一个工人/工序组合，K-means 按不良率风险分和检验量强度聚类为高危工、中等工、熟练工人；点越大代表疵点越多。", f"Source: {source_label}. Each point is one worker/process combination. K-means clusters defect-rate risk and inspection-volume strength into high-risk, medium, and skilled workers; larger bubbles mean more defects."))
 
 
 def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact: bool = False):
