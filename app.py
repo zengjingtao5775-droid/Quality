@@ -4476,11 +4476,9 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
     risk_filter_options = [all_filter_label, t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
     _, filter_col = st.columns([5.5, 1.6])
     with filter_col:
-        selected_risk_level = st.radio(
+        selected_risk_level = st.selectbox(
             t("风险筛选", "Risk Filter"),
             risk_filter_options,
-            horizontal=True,
-            label_visibility="collapsed",
             key=f"zx_cluster_risk_filter_{language_query_code()}",
         )
     plot_view = view if selected_risk_level == all_filter_label else view[view["cluster_risk_level"] == selected_risk_level]
@@ -4535,9 +4533,9 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
         },
     )
     fig.update_traces(textposition="top center", marker=dict(opacity=0.76, line=dict(color="#ffffff", width=0.8)))
-    fig.update_xaxes(range=[-2, 60])
-    fig.update_yaxes(range=[-4, 104])
-    fig.add_vline(x=55, line_dash="dash", line_color="#8b96b8", opacity=0.45)
+    fig.update_xaxes(range=[-2, 50])
+    fig.update_yaxes(range=[-4, 80])
+    fig.add_vline(x=50, line_dash="dash", line_color="#8b96b8", opacity=0.45)
     fig.add_hline(y=55, line_dash="dash", line_color="#8b96b8", opacity=0.45)
     fig.add_annotation(
         xref="paper",
@@ -4552,8 +4550,8 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
     plot_chart(fig, 620)
     st.caption(
         t(
-            f"数据来源：{source_label}。每个点代表一个CC，共 {len(view)} 个，当前显示 {len(plot_view)} 个。算法：K-means按生产端风险分与客户端风险分聚类；综合风险 = 生产端风险 × 70% + 客户端风险 × 30%。默认X轴聚焦0-60，hover保留真实值和计算逻辑。",
-            f"Source: {source_label}. Each point is one CC, {len(view)} total and {len(plot_view)} currently shown. Algorithm: K-means clusters by production risk and client risk; combined risk = production risk x 70% + client risk x 30%. Default X-axis focuses on 0-60; hover keeps true values and calculation logic.",
+            f"数据来源：{source_label}。每个点代表一个CC，共 {len(view)} 个，当前显示 {len(plot_view)} 个。算法：K-means按生产端风险分与客户端风险分聚类；综合风险 = 生产端风险 × 70% + 客户端风险 × 30%。默认X轴聚焦0-50、Y轴聚焦0-80，hover保留真实值和计算逻辑。",
+            f"Source: {source_label}. Each point is one CC, {len(view)} total and {len(plot_view)} currently shown. Algorithm: K-means clusters by production risk and client risk; combined risk = production risk x 70% + client risk x 30%. Default X-axis focuses on 0-50 and Y-axis on 0-80; hover keeps true values and calculation logic.",
         )
     )
 
@@ -5043,24 +5041,65 @@ def render_product_rpm_qty_priority(products: pd.DataFrame, source_label: str):
 
 
 def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
-    worker_view = worker_df[worker_df["worker_team"].astype(str).str.strip().ne("未记录")].head(12).copy()
+    worker_view = worker_df[worker_df["worker_team"].astype(str).str.strip().ne("未记录")].copy()
     if worker_view.empty:
         st.info(t("当前范围暂无可用工人 / 班组分析。", "No worker/team analysis available in current scope."))
         return
-    worker_view["worker_view"] = worker_view["worker_team"].astype(str) + " / " + worker_view["process"].astype(str)
+
+    worker_view["defect_rate_numeric"] = pd.to_numeric(worker_view.get("defect_rate", 0), errors="coerce").fillna(0)
+    worker_view["qty_inspected"] = pd.to_numeric(worker_view.get("qty_inspected", 0), errors="coerce").fillna(0)
+    high_label = t("高危工", "High-Risk Worker")
+    medium_label = t("中等工", "Medium Worker")
+    skilled_label = t("熟练工人", "Skilled Worker")
+    if len(worker_view) >= 3:
+        risk_rank = worker_view["defect_rate_numeric"].rank(pct=True, method="average")
+        worker_view["skill_level"] = np.select(
+            [risk_rank >= 0.67, risk_rank >= 0.34],
+            [high_label, medium_label],
+            default=skilled_label,
+        )
+    else:
+        median_rate = worker_view["defect_rate_numeric"].median()
+        worker_view["skill_level"] = np.where(worker_view["defect_rate_numeric"] > median_rate, high_label, skilled_label)
+
+    counts = worker_view["skill_level"].value_counts()
+    metric_cols = st.columns(3)
+    for col, label in zip(metric_cols, [high_label, medium_label, skilled_label]):
+        with col:
+            st.metric(label, int(counts.get(label, 0)))
+
+    display_view = worker_view.sort_values(["defect_rate_numeric", "qty_inspected"], ascending=False).head(16).copy()
+    display_view["worker_view"] = display_view["worker_team"].astype(str) + " / " + display_view["process"].astype(str)
+    sorted_view = display_view.sort_values("defect_rate_numeric", ascending=True)
     fig = px.bar(
-        worker_view.sort_values("defect_rate", ascending=True),
-        x="defect_rate",
+        sorted_view,
+        x="defect_rate_numeric",
         y="worker_view",
         orientation="h",
-        color="skill_tag",
-        text=worker_view.sort_values("defect_rate", ascending=True)["defect_rate"].map(pct),
-        labels={"defect_rate": t("不良率", "Defect Rate"), "worker_view": t("工人 / 工序", "Worker / Process"), "skill_tag": t("分组", "Group")},
-        color_discrete_sequence=["#3341c4", "#60a5fa", "#94a3b8"],
+        color="skill_level",
+        text=sorted_view["defect_rate_numeric"].map(pct),
+        labels={
+            "defect_rate_numeric": t("不良率", "Defect Rate"),
+            "worker_view": t("工人 / 工序", "Worker / Process"),
+            "skill_level": t("技能分层", "Skill Level"),
+        },
+        color_discrete_map={
+            high_label: "#dc2626",
+            medium_label: "#d97706",
+            skilled_label: "#16a34a",
+        },
+        hover_data={
+            "qty_inspected": ":,.0f",
+            "defect_qty": ":,.0f",
+            "worker_team": True,
+            "process": True,
+            "skill_level": True,
+            "worker_view": False,
+        },
     )
     fig.update_xaxes(tickformat=".1%")
     plot_chart(fig, 360)
-    st.caption(t(f"数据来源：{source_label}。按工人/工序聚合不良率，优先看高不良且样本量足够的岗位。", f"Source: {source_label}. Aggregates defect rate by worker/process; prioritize high-rate positions with enough volume."))
+    st.caption(t(f"数据来源：{source_label}。按工人/工序聚合不良率并分为高危工、中等工、熟练工人；优先看高不良且样本量足够的岗位。", f"Source: {source_label}. Aggregates defect rate by worker/process and groups workers into high-risk, medium, and skilled levels; prioritize high-rate positions with enough volume."))
 
 
 def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact: bool = False):
@@ -5300,35 +5339,41 @@ def render_se_data_summary(finished_df: pd.DataFrame, process_df: pd.DataFrame, 
 
 
 def render_tu_jiandaoyun_snapshot() -> None:
-    st.subheader(t("简道云 ZX FQC 报表", "Jiandaoyun ZX FQC Report"))
+    st.subheader(t("简道云 ZX（中兴）FQC RFT", "Jiandaoyun ZX FQC RFT"))
     api_key = get_jdy_api_key()
     api_error = ""
     refresh_cols = st.columns([0.85, 2.6])
-    refresh_requested = False
+    if "tu_jdy_refresh_token" not in st.session_state:
+        st.session_state.tu_jdy_refresh_token = 0
     if api_key:
         with refresh_cols[0]:
-            refresh_requested = st.button(t("刷新简道云 API", "Refresh Jiandaoyun API"), key="tu_jdy_refresh_api")
-        if refresh_requested:
-            st.session_state.tu_jdy_refresh_token = st.session_state.get("tu_jdy_refresh_token", 0) + 1
-            try:
-                with st.spinner(t("正在读取简道云 ZX FQC 最新数据...", "Reading latest Jiandaoyun ZX FQC data...")):
-                    jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc_api(
-                        api_key,
-                        st.session_state.tu_jdy_refresh_token,
-                        JIANDAOYUN_CACHE_VERSION,
-                    )
-            except Exception as exc:
-                api_error = str(exc)
-                jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
-        else:
+            if st.button(t("刷新简道云 API", "Refresh Jiandaoyun API"), key="tu_jdy_refresh_api"):
+                st.session_state.tu_jdy_refresh_token += 1
+                load_jiandaoyun_zx_fqc_api.clear()
+        try:
+            with st.spinner(t("正在读取简道云 ZX FQC 最新数据...", "Reading latest Jiandaoyun ZX FQC data...")):
+                jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc_api(
+                    api_key,
+                    st.session_state.tu_jdy_refresh_token,
+                    JIANDAOYUN_CACHE_VERSION,
+                )
+        except Exception as exc:
+            api_error = str(exc)
             jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
     else:
+        with refresh_cols[0]:
+            st.caption(t("未配置 API Key", "No API key"))
         jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
 
     if api_error:
         st.warning(t(f"简道云 API 调用失败，已回退到本地 CSV。错误：{api_error}", f"Jiandaoyun API failed, falling back to local CSV. Error: {api_error}"))
     if jdy_fqc.empty:
-        st.info(t("当前没有检测到简道云 ZX FQC 数据。该模块只用于 TU / ZX，因为当前 API 只接入中兴。", "No Jiandaoyun ZX FQC data was found. This module is only used for TU / ZX because the current API is connected only to ZX."))
+        st.info(
+            t(
+                "当前没有检测到简道云 ZX（中兴）FQC 数据。请确认 Streamlit Secrets 已配置 JIANDAOYUN_API_KEY；该模块只用于 TU / ZX。",
+                "No Jiandaoyun ZX FQC data was found. Confirm JIANDAOYUN_API_KEY is configured in Streamlit Secrets; this module is only for TU / ZX.",
+            )
+        )
         return
 
     source_mode_text = t("实时 API", "Live API") if jdy_meta.get("mode") == "live_api" else t("本地 CSV", "Local CSV")
@@ -5343,151 +5388,166 @@ def render_tu_jiandaoyun_snapshot() -> None:
         refresh_time = "-"
     with refresh_cols[1]:
         st.markdown(
-            f"<div class='product-section-note' style='padding-top:12px;'>{t('最新刷新时间', 'Latest refresh')}: <b>{html.escape(refresh_time)}</b> ｜ {t('模式', 'Mode')}: <b>{html.escape(source_mode_text)}</b></div>",
+            f"<div class='product-section-note' style='padding-top:12px;'>{t('ZX = 中兴，属于 TU；最新刷新时间', 'ZX is Zhongxing under TU; latest refresh')}: <b>{html.escape(refresh_time)}</b> ｜ {t('模式', 'Mode')}: <b>{html.escape(source_mode_text)}</b></div>",
             unsafe_allow_html=True,
         )
-    records = len(jdy_fqc)
-    sampling_series = pd.to_numeric(jdy_fqc["sampling_size"] if "sampling_size" in jdy_fqc.columns else pd.Series(0, index=jdy_fqc.index), errors="coerce").fillna(0)
-    defect_series = pd.to_numeric(jdy_fqc["defect_qty"] if "defect_qty" in jdy_fqc.columns else pd.Series(0, index=jdy_fqc.index), errors="coerce").fillna(0)
+
+    jdy_view = jdy_fqc.copy()
+    result_text = jdy_view["result"].fillna("").astype(str) if "result" in jdy_view.columns else pd.Series("", index=jdy_view.index)
+    fail_mask = (
+        jdy_view["is_fail"].fillna(False).astype(bool)
+        if "is_fail" in jdy_view.columns
+        else result_text.str.contains("FAIL|NG|NOK|不合格|拒", case=False, na=False)
+    )
+    pass_mask = result_text.str.contains("^PASS$|合格", case=False, na=False) & ~fail_mask
+    valid_result_mask = pass_mask | fail_mask
+    jdy_view["_is_fail"] = fail_mask
+    jdy_view["_is_pass"] = pass_mask
+    jdy_view["_valid_result"] = valid_result_mask
+
+    records = len(jdy_view)
+    valid_records = int(valid_result_mask.sum())
+    pass_count = int(pass_mask.sum())
+    fail_count = int(fail_mask.sum())
+    rft = pass_count / valid_records if valid_records else 0
+    sampling_series = pd.to_numeric(jdy_view["sampling_size"] if "sampling_size" in jdy_view.columns else pd.Series(0, index=jdy_view.index), errors="coerce").fillna(0)
+    defect_series = pd.to_numeric(jdy_view["defect_qty"] if "defect_qty" in jdy_view.columns else pd.Series(0, index=jdy_view.index), errors="coerce").fillna(0)
     sampling = float(sampling_series.sum())
     defects = float(defect_series.sum())
     defect_rate = defects / sampling if sampling else 0
-    fail_count = int(jdy_fqc["result"].astype(str).str.contains("FAIL|NG|NOK|不合格", case=False, na=False).sum()) if "result" in jdy_fqc.columns else 0
+    inspector_count = jdy_view["inspector"].replace("", np.nan).dropna().nunique() if "inspector" in jdy_view.columns else 0
 
     render_kpi_cards(
         [
             {
-                "label": t("简道云记录", "JDY Records"),
-                "value": compact_num(records),
-                "note": source_mode_text,
-                "level": "low",
-            },
-            {
-                "label": t("抽样数量", "Sampling Qty"),
-                "value": compact_num(sampling),
-                "note": t("来自简道云 FQC", "From Jiandaoyun FQC"),
-                "level": "low",
-            },
-            {
-                "label": t("疵点数量", "Defects"),
-                "value": compact_num(defects),
-                "note": pct(defect_rate),
-                "level": "high" if defect_rate >= 0.04 else "medium" if defects else "low",
+                "label": "FQC RFT",
+                "value": pct(rft),
+                "note": t(f"PASS {pass_count:,} / 有效结果 {valid_records:,}", f"PASS {pass_count:,} / valid results {valid_records:,}"),
+                "level": "high" if rft < 0.92 else "medium" if rft < 0.97 else "low",
             },
             {
                 "label": t("Fail 记录", "Fail Records"),
                 "value": str(fail_count),
-                "note": t("按检验结果识别", "Detected by inspection result"),
+                "note": t(f"简道云记录 {records:,} 条", f"{records:,} Jiandaoyun records"),
                 "level": "high" if fail_count else "low",
+            },
+            {
+                "label": t("抽样疵点率", "Sample Defect Rate"),
+                "value": pct(defect_rate),
+                "note": t(f"抽样 {compact_num(sampling)} / 疵点 {compact_num(defects)}", f"Sample {compact_num(sampling)} / defects {compact_num(defects)}"),
+                "level": "high" if defect_rate >= 0.04 else "medium" if defects else "low",
+            },
+            {
+                "label": t("检验员", "Inspectors"),
+                "value": str(inspector_count),
+                "note": source_mode_text,
+                "level": "low",
             },
         ]
     )
 
     left, right = st.columns([1, 1])
     with left:
-        jdy_monthly_source = jdy_fqc.copy()
+        st.markdown(f"**{t('FQC RFT 趋势', 'FQC RFT Trend')}**")
+        jdy_monthly_source = jdy_view.copy()
         jdy_monthly_source["month"] = pd.to_datetime(jdy_monthly_source["date"], errors="coerce").dt.to_period("M").astype(str)
         monthly = (
             jdy_monthly_source[jdy_monthly_source["month"].ne("NaT")]
             .groupby("month", as_index=False)
-            .agg(sampling_size=("sampling_size", "sum"), defect_qty=("defect_qty", "sum"))
+            .agg(records=("record_id", "count"), pass_count=("_is_pass", "sum"), fail_count=("_is_fail", "sum"), valid_results=("_valid_result", "sum"))
         )
         if not monthly.empty:
-            monthly["defect_rate"] = safe_rate(monthly["defect_qty"], monthly["sampling_size"])
-            fig = px.line(
-                monthly,
-                x="month",
-                y="defect_rate",
-                markers=True,
-                labels={"month": t("月份", "Month"), "defect_rate": t("不良率", "Defect Rate")},
-                color_discrete_sequence=["#3341c4"],
+            monthly["rft"] = safe_rate(monthly["pass_count"], monthly["valid_results"])
+            fig = go.Figure()
+            fig.add_bar(
+                x=monthly["month"],
+                y=monthly["records"],
+                name=t("记录数", "Records"),
+                marker_color="#93c5fd",
+                opacity=0.55,
+                yaxis="y2",
             )
-            fig.update_yaxes(tickformat=".1%")
+            fig.add_trace(
+                go.Scatter(
+                    x=monthly["month"],
+                    y=monthly["rft"],
+                    name="FQC RFT",
+                    mode="lines+markers",
+                    line=dict(color="#168a5b", width=3),
+                )
+            )
+            fig.update_layout(
+                yaxis=dict(title="FQC RFT", tickformat=".0%", range=[0, 1.02]),
+                yaxis2=dict(title=t("记录数", "Records"), overlaying="y", side="right", showgrid=False),
+                xaxis=dict(title=t("月份", "Month")),
+                legend_title_text="",
+            )
             plot_chart(fig, 300)
+        else:
+            st.info(t("当前没有可按月展示的简道云日期。", "No Jiandaoyun dates available for monthly RFT."))
     with right:
-        if "result" in jdy_fqc.columns:
-            result = jdy_fqc.groupby("result", as_index=False).size().sort_values("size", ascending=True)
+        st.markdown(f"**{t('检验员 RFT', 'Inspector RFT')}**")
+        if "inspector" in jdy_view.columns:
+            inspector_source = jdy_view.copy()
+            inspector_source["inspector_clean"] = inspector_source["inspector"].fillna("").astype(str).str.strip().replace("", t("未记录", "Unknown"))
+            inspector = (
+                inspector_source.groupby("inspector_clean", as_index=False)
+                .agg(
+                    records=("record_id", "count"),
+                    pass_count=("_is_pass", "sum"),
+                    fail_count=("_is_fail", "sum"),
+                    valid_results=("_valid_result", "sum"),
+                    sampling_size=("sampling_size", "sum"),
+                    defect_qty=("defect_qty", "sum"),
+                    latest_date=("date", "max"),
+                )
+            )
+            inspector = inspector[inspector["valid_results"] > 0].copy()
+        else:
+            inspector = pd.DataFrame()
+
+        if not inspector.empty:
+            inspector["rft"] = safe_rate(inspector["pass_count"], inspector["valid_results"])
+            inspector["defect_rate"] = safe_rate(inspector["defect_qty"], inspector["sampling_size"])
+            inspector_plot = inspector.sort_values(["rft", "records"], ascending=[True, False]).head(12)
             fig = px.bar(
-                result,
-                x="size",
-                y="result",
+                inspector_plot.sort_values("rft", ascending=True),
+                x="rft",
+                y="inspector_clean",
                 orientation="h",
-                text="size",
-                labels={"size": t("记录数", "Records"), "result": t("检验结果", "Inspection Result")},
-                color_discrete_sequence=["#60a5fa"],
+                color="rft",
+                text=inspector_plot.sort_values("rft", ascending=True)["rft"].map(pct),
+                color_continuous_scale=["#c01048", "#ffd166", "#16a34a"],
+                labels={"rft": "RFT", "inspector_clean": t("检验员", "Inspector")},
             )
+            fig.update_xaxes(range=[0, 1.02], tickformat=".0%")
+            fig.update_layout(coloraxis_showscale=False)
             plot_chart(fig, 300)
-
-    cc_summary = jdy_cc_summary(jdy_fqc).head(12)
-    if not cc_summary.empty:
-        st.markdown(f"**{t('简道云 Top CC 明细', 'Jiandaoyun Top CC Detail')}**")
-        dataframe_with_format(cc_summary, height=320)
-    ai_report = build_jdy_ai_report(jdy_fqc)
-    markdown_report = build_jdy_action_report_markdown(jdy_fqc, ai_report, jdy_meta, source_mode_text)
-    with st.expander(t("AI质量总结 / 可下载报告", "AI Quality Summary / Downloadable Report"), expanded=True):
-        fact_pack = build_jdy_llm_fact_pack(jdy_fqc)
-        facts_json = json.dumps(fact_pack, ensure_ascii=False, separators=(",", ":"), allow_nan=False) if fact_pack else "{}"
-        stored_dify_key = get_dify_api_key()
-        stored_qwen_key = get_qwen_api_key()
-        default_provider = "Dify" if stored_dify_key else "Qwen"
-        active_llm_key = stored_dify_key or stored_qwen_key
-        selected_model = "Dify workflow" if default_provider == "Dify" else get_secret_value(["QWEN_MODEL"], default="qwen-max")
-        report_fingerprint = hashlib.sha256(
-            f"tu_snapshot|{default_provider}|{selected_model}|{st.session_state.lang}|{facts_json}".encode("utf-8")
-        ).hexdigest()
-
-        if active_llm_key:
-            st.caption(
-                t(
-                    f"已检测到 {default_provider} 大模型配置。点击按钮后，会把当前时间范围内的简道云事实包交给大模型生成总结。",
-                    f"{default_provider} model configuration detected. Click the button to generate a summary from the current Jiandaoyun fact pack.",
-                )
-            )
-            if st.button(t("用大模型生成当前质量总结", "Generate Current Quality Summary with LLM"), key="tu_jdy_generate_llm_summary"):
-                try:
-                    with st.spinner(t("大模型正在生成当前质量总结...", "The model is generating the current quality summary...")):
-                        llm_report = generate_jdy_llm_report(
-                            default_provider,
-                            selected_model,
-                            facts_json,
-                            st.session_state.lang,
-                            hashlib.sha256(active_llm_key.encode("utf-8")).hexdigest()[:12],
-                            active_llm_key,
-                        )
-                    st.session_state.tu_jdy_llm_summary = llm_report
-                    st.session_state.tu_jdy_llm_summary_fingerprint = report_fingerprint
-                except Exception as exc:
-                    st.error(t(f"大模型总结生成失败：{exc}", f"LLM summary generation failed: {exc}"))
         else:
-            st.info(
-                t(
-                    "当前没有配置 DIFY_API_KEY 或 DASHSCOPE_API_KEY，所以这里展示的是基于结构化字段的规则总结，不是大模型生成。配置密钥后可在这里一键生成大模型总结。",
-                    "DIFY_API_KEY or DASHSCOPE_API_KEY is not configured, so this is a structured rule-based summary, not an LLM-generated report. Configure a key to generate an LLM summary here.",
-                )
-            )
+            st.info(t("当前没有可用的检验员 RFT 数据。", "No inspector RFT data is available."))
 
-        llm_report = st.session_state.get("tu_jdy_llm_summary")
-        llm_fingerprint = st.session_state.get("tu_jdy_llm_summary_fingerprint")
-        if llm_report and llm_fingerprint == report_fingerprint:
-            report_content = compact_report_text(llm_report["content"], 300)
-            st.markdown(report_content)
-            st.caption(
-                t(
-                    f"生成方式：{llm_report['provider']} / {llm_report['model']}；生成时间：{llm_report['generated_at']}。",
-                    f"Generated by {llm_report['provider']} / {llm_report['model']} at {llm_report['generated_at']}.",
-                )
-            )
-        else:
-            report_content = markdown_report
-            st.markdown(markdown_report)
-        st.download_button(
-            t("下载ZX FQC质量总结 MD", "Download ZX FQC Quality Summary MD"),
-            data=report_content.encode("utf-8"),
-            file_name=f"ZX_FQC_AI_Quality_Summary_{dt.datetime.now():%Y%m%d_%H%M}.md",
-            mime="text/markdown",
-            key="download_tu_jdy_quality_summary",
+    if not inspector.empty:
+        table = inspector.sort_values(["rft", "records"], ascending=[True, False]).rename(
+            columns={
+                "inspector_clean": t("检验员", "Inspector"),
+                "records": t("记录数", "Records"),
+                "pass_count": "PASS",
+                "fail_count": "FAIL",
+                "rft": "RFT",
+                "defect_rate": t("抽样疵点率", "Sample Defect Rate"),
+                "latest_date": t("最新日期", "Latest Date"),
+            }
         )
-    st.caption(t(f"数据来源：简道云 ZX FQC；模式：{source_mode_text}。该报表仅放在 TU / ZX 页面，BME 和 SE 不使用简道云。", f"Source: Jiandaoyun ZX FQC; mode: {source_mode_text}. This report is shown only on TU / ZX; BME and SE do not use Jiandaoyun."))
+        dataframe_with_format(
+            table[[t("检验员", "Inspector"), t("记录数", "Records"), "PASS", "FAIL", "RFT", t("抽样疵点率", "Sample Defect Rate"), t("最新日期", "Latest Date")]],
+            column_config={
+                "RFT": st.column_config.ProgressColumn("RFT", format="%.2f%%", min_value=0, max_value=1),
+                t("抽样疵点率", "Sample Defect Rate"): st.column_config.ProgressColumn(t("抽样疵点率", "Sample Defect Rate"), format="%.2f%%", min_value=0, max_value=0.1),
+                t("最新日期", "Latest Date"): st.column_config.DateColumn(format="YYYY-MM-DD"),
+            },
+            height=300,
+        )
+    st.caption(t(f"数据来源：简道云 ZX（中兴）FQC；模式：{source_mode_text}。该报表仅放在 TU / ZX 页面，重点看 FQC RFT 和检验员 RFT；BME 和 SE 不使用简道云。", f"Source: Jiandaoyun ZX FQC; mode: {source_mode_text}. This report is shown only on TU / ZX and focuses on FQC RFT and inspector RFT; BME and SE do not use Jiandaoyun."))
 
 
 def render_community_cockpit(
@@ -5561,21 +5621,11 @@ def render_community_cockpit(
             st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
             render_process_risk_chart(process_df, source_label)
 
-            st.markdown(f"**{t('工人 / 工序风险', 'Worker / Process Risk')}**")
+            st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
             render_worker_focus(worker_df, source_label)
 
             st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
             render_material_focus(incoming_df, source_label, compact=False)
-
-            if not voice_df.empty:
-                st.markdown(f"**{t('Intern Voice / RPM 客户端信号', 'Intern Voice / RPM Client Signal')}**")
-                client_view = (
-                    voice_df.groupby(["product_code", "product_name"], as_index=False)
-                    .agg(rpm_now=("rpm_now", "mean"), intern_voice_count=("intern_voice_count", "sum"), returned_now=("returned_now", "sum"))
-                    .sort_values(["intern_voice_count", "rpm_now"], ascending=False)
-                    .head(12)
-                )
-                dataframe_with_format(client_view, height=300)
 
             render_tu_jiandaoyun_snapshot()
         return
