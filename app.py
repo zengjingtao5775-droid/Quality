@@ -949,10 +949,10 @@ FACTORIES = {
         "rework": Path("BME Database/返工作业申请书.xlsx"),
     },
     "SE_TENT": {
-        "name": "SE / 帐篷",
+        "name": "SE / Soft Equipment",
         "community": "SE",
-        "community_name": "SE / Tent",
-        "supplier": "SE Tent",
+        "community_name": "SE / Soft Equipment",
+        "supplier": "SE Soft Equipment",
         "location": "SE-TENT",
         "finished": None,
         "finished_files": [
@@ -996,10 +996,10 @@ DASHBOARD_SCOPES = {
     },
     "SE_TENT": {
         "code": "SE",
-        "label_cn": "SE / 帐篷",
-        "label_en": "SE / Tent",
-        "subtitle_cn": "Tent community",
-        "subtitle_en": "Tent community",
+        "label_cn": "SE / Soft Equipment",
+        "label_en": "SE / Soft Equipment",
+        "subtitle_cn": "Soft equipment community",
+        "subtitle_en": "Soft equipment community",
         "factories": ["SE_TENT"],
         "section_cn": "Community",
         "section_en": "Community",
@@ -2478,8 +2478,8 @@ def load_incoming_material(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.
                 "remark": pick_first(raw, ["规格"], ""),
                 "extra": pick_first(raw, ["不合格数"], ""),
                 "factory_code": "SE_TENT",
-                "factory_name": se_cfg.get("name", "SE / 帐篷"),
-                "supplier": se_cfg.get("supplier", "SE Tent"),
+                "factory_name": se_cfg.get("name", "SE / Soft Equipment"),
+                "supplier": se_cfg.get("supplier", "SE Soft Equipment"),
                 "material_type": "IQC",
                 "source_file": f"{se_cfg.get('incoming', '')} / IQC记录",
             }
@@ -4212,10 +4212,8 @@ def render_hero(
     scope_key: str = "GENERAL",
 ):
     hero_title = t("迪卡侬NEA质量看板", "Decathlon NEA Quality Dashboard")
-    source_chip = "QC + RPM + Intern Voice + Material"
     if scope_key != "GENERAL":
         hero_title = t(f"{scope_display(scope_key)} 看板", f"{scope_display(scope_key)} Dashboard")
-        source_chip = community_source_label(scope_key)
     st.markdown(
         f"""
         <div class="hero">
@@ -4223,14 +4221,55 @@ def render_hero(
             <div class="hero-title">{hero_title}</div>
             <div class="hero-meta">
                 <span class="hero-chip">{t('供应商', 'Suppliers')}: {supplier_count}</span>
-                <span class="hero-chip">{t('数据源', 'Data sources')}: {source_count}</span>
                 <span class="hero-chip">{t('数据周期', 'Data period')}: {start_date} - {end_date}</span>
-                <span class="hero-chip">{source_chip}</span>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_readme_popover(
+    label: str,
+    title: str,
+    purpose: str,
+    method: str,
+    logic: str,
+    source: str,
+) -> None:
+    with st.popover(label, use_container_width=True):
+        st.markdown(f"### {title}")
+        st.markdown(f"**{t('这个图表的功能', 'Purpose')}**  \n{purpose}")
+        st.markdown(f"**{t('分析方法', 'Method')}**  \n{method}")
+        st.markdown(f"**{t('计算逻辑', 'Calculation')}**  \n{logic}")
+        st.markdown(f"**{t('数据来源', 'Data Source')}**  \n{source}")
+
+
+def render_chart_heading(
+    title_cn: str,
+    title_en: str,
+    purpose_cn: str,
+    purpose_en: str,
+    method_cn: str,
+    method_en: str,
+    logic_cn: str,
+    logic_en: str,
+    source: str,
+    key: str,
+) -> None:
+    title = t(title_cn, title_en)
+    left, right = st.columns([0.78, 0.22])
+    with left:
+        st.subheader(title)
+    with right:
+        render_readme_popover(
+            f"{t('README', 'README')} · {title[:12]}",
+            title,
+            t(purpose_cn, purpose_en),
+            t(method_cn, method_en),
+            t(logic_cn, logic_en),
+            source,
+        )
 
 
 def render_kpi_cards(cards: list[dict[str, str]]):
@@ -4306,9 +4345,8 @@ def render_community_risk_cards(finished_df: pd.DataFrame, supplier_df: pd.DataF
             f"<div class='title'>{title}</div>"
             f"<div class='rate'>{pct(defect_rate)}</div>"
             f"<div class='spark' title='{html.escape(t('月度不良率趋势', 'Monthly defect-rate trend'))}'>{trend_text}</div>"
-            f"<div class='meta'>{html.escape(t('检验数量', 'Inspected qty'))}: {html.escape(compact_num(qty))}<br>"
-            f"{html.escape(t('风险供应商数', 'Risk suppliers'))}: {risk_suppliers}<br>"
-            f"{html.escape(t('数据源', 'Sources'))}: {html.escape(community_source_label(scope_key))}</div>"
+            f"<div class='meta'>RFT: {html.escape(pct(1 - defect_rate if qty else np.nan))}<br>"
+            f"{html.escape(t('风险供应商数', 'Risk suppliers'))}: {risk_suppliers}</div>"
             f"</div>"
         )
     cards_html.append("</div>")
@@ -4389,17 +4427,30 @@ def render_scope_data_map(
     voice_df: pd.DataFrame,
     incoming_df: pd.DataFrame,
 ) -> None:
-    st.subheader(t("数据地图", "Data Map"))
-    st.markdown(f"**{t('当前页面数据缺口矩阵', 'Current Page Data Gap Matrix')}**")
     scope_codes = DASHBOARD_SCOPES.get(scope_key, {}).get("factories", [])
     gap_matrix = build_data_gap_matrix(finished_df, voice_df, incoming_df, scope_codes)
-    render_data_gap_matrix(gap_matrix)
-    st.caption(
-        t(
-            "目的：先看本 community / supplier 已接入和缺失的数据字段，缺失项优先补齐。",
-            "Purpose: show loaded and missing fields for the current community / supplier, then prioritize gaps.",
+    top_cols = st.columns([0.24, 0.76])
+    with top_cols[0]:
+        with st.popover(t("数据地图 / README", "Data Map / README"), use_container_width=True):
+            st.markdown(f"### {t('当前页面数据地图', 'Current Page Data Map')}")
+            st.markdown(
+                t(
+                    "这里用于查看当前 community / supplier 已接入和缺失的数据字段。默认收起，避免干扰主看板；需要排查数据完整性时再打开。",
+                    "Use this to review which data fields are loaded or missing for the current community / supplier. It stays collapsed by default so the main dashboard stays focused.",
+                )
+            )
+            render_data_gap_matrix(gap_matrix)
+            st.markdown(
+                t(
+                    "**阅读方式**：绿色代表已接入，红色代表当前缺失；缺失项优先补齐后，相关图表的解释力会更强。",
+                    "**How to read**: green means loaded, red means missing. Fill missing items first to improve the related chart explanations.",
+                )
+            )
+    with top_cols[1]:
+        st.markdown(
+            f"<div class='product-section-note'>{html.escape(t('需要查看接入状态和缺口时，打开左侧 数据地图 / README。', 'Open Data Map / README on the left to inspect coverage and gaps.'))}</div>",
+            unsafe_allow_html=True,
         )
-    )
 
 
 def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, source_label: str) -> None:
@@ -4423,9 +4474,19 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
         view[column] = pd.to_numeric(view.get(column, np.nan), errors="coerce")
     fallback_production = view["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
     view["production_axis"] = view["production_score"].fillna(fallback_production).fillna(0).clip(0, 100)
-    view["client_signal"] = view["client_score"].fillna(
-        view["rpm_score"].fillna(0) * 0.5 + view["intern_voice_score"].fillna(0) * 0.5
-    ).fillna(0).clip(0, 100)
+    has_client_signal = view[["client_score", "rpm_score", "intern_voice_score"]].notna().any(axis=1).any()
+    if has_client_signal:
+        view["client_signal"] = view["client_score"].fillna(
+            view["rpm_score"].fillna(0) * 0.5 + view["intern_voice_score"].fillna(0) * 0.5
+        ).fillna(0).clip(0, 100)
+        y_axis_label = t("客户端风险分（RPM + IV）", "Client Risk Score (RPM + IV)")
+        high_corner_label = t("右上：生产端 + 客户端双高", "Upper-right: high production + client risk")
+    else:
+        qty_log = np.log1p(view["qty_inspected"].fillna(0).clip(lower=0))
+        qty_anchor = max(float(qty_log.max()), 0.0001)
+        view["client_signal"] = (qty_log / qty_anchor * 100).clip(0, 100)
+        y_axis_label = t("检验量强度", "Inspection Volume Strength")
+        high_corner_label = t("右上：高不良率 + 高检验量", "Upper-right: high defect + high volume")
     view["cluster_score"] = (view["production_axis"] * 0.70 + view["client_signal"] * 0.30).clip(0, 100)
     view["has_cluster_signal"] = view[["production_axis", "client_signal"]].notna().any(axis=1)
     cluster_input = view.loc[view["has_cluster_signal"], ["production_axis", "client_signal"]].fillna(0).to_numpy(dtype=float)
@@ -4465,9 +4526,16 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
     view["cc_text"] = ""
     view.loc[top_label_index, "cc_text"] = view.loc[top_label_index, "product_code"].astype(str)
     view["cluster_risk_formula"] = view.apply(
-        lambda row: t(
-            f"综合风险={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x 70% + 客户端{num(row.get('client_signal'), 1)} x 30%；生产端来自QC不良率{pct(row.get('defect_rate'))}，客户端来自RPM风险{num(row.get('rpm_score'), 1)}和IV风险{num(row.get('intern_voice_score'), 1)}。",
-            f"Combined risk={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x 70% + client {num(row.get('client_signal'), 1)} x 30%; production uses QC defect rate {pct(row.get('defect_rate'))}, client uses RPM risk {num(row.get('rpm_score'), 1)} and IV risk {num(row.get('intern_voice_score'), 1)}.",
+        lambda row: (
+            t(
+                f"综合风险={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x 70% + 客户端{num(row.get('client_signal'), 1)} x 30%；生产端来自QC不良率{pct(row.get('defect_rate'))}，客户端来自RPM风险{num(row.get('rpm_score'), 1)}和IV风险{num(row.get('intern_voice_score'), 1)}。",
+                f"Combined risk={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x 70% + client {num(row.get('client_signal'), 1)} x 30%; production uses QC defect rate {pct(row.get('defect_rate'))}, client uses RPM risk {num(row.get('rpm_score'), 1)} and IV risk {num(row.get('intern_voice_score'), 1)}.",
+            )
+            if has_client_signal
+            else t(
+                f"聚类分={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x 70% + 检验量强度{num(row.get('client_signal'), 1)} x 30%；生产端来自QC不良率{pct(row.get('defect_rate'))}。",
+                f"Cluster score={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x 70% + inspection-volume strength {num(row.get('client_signal'), 1)} x 30%; production uses QC defect rate {pct(row.get('defect_rate'))}.",
+            )
         ),
         axis=1,
     )
@@ -4522,7 +4590,7 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
         },
         labels={
             "plot_x": t("生产端风险分（QC不良率）", "Production Risk Score (QC defect rate)"),
-            "plot_y": t("客户端风险分（RPM + IV）", "Client Risk Score (RPM + IV)"),
+            "plot_y": y_axis_label,
             "cluster_risk_level": t("聚类风险等级", "Cluster Risk Level"),
             "cluster_score": t("聚类风险分", "Cluster Risk Score"),
             "production_axis": t("生产端风险分", "Production Risk Score"),
@@ -4542,18 +4610,12 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
         yref="paper",
         x=0.98,
         y=0.98,
-        text=t("右上：生产端 + 客户端双高", "Upper-right: high production + client risk"),
+        text=high_corner_label,
         showarrow=False,
         font=dict(size=13, color="#dc2626"),
         bgcolor="rgba(255,255,255,0.72)",
     )
     plot_chart(fig, 620)
-    st.caption(
-        t(
-            f"数据来源：{source_label}。每个点代表一个CC，共 {len(view)} 个，当前显示 {len(plot_view)} 个。算法：K-means按生产端风险分与客户端风险分聚类；综合风险 = 生产端风险 × 70% + 客户端风险 × 30%。默认X轴聚焦0-50、Y轴聚焦0-60，hover保留真实值和计算逻辑。",
-            f"Source: {source_label}. Each point is one CC, {len(view)} total and {len(plot_view)} currently shown. Algorithm: K-means clusters by production risk and client risk; combined risk = production risk x 70% + client risk x 30%. Default X-axis focuses on 0-50 and Y-axis on 0-60; hover keeps true values and calculation logic.",
-        )
-    )
 
 
 def community_source_label(scope_key: str) -> str:
@@ -4714,9 +4776,13 @@ def render_alert_detail_table(alerts: pd.DataFrame, expanded: bool = False):
             "priority": t("优先级", "Priority"),
             "score": t("风险分", "Risk Score"),
             "evidence": t("证据", "Evidence"),
-            "source": t("数据来源", "Source"),
         }
     )
+    source_col = t("数据来源", "Source")
+    if source_col in detail.columns:
+        detail = detail.drop(columns=[source_col])
+    if "source" in detail.columns:
+        detail = detail.drop(columns=["source"])
     with st.expander(t("Alert 明细", "Alert Detail"), expanded=expanded):
         dataframe_with_format(
             detail,
@@ -4754,7 +4820,7 @@ def render_stage_trend(finished_df: pd.DataFrame, source_label: str):
     )
     fig.update_yaxes(tickformat=".1%")
     plot_chart(fig, 330)
-    st.caption(t(f"数据来源：{source_label}。按周和检验阶段拆分趋势，用于判断 Online 与 Final 是否同向恶化。", f"Source: {source_label}. Weekly trend split by inspection stage to compare online and final movement."))
+    st.caption(t("按周和检验阶段拆分趋势，用于判断 Online 与 Final 是否同向恶化。", "Weekly trend split by inspection stage to compare online and final movement."))
 
 
 def render_defect_pareto(finished_df: pd.DataFrame, source_label: str):
@@ -4774,7 +4840,7 @@ def render_defect_pareto(finished_df: pd.DataFrame, source_label: str):
     fig.update_yaxes(autorange="reversed")
     fig.update_traces(textposition="outside")
     plot_chart(fig, 330)
-    st.caption(t(f"数据来源：{source_label}。按疵点数量做 Pareto，前几项即优先改善主题。", f"Source: {source_label}. Pareto by defect quantity; top items are improvement priorities."))
+    st.caption(t("按疵点数量做 Pareto，前几项即优先改善主题。", "Pareto by defect quantity; top items are improvement priorities."))
 
 
 def render_product_priority(products: pd.DataFrame, source_label: str, risk_settings: dict | None = None):
@@ -4854,8 +4920,8 @@ def render_product_priority(products: pd.DataFrame, source_label: str, risk_sett
     plot_chart(fig, 360)
     st.caption(
         t(
-            f"数据来源：{source_label}。风险分逻辑：产品综合风险 = 生产端风险 × 70% + 客户端风险 × 30%；生产端风险来自贝叶斯收缩后的 QC 不良率，基准 4.0% = 50 分，3 倍基准 = 100 分；客户端风险由 RPM 百万退货率与 Intern Voice 标准化后加权，越高风险越高。",
-            f"Source: {source_label}. Formula: product risk = production risk x 70% + client risk x 30%; production risk uses Bayesian-shrunk QC defect rate, benchmark 4.0% = 50 points and 3x benchmark = 100; client risk weights normalized RPM and Intern Voice, where higher is worse.",
+            "产品综合风险 = 生产端风险 × 70% + 客户端风险 × 30%；生产端风险来自贝叶斯收缩后的 QC 不良率。",
+            "Product risk = production risk x 70% + client risk x 30%; production risk uses Bayesian-shrunk QC defect rate.",
         )
     )
 
@@ -4884,8 +4950,8 @@ def render_process_risk_chart(processes: pd.DataFrame, source_label: str):
     plot_chart(fig, 360)
     st.caption(
         t(
-            f"数据来源：{source_label}。风险分逻辑：工序风险 = 贝叶斯收缩后的工序不良率换算为 0-100 分；基准 5.0% = 50 分，3 倍基准 = 100 分；同时保留检验量，避免小样本直接放大为高风险。",
-            f"Source: {source_label}. Formula: process risk converts Bayesian-shrunk process defect rate to 0-100; benchmark 5.0% = 50 points and 3x benchmark = 100; inspection volume is retained to avoid small-sample overreaction.",
+            "工序风险 = 贝叶斯收缩后的工序不良率换算为 0-100 分；同时保留检验量，避免小样本直接放大为高风险。",
+            "Process risk converts Bayesian-shrunk process defect rate to 0-100; inspection volume is retained to avoid small-sample overreaction.",
         )
     )
 
@@ -5034,8 +5100,8 @@ def render_product_rpm_qty_priority(products: pd.DataFrame, source_label: str):
     plot_chart(fig, 430)
     st.caption(
         t(
-            f"数据来源：{source_label}。计算：RPM按百分位标准化×60% + QTY按百分位标准化×40%；QTY优先使用退货数量，缺失时用QC检验量补充并在hover中标注。",
-            f"Source: {source_label}. Logic: RPM percentile x 60% + QTY percentile x 40%; QTY uses returns first, with QC inspected quantity as fallback and marked in hover.",
+            f"{source_label}。计算：RPM按百分位标准化×60% + QTY按百分位标准化×40%；QTY优先使用退货数量，缺失时用QC检验量补充并在hover中标注。",
+            f"{source_label}. Logic: RPM percentile x 60% + QTY percentile x 40%; QTY uses returns first, with QC inspected quantity as fallback and marked in hover.",
         )
     )
 
@@ -5049,6 +5115,7 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
     worker_view["defect_rate_numeric"] = pd.to_numeric(worker_view.get("defect_rate", 0), errors="coerce").fillna(0)
     worker_view["qty_inspected"] = pd.to_numeric(worker_view.get("qty_inspected", 0), errors="coerce").fillna(0)
     worker_view["defect_qty"] = pd.to_numeric(worker_view.get("defect_qty", 0), errors="coerce").fillna(0)
+    ordinary_label = t("普通工", "Regular Worker")
     high_label = t("高危工", "High-Risk Worker")
     medium_label = t("中等工", "Medium Worker")
     skilled_label = t("熟练工人", "Skilled Worker")
@@ -5060,9 +5127,9 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
     qty_anchor = max(float(qty_log.max()), 0.0001)
     worker_view["volume_axis"] = (qty_log / qty_anchor * 100).clip(0, 100)
 
-    if len(worker_view) >= 3:
+    if len(worker_view) >= 4:
         cluster_input = worker_view[["defect_risk_axis", "volume_axis"]].fillna(0).to_numpy(dtype=float)
-        labels, _ = deterministic_kmeans(cluster_input, cluster_count=3)
+        labels, _ = deterministic_kmeans(cluster_input, cluster_count=4)
         worker_view["_cluster_id"] = labels
         cluster_rank = (
             worker_view.groupby("_cluster_id")["defect_risk_axis"]
@@ -5075,24 +5142,41 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         if cluster_rank:
             cluster_names[cluster_rank[0]] = skilled_label
             cluster_names[cluster_rank[-1]] = high_label
-        for cluster_id in cluster_rank[1:-1]:
+        if len(cluster_rank) >= 2:
+            cluster_names[cluster_rank[1]] = ordinary_label
+        for cluster_id in cluster_rank[2:-1]:
             cluster_names[cluster_id] = medium_label
-        worker_view["skill_level"] = worker_view["_cluster_id"].map(cluster_names).fillna(medium_label)
+        worker_view["skill_level"] = worker_view["_cluster_id"].map(cluster_names).fillna(ordinary_label)
+        high_cut = worker_view["defect_risk_axis"].quantile(0.90)
+        conservative_high_mask = worker_view["skill_level"].eq(high_label) & (worker_view["defect_risk_axis"] >= high_cut)
+        worker_view.loc[worker_view["skill_level"].eq(high_label) & ~conservative_high_mask, "skill_level"] = medium_label
     else:
         median_rate = worker_view["defect_rate_numeric"].median()
-        worker_view["skill_level"] = np.where(worker_view["defect_rate_numeric"] > median_rate, high_label, skilled_label)
+        worker_view["skill_level"] = np.where(worker_view["defect_rate_numeric"] > median_rate, medium_label, ordinary_label)
 
     counts = worker_view["skill_level"].value_counts()
-    metric_cols = st.columns(3)
-    for col, label in zip(metric_cols, [high_label, medium_label, skilled_label]):
+    skill_options = [ordinary_label, high_label, medium_label, skilled_label]
+    metric_cols = st.columns(4)
+    for col, label in zip(metric_cols, skill_options):
         with col:
             st.metric(label, int(counts.get(label, 0)))
+
+    selected_skill_levels = st.multiselect(
+        t("工人分类筛选", "Worker Level Filter"),
+        skill_options,
+        default=skill_options,
+        key=f"worker_skill_filter_{language_query_code()}",
+    )
+    plot_source = worker_view[worker_view["skill_level"].isin(selected_skill_levels)].copy() if selected_skill_levels else worker_view.iloc[0:0].copy()
+    if plot_source.empty:
+        st.info(t("当前筛选下没有对应工人分类。", "No worker level matches the current filter."))
+        return
 
     def stable_worker_jitter(value: object, scale: float = 1.1) -> float:
         seed = int(hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:8], 16)
         return ((seed % 10000) / 9999 - 0.5) * 2 * scale
 
-    display_view = worker_view.sort_values(["defect_risk_axis", "qty_inspected"], ascending=False).head(28).copy()
+    display_view = plot_source.sort_values(["defect_risk_axis", "qty_inspected"], ascending=False).head(28).copy()
     display_view["worker_view"] = display_view["worker_team"].astype(str) + " / " + display_view["process"].astype(str)
     display_view["plot_x"] = (display_view["defect_risk_axis"] + display_view["worker_view"].map(stable_worker_jitter)).clip(0, 100)
     display_view["plot_y"] = (display_view["volume_axis"] + display_view["worker_view"].map(lambda value: stable_worker_jitter(value, 0.9))).clip(0, 100)
@@ -5119,6 +5203,7 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
             "worker_view": t("工人 / 工序", "Worker / Process"),
         },
         color_discrete_map={
+            ordinary_label: "#60a5fa",
             high_label: "#dc2626",
             medium_label: "#d97706",
             skilled_label: "#16a34a",
@@ -5153,7 +5238,7 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         bgcolor="rgba(255,255,255,0.72)",
     )
     plot_chart(fig, 420)
-    st.caption(t(f"数据来源：{source_label}。每个点代表一个工人/工序组合，K-means 按不良率风险分和检验量强度聚类为高危工、中等工、熟练工人；点越大代表疵点越多。", f"Source: {source_label}. Each point is one worker/process combination. K-means clusters defect-rate risk and inspection-volume strength into high-risk, medium, and skilled workers; larger bubbles mean more defects."))
+    st.caption(t("每个点代表一个工人/工序组合；K-means 按不良率风险分和检验量强度聚类，高危工使用更保守的前10%阈值，避免把普通波动误判为高危。点越大代表疵点越多。", "Each point is one worker/process combination. K-means clusters defect-rate risk and inspection-volume strength; high-risk workers use a conservative top-10% threshold to avoid over-labeling normal variation. Larger bubbles mean more defects."))
 
 
 def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact: bool = False):
@@ -5208,7 +5293,7 @@ def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact:
             render_type_chart()
         with right:
             render_issue_chart()
-    st.caption(t(f"数据来源：{source_label}。仅统计非 OK、退货数量大于 0 或有明确问题描述的来料/返工记录，帮助判断上游或返工压力点。", f"Source: {source_label}. Only non-OK, returned-quantity, or explicit issue incoming/rework records are aggregated to identify upstream pressure points."))
+    st.caption(t("仅统计非 OK、退货数量大于 0 或有明确问题描述的来料/返工记录，帮助判断上游或返工压力点。", "Only non-OK, returned-quantity, or explicit issue incoming/rework records are aggregated to identify upstream pressure points."))
 
 
 def render_bme_machine_focus(finished_df: pd.DataFrame, source_label: str):
@@ -5258,7 +5343,7 @@ def render_bme_machine_focus(finished_df: pd.DataFrame, source_label: str):
     fig.update_traces(textposition="inside", insidetextanchor="middle")
     fig.update_layout(margin=dict(l=220, r=70, t=28, b=64))
     plot_chart(fig, 420)
-    st.caption(t(f"数据来源：{source_label}。BME 的机器/过程信号来自 PQC 扭力明细，每条记录代表一个零件扭力检查点，深蓝为不合格。", f"Source: {source_label}. BME machine/process signal comes from PQC torque details; each row is a component torque checkpoint, dark blue means NG."))
+    st.caption(t("BME 的机器/过程信号来自 PQC 扭力明细，每条记录代表一个零件扭力检查点，深蓝为不合格。", "BME machine/process signal comes from PQC torque details; each row is a component torque checkpoint, dark blue means NG."))
 
     ng_detail = torque[(torque["defect_qty"] > 0) | torque["torque_status"].eq(t("不合格", "NG"))].copy()
     if not ng_detail.empty:
@@ -5354,7 +5439,7 @@ def render_se_inspection_focus(finished_df: pd.DataFrame, source_label: str):
     fig.update_xaxes(tickmode="array", tickvals=tick_vals, ticktext=tick_text)
     fig.update_yaxes(tickformat=".1%")
     plot_chart(fig, 340)
-    st.caption(t(f"数据来源：{source_label}。X轴用log显示避免大样本挤压小样本；Y轴聚焦到 {y_cap:.1%}，超出点在hover中保留真实不良率。", f"Source: {source_label}. X uses log view to keep small samples visible; Y focuses up to {y_cap:.1%}, while hover preserves the true defect rate."))
+    st.caption(t(f"X轴用log显示避免大样本挤压小样本；Y轴聚焦到 {y_cap:.1%}，超出点在hover中保留真实不良率。", f"X uses log view to keep small samples visible; Y focuses up to {y_cap:.1%}, while hover preserves the true defect rate."))
 
 
 def render_se_data_summary(finished_df: pd.DataFrame, process_df: pd.DataFrame, source_label: str):
@@ -5378,8 +5463,8 @@ def render_se_data_summary(finished_df: pd.DataFrame, process_df: pd.DataFrame, 
         )
     st.caption(
         t(
-            f"数据来源：{source_label}。FQC 使用原始字段“质检总数/不良数量/不良明细”；IPQC 使用“抽查数量/不良数量/不良分类/不良描述/工序描述”。",
-            f"Source: {source_label}. FQC uses source fields inspected qty/defect qty/defect detail; IPQC uses sampling qty/defect qty/defect category/defect description/process description.",
+            "FQC 使用原始字段“质检总数/不良数量/不良明细”；IPQC 使用“抽查数量/不良数量/不良分类/不良描述/工序描述”。",
+            "FQC uses source fields inspected qty/defect qty/defect detail; IPQC uses sampling qty/defect qty/defect category/defect description/process description.",
         )
     )
 
@@ -5601,7 +5686,7 @@ def render_tu_jiandaoyun_snapshot() -> None:
             },
             height=300,
         )
-    st.caption(t(f"数据来源：简道云 ZX（中兴）FQC；模式：{source_mode_text}。该报表仅放在 TU / ZX 页面，重点看 FQC RFT 和检验员 RFT；BME 和 SE 不使用简道云。", f"Source: Jiandaoyun ZX FQC; mode: {source_mode_text}. This report is shown only on TU / ZX and focuses on FQC RFT and inspector RFT; BME and SE do not use Jiandaoyun."))
+    st.caption(t(f"模式：{source_mode_text}。该报表仅放在 TU / ZX 页面，重点看 FQC RFT 和检验员 RFT；BME 和 SE 不使用简道云。", f"Mode: {source_mode_text}. This report is shown only on TU / ZX and focuses on FQC RFT and inspector RFT; BME and SE do not use Jiandaoyun."))
 
 
 def render_community_cockpit(
@@ -5617,24 +5702,32 @@ def render_community_cockpit(
 ):
     source_label = community_source_label(scope_key)
     total_qty = finished_df["qty_inspected"].sum()
+    total_ordered = pd.to_numeric(finished_df.get("qty_ordered", pd.Series(0, index=finished_df.index)), errors="coerce").fillna(0).sum()
     total_defects = finished_df["defect_qty"].sum()
     defect_rate = total_defects / total_qty if total_qty else 0
+    rft = 1 - defect_rate if total_qty else np.nan
+    inspection_coverage = total_qty / total_ordered if total_ordered else np.nan
     high_products = int(product_df[product_df["risk_level"].isin(["High", "Critical"])].shape[0]) if not product_df.empty else 0
     high_processes = int(process_df[process_df["risk_level"].isin(["High", "Critical"])].shape[0]) if not process_df.empty else 0
     alert_df = build_community_alerts(product_df, process_df, incoming_df, voice_df, scope_key)
 
+    render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
+
     render_kpi_cards(
         [
             {
-                "label": t("检验数量", "Inspected Qty"),
-                "value": compact_num(total_qty),
-                "note": source_label,
+                "label": t("检验覆盖率", "Inspection Coverage"),
+                "value": pct(inspection_coverage) if pd.notna(inspection_coverage) else "N/A",
+                "note": t(
+                    f"已检 {compact_num(total_qty)} / 订单 {compact_num(total_ordered)}" if total_ordered else f"已检 {compact_num(total_qty)}；订单分母缺失",
+                    f"Inspected {compact_num(total_qty)} / ordered {compact_num(total_ordered)}" if total_ordered else f"Inspected {compact_num(total_qty)}; ordered denominator missing",
+                ),
                 "level": "low",
             },
             {
-                "label": t("综合不良率", "Defect Rate"),
-                "value": pct(defect_rate),
-                "note": f"{compact_num(total_defects)} {t('个疵点', 'defects')}",
+                "label": "RFT",
+                "value": pct(rft) if pd.notna(rft) else "N/A",
+                "note": t(f"综合不良率 {pct(defect_rate)}", f"Defect rate {pct(defect_rate)}"),
                 "level": "high" if defect_rate >= 0.02 else "medium" if defect_rate >= 0.01 else "low",
             },
             {
@@ -5652,19 +5745,61 @@ def render_community_cockpit(
         ]
     )
 
-    render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
-
     if scope_key == "ZX":
-        st.subheader(t("聚类算法分析高风险 CC", "K-means High-Risk CC Cluster"))
+        render_chart_heading(
+            "K-means 高风险 CC 聚类",
+            "K-means High-Risk CC Cluster",
+            "识别哪些 CC 同时存在生产端质量风险和客户端风险。",
+            "Identify CCs with combined production-side and client-side quality risk.",
+            "使用 K-means 将每个 CC 按两个风险维度聚成高 / 中 / 低风险组。",
+            "K-means groups each CC into high / medium / low risk by two risk dimensions.",
+            "生产端风险来自 QC 不良率；客户端风险来自 RPM 与 Intern Voice；综合风险用于排序和颜色判断。",
+            "Production risk comes from QC defect rate; client risk comes from RPM and Intern Voice; combined risk drives ranking and color.",
+            source_label,
+            "zx_cluster",
+        )
         render_zx_high_risk_cluster(product_df, risk_settings, source_label)
 
-        st.subheader(t("产品风险 Top CC", "Product Risk Top CC"))
+        render_chart_heading(
+            "产品风险 Top CC",
+            "Product Risk Top CC",
+            "把最需要优先复盘的 CC 排在前面。",
+            "Rank the CCs that need review first.",
+            "按产品风险分排序，保留生产端和客户端分项。",
+            "Sort by product risk score while preserving production and client components.",
+            "产品风险 = 生产端风险 + 客户端风险；生产端使用小样本收缩后的 QC 不良率。",
+            "Product risk combines production and client risk; production uses Bayesian-shrunk QC defect rate.",
+            source_label,
+            "zx_product",
+        )
         render_product_priority(product_df, source_label, risk_settings)
 
-        st.subheader(t("Top Defect Pareto", "Top Defect Pareto"))
+        render_chart_heading(
+            "Top Defect Pareto",
+            "Top Defect Pareto",
+            "找出当前范围内贡献最大的疵点类型。",
+            "Find the defect types contributing most in the current scope.",
+            "按疵点数量做 Pareto 排序。",
+            "Pareto ranking by defect quantity.",
+            "同一疵点类型的疵点数求和，取 Top 项展示。",
+            "Sum defect quantity by defect type and show the top contributors.",
+            source_label,
+            "zx_pareto",
+        )
         render_defect_pareto(finished_df, source_label)
 
-        st.subheader(t("不良率趋势", "Defect Rate Trend"))
+        render_chart_heading(
+            "不良率趋势",
+            "Defect Rate Trend",
+            "观察 Online QC 和 End QC/FQC 是否同向恶化或改善。",
+            "Track whether Online QC and End QC/FQC are worsening or improving together.",
+            "按周聚合检验数量和疵点数，并按检验阶段拆线。",
+            "Aggregate inspected quantity and defects weekly, split by inspection stage.",
+            "周不良率 = 周疵点数 / 周检验数。",
+            "Weekly defect rate = weekly defects / weekly inspected quantity.",
+            source_label,
+            "zx_trend",
+        )
         render_stage_trend(finished_df, source_label)
 
         with st.expander(t("更多分析：Alert / 工序 / 工人 / 原辅料 / 简道云", "More analysis: Alert / Process / Worker / Material / Jiandaoyun"), expanded=False):
@@ -5684,55 +5819,99 @@ def render_community_cockpit(
             render_tu_jiandaoyun_snapshot()
         return
 
-    st.subheader(t("Alert 清单", "Alert List"))
-    render_alert_summary_cards(alert_df)
-    render_alert_detail_table(alert_df)
+    render_chart_heading(
+        "K-means 高风险产品聚类",
+        "K-means High-Risk Product Cluster",
+        "先看当前 community 哪些产品或款号处在高风险区域。",
+        "Start by identifying which products/styles are in the high-risk area.",
+        "使用 K-means 对产品风险进行聚类；没有客户端信号时，用生产端风险和检验量强度聚类。",
+        "Use K-means for product risk clustering; when client signals are missing, use production risk and inspection-volume strength.",
+        "生产端风险来自 QC 不良率；检验量强度用于判断样本可信度。",
+        "Production risk comes from QC defect rate; inspection-volume strength indicates sample confidence.",
+        source_label,
+        f"{scope_key}_cluster",
+    )
+    render_zx_high_risk_cluster(product_df, risk_settings, source_label)
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.subheader(t("不良率趋势", "Defect Rate Trend"))
-        render_stage_trend(finished_df, source_label)
-    with c2:
-        st.subheader(t("Top Defect Pareto", "Top Defect Pareto"))
-        render_defect_pareto(finished_df, source_label)
+    render_chart_heading(
+        "产品风险 Top CC",
+        "Product Risk Top CC",
+        "把最需要优先复盘的产品 / 款号排在前面。",
+        "Rank the products/styles that need review first.",
+        "按产品风险分排序，保留生产端和可用客户端分项。",
+        "Sort by product risk score while preserving production and available client components.",
+        "产品风险主要来自小样本收缩后的 QC 不良率；有客户端信号时叠加 RPM / IV。",
+        "Product risk mainly uses Bayesian-shrunk QC defect rate; RPM / IV are added when available.",
+        source_label,
+        f"{scope_key}_product",
+    )
+    render_product_priority(product_df, source_label, risk_settings)
 
-    c3, c4 = st.columns([1, 1])
-    with c3:
-        st.subheader(t("产品风险 Top CC", "Product Risk Top CC"))
-        render_product_priority(product_df, source_label, risk_settings)
-    with c4:
-        st.subheader(t("工序风险 Top", "Process Risk Top"))
-        render_process_risk_chart(process_df, source_label)
+    render_chart_heading(
+        "Top Defect Pareto",
+        "Top Defect Pareto",
+        "找出当前 community 贡献最大的疵点类型。",
+        "Find the defect types contributing most in the current community.",
+        "按疵点数量做 Pareto 排序。",
+        "Pareto ranking by defect quantity.",
+        "同一疵点类型的疵点数求和，取 Top 项展示。",
+        "Sum defect quantity by defect type and show the top contributors.",
+        source_label,
+        f"{scope_key}_pareto",
+    )
+    render_defect_pareto(finished_df, source_label)
+
+    render_chart_heading(
+        "不良率趋势",
+        "Defect Rate Trend",
+        "看质量是否随时间改善或恶化。",
+        "Track whether quality is improving or worsening over time.",
+        "按周聚合检验数量和疵点数，并按检验阶段拆线。",
+        "Aggregate inspected quantity and defects weekly, split by inspection stage.",
+        "周不良率 = 周疵点数 / 周检验数。",
+        "Weekly defect rate = weekly defects / weekly inspected quantity.",
+        source_label,
+        f"{scope_key}_trend",
+    )
+    render_stage_trend(finished_df, source_label)
 
     if scope_key == "BME_CMW":
-        st.subheader(t("IQC / 返工风险", "IQC / Rework Risk"))
-        render_material_focus(incoming_df, source_label)
-        st.subheader(t("PQC 扭力 / 机器过程", "PQC Torque / Machine Process"))
-        render_bme_machine_focus(finished_df, source_label)
-        line_view = (
-            finished_df.groupby(["inspection_stage", "worker_team"], as_index=False)
-            .agg(qty_inspected=("qty_inspected", "sum"), defect_qty=("defect_qty", "sum"))
+        render_chart_heading(
+            "机器参数 / PQC 扭力",
+            "Machine Parameters / PQC Torque",
+            "作为 BME 的第五个主图，定位机器或扭力检查中的异常参数。",
+            "As BME's fifth primary chart, locate abnormal machine or torque-check parameters.",
+            "按 PQC 扭力检查点聚合记录数和不合格数。",
+            "Aggregate record count and NG count by PQC torque checkpoint.",
+            "不合格由扭力结果字段识别；点位越集中，越需要复盘设备、工装或操作方法。",
+            "NG is detected from torque result fields; concentrated points require review of equipment, tooling, or method.",
+            source_label,
+            "bme_machine",
         )
-        line_view["defect_rate"] = safe_rate(line_view["defect_qty"], line_view["qty_inspected"])
-        st.markdown(f"**{t('FQC / PQC 明细', 'FQC / PQC Detail')}**")
-        dataframe_with_format(line_view.sort_values("defect_rate", ascending=False).head(15), height=320)
+        render_bme_machine_focus(finished_df, source_label)
+        with st.expander(t("更多分析：Alert / 工序 / IQC / 返工 / 工人", "More analysis: Alert / Process / IQC / Rework / Worker"), expanded=False):
+            st.markdown(f"**{t('Alert 清单', 'Alert List')}**")
+            render_alert_summary_cards(alert_df)
+            render_alert_detail_table(alert_df)
+            st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
+            render_process_risk_chart(process_df, source_label)
+            st.markdown(f"**{t('IQC / 返工风险', 'IQC / Rework Risk')}**")
+            render_material_focus(incoming_df, source_label)
+            st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
+            render_worker_focus(worker_df, source_label)
     elif scope_key == "SE_TENT":
-        st.subheader(t("专项分析", "Focused Analysis"))
-        render_se_data_summary(finished_df, process_df, source_label)
-        se_left, se_right = st.columns([1, 1])
-        with se_left:
+        with st.expander(t("更多分析：Alert / 工序 / FQC-IPQC / 工人", "More analysis: Alert / Process / FQC-IPQC / Worker"), expanded=False):
+            st.markdown(f"**{t('Alert 清单', 'Alert List')}**")
+            render_alert_summary_cards(alert_df)
+            render_alert_detail_table(alert_df)
+            st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
+            render_process_risk_chart(process_df, source_label)
             st.markdown(f"**{t('FQC / IPQC 检验分布', 'FQC / IPQC Inspection Distribution')}**")
             render_se_inspection_focus(finished_df, source_label)
-        with se_right:
-            st.markdown(f"**{t('班组 / 人员风险', 'Team / Worker Risk')}**")
+            st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
             render_worker_focus(worker_df, source_label)
-        detail = (
-            finished_df.groupby(["inspection_stage", "product_code", "process"], as_index=False)
-            .agg(qty_inspected=("qty_inspected", "sum"), defect_qty=("defect_qty", "sum"), top_worker=("worker_team", summarize_unique_values))
-        )
-        detail["defect_rate"] = safe_rate(detail["defect_qty"], detail["qty_inspected"])
-        st.markdown(f"**{t('SE 检验明细', 'SE Inspection Detail')}**")
-        dataframe_with_format(detail.sort_values("defect_qty", ascending=False).head(20), height=340)
+            st.markdown(f"**{t('字段可用性摘要', 'Field Availability Summary')}**")
+            render_se_data_summary(finished_df, process_df, source_label)
 
 
 def product_alert_cards(product_summary: pd.DataFrame, limit: int = 4) -> list[dict[str, str]]:
@@ -6317,8 +6496,11 @@ with tabs[0]:
     st.caption(t("用于 NEA manager 快速比较 TU、BME、SE：每张卡包含综合不良率、月度趋势迷你图和风险供应商数。", "For NEA managers to compare TU, BME, and SE: each card shows defect rate, a monthly mini trend, and the number of risk suppliers."))
 
     total_qty = finished["qty_inspected"].sum()
+    total_ordered = pd.to_numeric(finished.get("qty_ordered", pd.Series(0, index=finished.index)), errors="coerce").fillna(0).sum()
     total_defects = finished["defect_qty"].sum()
     total_defect_rate = total_defects / total_qty if total_qty else 0
+    total_rft = 1 - total_defect_rate if total_qty else np.nan
+    total_coverage = total_qty / total_ordered if total_ordered else np.nan
     high_supplier_count = supplier_summary[supplier_summary["risk_level"].isin(["High", "Critical"])].shape[0]
     high_product_count = product_summary[product_summary["risk_level"].isin(["High", "Critical"])].shape[0] if not product_summary.empty else 0
     top_supplier = supplier_summary.iloc[0] if not supplier_summary.empty else None
@@ -6343,15 +6525,18 @@ with tabs[0]:
                 "level": "low",
             },
             {
-                "label": t("检验总数", "Inspected Qty"),
-                "value": compact_num(total_qty),
-                "note": f"{compact_num(total_defects)} defects captured",
+                "label": t("检验覆盖率", "Inspection Coverage"),
+                "value": pct(total_coverage) if pd.notna(total_coverage) else "N/A",
+                "note": t(
+                    f"已检 {compact_num(total_qty)} / 订单 {compact_num(total_ordered)}" if total_ordered else f"已检 {compact_num(total_qty)}；订单分母缺失",
+                    f"Inspected {compact_num(total_qty)} / ordered {compact_num(total_ordered)}" if total_ordered else f"Inspected {compact_num(total_qty)}; ordered denominator missing",
+                ),
                 "level": "medium",
             },
             {
-                "label": t("综合不良率", "Defect Rate"),
-                "value": pct(total_defect_rate),
-                "note": t("来自在线 / 终检统一口径", "Unified online / final QC"),
+                "label": "RFT",
+                "value": pct(total_rft) if pd.notna(total_rft) else "N/A",
+                "note": t(f"综合不良率 {pct(total_defect_rate)}", f"Defect rate {pct(total_defect_rate)}"),
                 "level": "high" if total_defect_rate >= 0.015 else "low",
             },
             {
@@ -6386,8 +6571,8 @@ with tabs[0]:
     plot_chart(fig, 380)
     st.caption(
         t(
-            f"数据来源：{selected_factory_source_label} QC data + RPM + Intern Voice。计算逻辑：综合风险 = 生产端质量风险 {supplier_prod_w:.0f}% + 客户端风险 {supplier_client_w:.0f}%；生产端来自半检/总检不良率，客户端来自 RPM 百万退货率和 IV 退货发起次数。",
-            f"Source: {selected_factory_source_label} QC data + RPM + Intern Voice. Logic: overall risk = production risk {supplier_prod_w:.0f}% + client risk {supplier_client_w:.0f}%; production uses online/final defect rate, client uses RPM and IV return initiations.",
+            f"{selected_factory_source_label} QC data + RPM + Intern Voice。计算逻辑：综合风险 = 生产端质量风险 {supplier_prod_w:.0f}% + 客户端风险 {supplier_client_w:.0f}%；生产端来自半检/总检不良率，客户端来自 RPM 百万退货率和 IV 退货发起次数。",
+            f"{selected_factory_source_label} QC data + RPM + Intern Voice. Logic: overall risk = production risk {supplier_prod_w:.0f}% + client risk {supplier_client_w:.0f}%; production uses online/final defect rate, client uses RPM and IV return initiations.",
         )
     )
 
@@ -6410,7 +6595,7 @@ with tabs[0]:
     )
     fig.update_yaxes(tickformat=".1%")
     plot_chart(fig, 440)
-    st.caption(t(f"数据来源：{selected_factory_source_label} QC data；按 Online QC / End QC-FQC 分线展示。", f"Source: {selected_factory_source_label} QC data; split by Online QC and End QC/FQC."))
+    st.caption(t(f"{selected_factory_source_label} QC data；按 Online QC / End QC-FQC 分线展示。", f"{selected_factory_source_label} QC data; split by Online QC and End QC/FQC."))
 
     with st.expander(t("产品风险明细（可选）", "Product risk detail (optional)")):
         alert_cols = [
@@ -6743,7 +6928,7 @@ with tabs[1]:
         fig.update_traces(textposition="outside")
         fig.update_yaxes(range=[0, 115])
         plot_chart(fig, 390)
-        st.caption(t(f"数据来源：{selected_factory_source_label} QC data + RPM + Intern Voice。分项风险越高，代表该信号越需要优先下钻。", f"Source: {selected_factory_source_label} QC data + RPM + Intern Voice. Higher component score means higher drill-down priority."))
+        st.caption(t(f"{selected_factory_source_label} QC data + RPM + Intern Voice。分项风险越高，代表该信号越需要优先下钻。", f"{selected_factory_source_label} QC data + RPM + Intern Voice. Higher component score means higher drill-down priority."))
 
     with right:
         selected_supplier = st.selectbox(
@@ -6772,7 +6957,7 @@ with tabs[1]:
             fig.update_traces(textposition="outside")
             fig.update_yaxes(autorange="reversed")
             plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{selected_supplier} QC data。展示该供应商 Top 疵点类型和疵点数。", f"Source: {selected_supplier} QC data. Shows top defect types and defect counts for the selected supplier."))
+            st.caption(t(f"{selected_supplier} QC data。展示该供应商 Top 疵点类型和疵点数。", f"{selected_supplier} QC data. Shows top defect types and defect counts for the selected supplier."))
 
     with st.expander(t("供应商明细（可选）", "Supplier detail (optional)")):
         dataframe_with_format(
@@ -7056,8 +7241,8 @@ with tabs[2]:
             plot_chart(fig, 570)
             st.caption(
                 t(
-                    f"数据来源：{product_source}。展示 {coverage['total']}/{len(product_factory_summary)} 个CC；{coverage['clustered']}个双端数据齐全CC参与K-means，{coverage['production_only']}个仅有生产端数据、{coverage['client_only']}个仅有客户端数据仍保留在图中。",
-                    f"Source: {product_source}. Shows {coverage['total']}/{len(product_factory_summary)} CCs; {coverage['clustered']} CCs with both sides enter K-means, while {coverage['production_only']} production-only and {coverage['client_only']} client-only CCs remain visible.",
+                    f"{product_source}。展示 {coverage['total']}/{len(product_factory_summary)} 个CC；{coverage['clustered']}个双端数据齐全CC参与K-means，{coverage['production_only']}个仅有生产端数据、{coverage['client_only']}个仅有客户端数据仍保留在图中。",
+                    f"{product_source}. Shows {coverage['total']}/{len(product_factory_summary)} CCs; {coverage['clustered']} CCs with both sides enter K-means, while {coverage['production_only']} production-only and {coverage['client_only']} client-only CCs remain visible.",
                 )
             )
             st.caption(
@@ -7141,8 +7326,8 @@ with tabs[2]:
             plot_chart(fig, 540)
             st.caption(
                 t(
-                    f"数据来源：{product_factory} QC原始数据。每条柱代表一个CC，按“{split_label}”堆叠；柱长是原始疵点数量，不是风险分。",
-                    f"Source: raw {product_factory} QC data. Each bar is one CC stacked by {split_label}; bar length is raw defect quantity, not a risk score.",
+                    f"{product_factory} QC原始数据。每条柱代表一个CC，按“{split_label}”堆叠；柱长是原始疵点数量，不是风险分。",
+                    f"raw {product_factory} QC data. Each bar is one CC stacked by {split_label}; bar length is raw defect quantity, not a risk score.",
                 )
             )
             st.caption(
@@ -7266,7 +7451,7 @@ with tabs[3]:
         fig.update_traces(textposition="outside")
         fig.update_yaxes(range=[0, 115])
         plot_chart(fig, 450)
-        st.caption(t(f"数据来源：{selected_factory_source_label} QC data + RPM + Intern Voice。", f"Source: {selected_factory_source_label} QC data + RPM + Intern Voice."))
+        st.caption(t(f"{selected_factory_source_label} QC data + RPM + Intern Voice。", f"{selected_factory_source_label} QC data + RPM + Intern Voice."))
         with st.expander(t("Panel 数据明细（可选）", "Panel detail (optional)")):
             dataframe_with_format(
                 panel_df[["factory_name", "risk_score", "production_score", "client_score", "avg_rpm", "rpm_score", "intern_voice_count", "intern_voice_score"]].rename(
@@ -7327,8 +7512,8 @@ with tabs[3]:
             voice_panel["risk_level"] = voice_panel["combined_signal"].map(risk_level)
             st.caption(
                 t(
-                    f"数据来源：{selected_factory_source_label} RPM data + Intern Voice。这个视图把 RPM、Intern Voice、RPM 上升和退货/NQC 都转成 0-100 信号强度；颜色越深，越值得优先下钻。",
-                    f"Source: {selected_factory_source_label} RPM data + Intern Voice. This view normalizes RPM, Intern Voice, RPM increase, and returns/NQC into 0-100 signal strength; darker means higher priority.",
+                    f"{selected_factory_source_label} RPM data + Intern Voice。这个视图把 RPM、Intern Voice、RPM 上升和退货/NQC 都转成 0-100 信号强度；颜色越深，越值得优先下钻。",
+                    f"{selected_factory_source_label} RPM data + Intern Voice. This view normalizes RPM, Intern Voice, RPM increase, and returns/NQC into 0-100 signal strength; darker means higher priority.",
                 )
             )
             signal_long = voice_panel.melt(
@@ -7427,7 +7612,7 @@ with tabs[3]:
         fig.update_traces(textposition="outside")
         fig.update_xaxes(range=[0, 110])
         plot_chart(fig, 420)
-        st.caption(t(f"数据来源：{selected_factory_source_label} QC data。算法：工序风险 = min(工序不良率 / {risk_settings['process_benchmark_pct']:.1f}% * 100, 100)。", f"Source: {selected_factory_source_label} QC data. Logic: process risk = min(process defect rate / {risk_settings['process_benchmark_pct']:.1f}% * 100, 100)."))
+        st.caption(t(f"{selected_factory_source_label} QC data。算法：工序风险 = min(工序不良率 / {risk_settings['process_benchmark_pct']:.1f}% * 100, 100)。", f"{selected_factory_source_label} QC data. Logic: process risk = min(process defect rate / {risk_settings['process_benchmark_pct']:.1f}% * 100, 100)."))
         with st.expander(t("工序对比明细（可选）", "Process comparison detail (optional)")):
             dataframe_with_format(
                 panel_process[["factory_name", "process", "qty_inspected", "defect_qty", "defect_rate", "top_defect", "risk_score"]],
@@ -7511,7 +7696,7 @@ with tabs[4]:
             )
             fig.update_xaxes(tickformat=".1%")
             plot_chart(fig, 430)
-            st.caption(t(f"数据来源：{pm_factory_label} QC data。按工厂/工序展示 Top 过程不良率，用于定位生产端过程风险。", f"Source: {pm_factory_label} QC data. Shows top process defect rates by factory/process for production-side risk triage."))
+            st.caption(t(f"{pm_factory_label} QC data。按工厂/工序展示 Top 过程不良率，用于定位生产端过程风险。", f"{pm_factory_label} QC data. Shows top process defect rates by factory/process for production-side risk triage."))
 
         with right:
             heat_source = pm_finished[pm_finished["defect_qty"] > 0].copy()
@@ -7537,7 +7722,7 @@ with tabs[4]:
                     labels=dict(x=t("疵点类型", "Defect Type"), y=t("工序", "Process"), color=t("疵点数", "Defects")),
                 )
                 plot_chart(fig, 430)
-                st.caption(t(f"数据来源：{pm_factory_label} QC data。热力矩阵展示工序和疵点类型的交叉集中度，颜色越深代表疵点越集中。", f"Source: {pm_factory_label} QC data. Heatmap shows concentration between processes and defect types; darker means more concentrated defects."))
+                st.caption(t(f"{pm_factory_label} QC data。热力矩阵展示工序和疵点类型的交叉集中度，颜色越深代表疵点越集中。", f"{pm_factory_label} QC data. Heatmap shows concentration between processes and defect types; darker means more concentrated defects."))
 
         with st.expander(t("班组 / 岗位聚类明细（可选）", "Team / position cluster detail (optional)")):
             worker_view = pm_worker_clusters.head(25).copy()
@@ -7565,7 +7750,7 @@ with tabs[4]:
             )
             fig.update_yaxes(autorange="reversed")
             plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{pm_factory_label} Material data。按问题批次展示来料/材料风险点。", f"Source: {pm_factory_label} material data. Shows material risk points by issue batches."))
+            st.caption(t(f"{pm_factory_label} Material data。按问题批次展示来料/材料风险点。", f"{pm_factory_label} material data. Shows material risk points by issue batches."))
         with c2:
             mat_supplier = pm_incoming.groupby(["factory_code", "material_supplier"], as_index=False).size().sort_values("size", ascending=False).head(12)
             mat_supplier["supplier_view"] = mat_supplier["factory_code"] + " / " + mat_supplier["material_supplier"].astype(str)
@@ -7577,7 +7762,7 @@ with tabs[4]:
                 color_discrete_sequence=["#059669"],
             )
             plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{pm_factory_label} Material data。按来料供应商聚合问题批次，便于识别上游供应商风险。", f"Source: {pm_factory_label} material data. Aggregates issue batches by material supplier to identify upstream risk."))
+            st.caption(t(f"{pm_factory_label} Material data。按来料供应商聚合问题批次，便于识别上游供应商风险。", f"{pm_factory_label} material data. Aggregates issue batches by material supplier to identify upstream risk."))
 
 
 # ==========================================
@@ -7655,7 +7840,7 @@ with tabs[5]:
             )
             fig.update_xaxes(tickformat="+.1%")
             plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{method_factory} QC data。算法：近30天不良率 - 前30天不良率；向右/红色代表过程恶化，向左/绿色代表改善。", f"Source: {method_factory} QC data. Logic: recent 30-day defect rate minus prior 30-day defect rate; red/right means worse, green/left means better."))
+            st.caption(t(f"{method_factory} QC data。算法：近30天不良率 - 前30天不良率；向右/红色代表过程恶化，向左/绿色代表改善。", f"{method_factory} QC data. Logic: recent 30-day defect rate minus prior 30-day defect rate; red/right means worse, green/left means better."))
 
     with right:
         st.subheader(t("异常工单分布｜鲁棒 Z-Score 离群检测", "Work-Order Anomaly | Robust Z-Score Outlier"))
@@ -7676,7 +7861,7 @@ with tabs[5]:
             )
             fig.update_yaxes(tickformat=".1%")
             plot_chart(fig, 390)
-            st.caption(t(f"数据来源：{method_factory} QC work order data。算法：对检验量、不良率、疵点数做鲁棒 Z-Score 离群检测；点越大代表疵点压力越高，越靠上不良率越高。", f"Source: {method_factory} QC work-order data. Logic: robust Z-Score outlier detection using inspected qty, defect rate, and defect count; larger points mean higher defect pressure, higher position means higher defect rate."))
+            st.caption(t(f"{method_factory} QC work order data。算法：对检验量、不良率、疵点数做鲁棒 Z-Score 离群检测；点越大代表疵点压力越高，越靠上不良率越高。", f"{method_factory} QC work-order data. Logic: robust Z-Score outlier detection using inspected qty, defect rate, and defect count; larger points mean higher defect pressure, higher position means higher defect rate."))
 
     left, right = st.columns(2)
     with left:
@@ -7708,8 +7893,8 @@ with tabs[5]:
             ) or "insufficient sample"
             best_n = material_best_lag["n"] if material_best_lag else 0
             st.caption(t(
-                f"数据来源：{method_factory} Material data + QC data。算法：来料问题第 N 周对齐到过程第 N+{material_lag} 周（{material_lag} 周滞后），各滞后皮尔逊相关性 [{corr_bits_cn}]；当前图为相关性最强的滞后，N={best_n} 周。样本周数少，仅供探索、不作因果结论；右上角=来料问题多且不良率高。",
-                f"Source: {method_factory} Material data + QC data. Logic: material issues in week N aligned to QC week N+{material_lag} ({material_lag}-week lag); Pearson by lag [{corr_bits_en}]; chart shows the strongest-correlating lag, N={best_n} weeks. Few weeks—exploratory only, not causal; upper-right = more material issues and higher defect rate."
+                f"{method_factory} Material data + QC data。算法：来料问题第 N 周对齐到过程第 N+{material_lag} 周（{material_lag} 周滞后），各滞后皮尔逊相关性 [{corr_bits_cn}]；当前图为相关性最强的滞后，N={best_n} 周。样本周数少，仅供探索、不作因果结论；右上角=来料问题多且不良率高。",
+                f"{method_factory} Material data + QC data. Logic: material issues in week N aligned to QC week N+{material_lag} ({material_lag}-week lag); Pearson by lag [{corr_bits_en}]; chart shows the strongest-correlating lag, N={best_n} weeks. Few weeks—exploratory only, not causal; upper-right = more material issues and higher defect rate."
             ))
 
     with right:
@@ -7756,8 +7941,8 @@ with tabs[5]:
             cap_mode_cn = f"以整改日期 {cap_date} 为界，前后各45天" if cap_date else "按数据末期前后各45天（未指定整改日期，模拟口径）"
             cap_mode_en = f"split at remediation date {cap_date}, ±45 days" if cap_date else "most-recent ±45-day split (no remediation date set, simulation)"
             st.caption(t(
-                f"数据来源：{method_factory} QC data。算法：{cap_mode_cn}，对比工序整改前后不良率并做两比例 z 检验；绿色=改善达统计显著(p<0.05)，黄色=可能仅样本波动。有效性评分越高改善越明显。",
-                f"Source: {method_factory} QC data. Logic: {cap_mode_en}; compares per-process before/after defect rates with a two-proportion z-test; green = statistically significant improvement (p<0.05), yellow = possibly just sample noise. Higher effectiveness score means clearer improvement.",
+                f"{method_factory} QC data。算法：{cap_mode_cn}，对比工序整改前后不良率并做两比例 z 检验；绿色=改善达统计显著(p<0.05)，黄色=可能仅样本波动。有效性评分越高改善越明显。",
+                f"{method_factory} QC data. Logic: {cap_mode_en}; compares per-process before/after defect rates with a two-proportion z-test; green = statistically significant improvement (p<0.05), yellow = possibly just sample noise. Higher effectiveness score means clearer improvement.",
             ))
 
             with st.expander(t("整改效果明细（可选）", "Effectiveness detail (optional)")):
@@ -7898,8 +8083,8 @@ with tabs[6]:
         source_mode_text = t("实时 API", "Live API") if jdy_meta.get("mode") == "live_api" else t("本地 CSV", "Local CSV")
         st.caption(
             t(
-                f"数据来源：{jdy_meta['source_name']}；模式：{source_mode_text}；记录 {jdy_meta.get('records', len(jdy_fqc)):,} 条；周期 {jdy_meta.get('period', '-')}；文件：{jdy_meta.get('flat_file') or 'API实时读取'}。",
-                f"Source: {jdy_meta['source_name']}; mode: {source_mode_text}; {jdy_meta.get('records', len(jdy_fqc)):,} records; period {jdy_meta.get('period', '-')}; file: {jdy_meta.get('flat_file') or 'Live API'}.",
+                f"{jdy_meta['source_name']}；模式：{source_mode_text}；记录 {jdy_meta.get('records', len(jdy_fqc)):,} 条；周期 {jdy_meta.get('period', '-')}；文件：{jdy_meta.get('flat_file') or 'API实时读取'}。",
+                f"{jdy_meta['source_name']}; mode: {source_mode_text}; {jdy_meta.get('records', len(jdy_fqc)):,} records; period {jdy_meta.get('period', '-')}; file: {jdy_meta.get('flat_file') or 'Live API'}.",
             )
         )
 
@@ -8190,7 +8375,7 @@ with tabs[6]:
                         yaxis2=dict(title=t("记录数", "Records"), overlaying="y", side="right", showgrid=False),
                     )
                     plot_chart(fig, 390)
-                    st.caption(t("数据来源：Jiandaoyun Gloves / ZX FQC。算法：按验货月份聚合，抽样疵点率=疵点汇总/抽样检验量，Fail占比=FAIL记录数/记录数。", "Source: Jiandaoyun Gloves / ZX FQC. Logic: grouped by inspection month; defect density = total defects / sampled qty; fail share = FAIL records / records."))
+                    st.caption(t("Jiandaoyun Gloves / ZX FQC。算法：按验货月份聚合，抽样疵点率=疵点汇总/抽样检验量，Fail占比=FAIL记录数/记录数。", "Jiandaoyun Gloves / ZX FQC. Logic: grouped by inspection month; defect density = total defects / sampled qty; fail share = FAIL records / records."))
 
             with right:
                 st.subheader(t("检验结果分布｜PASS / FAIL", "Inspection Result Mix | PASS / FAIL"))
@@ -8210,7 +8395,7 @@ with tabs[6]:
                 )
                 fig.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
                 plot_chart(fig, 390)
-                st.caption(t("数据来源：Jiandaoyun Gloves / ZX FQC。用于快速判断当前筛选范围内 PASS / FAIL 结构。", "Source: Jiandaoyun Gloves / ZX FQC. Use this to read the PASS / FAIL structure of the current scope."))
+                st.caption(t("Jiandaoyun Gloves / ZX FQC。用于快速判断当前筛选范围内 PASS / FAIL 结构。", "Jiandaoyun Gloves / ZX FQC. Use this to read the PASS / FAIL structure of the current scope."))
 
             left, right = st.columns([1, 1.05])
             with left:
@@ -8231,7 +8416,7 @@ with tabs[6]:
                     )
                     fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False)
                     plot_chart(fig, 390)
-                    st.caption(t("数据来源：Jiandaoyun Gloves / ZX FQC。算法：分别汇总 GTD/包装、外观做工、功能、内里、尺寸五类检查项的 Critical/Major/Minor 疵点。", "Source: Jiandaoyun Gloves / ZX FQC. Logic: sums Critical/Major/Minor defects by GTD/packing, visual, function, liner, and size areas."))
+                    st.caption(t("Jiandaoyun Gloves / ZX FQC。算法：分别汇总 GTD/包装、外观做工、功能、内里、尺寸五类检查项的 Critical/Major/Minor 疵点。", "Jiandaoyun Gloves / ZX FQC. Logic: sums Critical/Major/Minor defects by GTD/packing, visual, function, liner, and size areas."))
 
             with right:
                 st.subheader(t("Top CC 风险｜抽样疵点率", "Top CC Risk | Sample Defect Density"))
@@ -8254,7 +8439,7 @@ with tabs[6]:
                     )
                     fig.update_xaxes(tickformat=".1%")
                     plot_chart(fig, 390)
-                    st.caption(t("数据来源：Jiandaoyun Gloves / ZX FQC。算法：按 CC + Model 聚合，抽样疵点率=疵点汇总/抽样检验量；点越大代表抽样量越大。", "Source: Jiandaoyun Gloves / ZX FQC. Logic: grouped by CC + Model; sample defect density = defects / sampled qty; larger points mean larger sample size."))
+                    st.caption(t("Jiandaoyun Gloves / ZX FQC。算法：按 CC + Model 聚合，抽样疵点率=疵点汇总/抽样检验量；点越大代表抽样量越大。", "Jiandaoyun Gloves / ZX FQC. Logic: grouped by CC + Model; sample defect density = defects / sampled qty; larger points mean larger sample size."))
 
             with st.expander(t("简道云明细", "Jiandaoyun Detail"), expanded=False):
                 detail_cols = [
