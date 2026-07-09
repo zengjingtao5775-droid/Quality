@@ -4429,27 +4429,24 @@ def render_scope_data_map(
 ) -> None:
     scope_codes = DASHBOARD_SCOPES.get(scope_key, {}).get("factories", [])
     gap_matrix = build_data_gap_matrix(finished_df, voice_df, incoming_df, scope_codes)
-    top_cols = st.columns([0.24, 0.76])
-    with top_cols[0]:
-        with st.popover(t("数据地图 / README", "Data Map / README"), use_container_width=True):
-            st.markdown(f"### {t('当前页面数据地图', 'Current Page Data Map')}")
-            st.markdown(
-                t(
-                    "这里用于查看当前 community / supplier 已接入和缺失的数据字段。默认收起，避免干扰主看板；需要排查数据完整性时再打开。",
-                    "Use this to review which data fields are loaded or missing for the current community / supplier. It stays collapsed by default so the main dashboard stays focused.",
-                )
-            )
-            render_data_gap_matrix(gap_matrix)
-            st.markdown(
-                t(
-                    "**阅读方式**：绿色代表已接入，红色代表当前缺失；缺失项优先补齐后，相关图表的解释力会更强。",
-                    "**How to read**: green means loaded, red means missing. Fill missing items first to improve the related chart explanations.",
-                )
-            )
-    with top_cols[1]:
+    st.markdown(
+        f"<div class='product-section-note'>{html.escape(t('需要查看接入状态和缺口时，展开下面的数据地图 / README。', 'Expand the Data Map / README below to inspect coverage and gaps.'))}</div>",
+        unsafe_allow_html=True,
+    )
+    with st.expander(t("数据地图 / README", "Data Map / README"), expanded=False):
+        st.markdown(f"### {t('当前页面数据地图', 'Current Page Data Map')}")
         st.markdown(
-            f"<div class='product-section-note'>{html.escape(t('需要查看接入状态和缺口时，打开左侧 数据地图 / README。', 'Open Data Map / README on the left to inspect coverage and gaps.'))}</div>",
-            unsafe_allow_html=True,
+            t(
+                "这里用于查看当前 community / supplier 已接入和缺失的数据字段。默认收起，避免干扰主看板；需要排查数据完整性时再打开。",
+                "Use this to review which data fields are loaded or missing for the current community / supplier. It stays collapsed by default so the main dashboard stays focused.",
+            )
+        )
+        render_data_gap_matrix(gap_matrix)
+        st.markdown(
+            t(
+                "**阅读方式**：绿色代表已接入，红色代表当前缺失；缺失项优先补齐后，相关图表的解释力会更强。",
+                "**How to read**: green means loaded, red means missing. Fill missing items first to improve the related chart explanations.",
+            )
         )
 
 
@@ -4540,16 +4537,16 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
         axis=1,
     )
 
-    all_filter_label = t("全部", "All")
-    risk_filter_options = [all_filter_label, t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
+    risk_filter_options = [t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
     _, filter_col = st.columns([5.5, 1.6])
     with filter_col:
-        selected_risk_level = st.selectbox(
-            t("风险筛选", "Risk Filter"),
+        selected_risk_levels = st.multiselect(
+            t("风险筛选（可多选）", "Risk Filter (multi-select)"),
             risk_filter_options,
-            key=f"zx_cluster_risk_filter_{language_query_code()}",
+            default=risk_filter_options,
+            key=f"zx_cluster_risk_filter_multi_{language_query_code()}",
         )
-    plot_view = view if selected_risk_level == all_filter_label else view[view["cluster_risk_level"] == selected_risk_level]
+    plot_view = view if not selected_risk_levels else view[view["cluster_risk_level"].isin(selected_risk_levels)]
     if plot_view.empty:
         st.info(t("当前筛选下没有对应风险等级的 CC。", "No CCs match the selected risk level."))
         return
