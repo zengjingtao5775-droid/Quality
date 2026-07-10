@@ -6160,7 +6160,12 @@ def build_zx_kpi_cards(finished_df: pd.DataFrame, voice_df: pd.DataFrame) -> lis
     )
     iv_current = int(pd.to_numeric(iv_voice.get("intern_voice_count", 0), errors="coerce").fillna(0).sum()) if not iv_voice.empty else 0
     previous_available = bool(iv_voice.get("intern_voice_prev_available", pd.Series(False, index=iv_voice.index)).fillna(False).astype(bool).any()) if not iv_voice.empty else False
-    iv_previous = float(pd.to_numeric(iv_voice.get("intern_voice_prev_count", np.nan), errors="coerce").sum(min_count=1)) if not iv_voice.empty else np.nan
+    iv_previous_source = (
+        iv_voice["intern_voice_prev_count"]
+        if not iv_voice.empty and "intern_voice_prev_count" in iv_voice.columns
+        else pd.Series(np.nan, index=iv_voice.index)
+    )
+    iv_previous = float(pd.to_numeric(iv_previous_source, errors="coerce").sum(min_count=1)) if not iv_voice.empty else np.nan
     if previous_available and pd.notna(iv_previous):
         if iv_previous > 0:
             yoy_change = (iv_current - iv_previous) / iv_previous
