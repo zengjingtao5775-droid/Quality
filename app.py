@@ -904,6 +904,80 @@ st.markdown(
         border-radius: 50%;
         margin-right: 6px;
     }
+    .st-key-zx_cluster_control,
+    .st-key-zx_cc_search,
+    .st-key-zx_process_cc_filter {
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid #d6ddfb;
+        border-radius: 8px;
+        padding: 12px 14px 10px;
+        margin: 4px 0 12px;
+        box-shadow: 0 12px 28px rgba(36, 52, 167, 0.08);
+    }
+    .st-key-zx_cluster_control [data-baseweb="select"] > div,
+    .st-key-zx_cc_search [data-baseweb="select"] > div,
+    .st-key-zx_process_cc_filter [data-baseweb="select"] > div {
+        background: #f8faff !important;
+        border-color: #cbd5ff !important;
+        border-radius: 8px !important;
+        min-height: 44px;
+    }
+    .st-key-zx_cluster_control [data-baseweb="tag"],
+    .st-key-zx_cc_search [data-baseweb="tag"],
+    .st-key-zx_process_cc_filter [data-baseweb="tag"] {
+        background: #eef2ff !important;
+        border: 1px solid #c7d2fe !important;
+        border-radius: 7px !important;
+        color: #2434a7 !important;
+        font-weight: 800 !important;
+    }
+    .st-key-zx_cluster_control [data-baseweb="tag"] *,
+    .st-key-zx_cc_search [data-baseweb="tag"] *,
+    .st-key-zx_process_cc_filter [data-baseweb="tag"] * {
+        color: #2434a7 !important;
+        fill: #2434a7 !important;
+    }
+    .zx-filter-title {
+        color: #172033;
+        font-size: 0.92rem;
+        font-weight: 860;
+        line-height: 1.25;
+        margin-top: 2px;
+    }
+    .zx-filter-note {
+        color: #667085;
+        font-size: 0.78rem;
+        line-height: 1.35;
+        margin-top: 4px;
+    }
+    .zx-pareto-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: #2434a7;
+        background: #eef2ff;
+        border: 1px solid #c7d2fe;
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 0.78rem;
+        font-weight: 840;
+        margin: 2px 0 8px;
+    }
+    .zx-pareto-chip::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #3341c4;
+        box-shadow: 0 0 0 4px rgba(51, 65, 196, 0.10);
+    }
+    @keyframes zxChartEnter {
+        from {opacity: 0; transform: translateY(8px);}
+        to {opacity: 1; transform: translateY(0);}
+    }
+    .st-key-zx_cluster_chart .stPlotlyChart {
+        animation: zxChartEnter 0.42s ease-out both;
+    }
     @media (max-width: 720px) {
         .kpi-grid, .signal-grid {grid-template-columns: 1fr;}
         .hero-title {font-size: 1.8rem;}
@@ -2227,6 +2301,7 @@ def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Dat
                 "product_raw": products,
                 "product_code": products.str.extract(r"^(\d+)")[0].fillna(""),
                 "product_name": products.str.replace(r"^\d+\s*", "", regex=True),
+                "model_code": "",
                 "avg_score_prev": clean_numeric_series(raw.get("Avg score N-X", pd.Series([np.nan] * len(raw)))),
                 "avg_score_now": clean_numeric_series(raw.get("Avg score N0", pd.Series([np.nan] * len(raw)))),
                 "delta_avg_score": clean_numeric_series(raw.get("Delta avg score N-X", pd.Series([np.nan] * len(raw)))),
@@ -2242,6 +2317,8 @@ def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Dat
                 "sold_prev": clean_numeric_series(raw.get("Qty sold N-X", pd.Series([np.nan] * len(raw)))),
                 "sold_now": clean_numeric_series(raw.get("qty_sold_RPM_without_workshop_N_0", pd.Series([np.nan] * len(raw)))),
                 "intern_voice_count": 0,
+                "intern_voice_prev_count": np.nan,
+                "intern_voice_prev_available": False,
                 "voice_source": "YTD Compare",
                 "source_file": str(cfg["voice"]),
             }
@@ -2291,15 +2368,36 @@ def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Dat
             intern["case_id"] = intern["file_name"].fillna("").astype(str)
         if "product_name" not in intern.columns:
             intern["product_name"] = "Intern Voice"
+        if "model_code" not in intern.columns:
+            intern["model_code"] = ""
+        feedback_dates = pd.to_datetime(intern.get("feedback_date", pd.Series(pd.NaT, index=intern.index)), errors="coerce")
+        valid_feedback_dates = feedback_dates.dropna()
+        if not valid_feedback_dates.empty:
+            reference_date = valid_feedback_dates.max().normalize()
+            previous_cutoff = reference_date - pd.DateOffset(years=1)
+            current_mask = feedback_dates.dt.year.eq(reference_date.year) & feedback_dates.le(reference_date)
+            previous_mask = feedback_dates.dt.year.eq(reference_date.year - 1) & feedback_dates.le(previous_cutoff)
+            previous_year_available = bool(feedback_dates.dt.year.eq(reference_date.year - 1).any())
+        else:
+            current_mask = pd.Series(True, index=intern.index)
+            previous_mask = pd.Series(False, index=intern.index)
+            previous_year_available = False
+        intern["iv_current_case"] = intern["case_id"].where(current_mask)
+        intern["iv_previous_case"] = intern["case_id"].where(previous_mask)
         intern_summary = (
             intern[intern["product_code"] != ""]
             .groupby("product_code", as_index=False)
             .agg(
-                intern_voice_count=("case_id", "nunique"),
+                intern_voice_count=("iv_current_case", "nunique"),
+                intern_voice_prev_count=("iv_previous_case", "nunique"),
                 evidence_files=("file_name", lambda s: ", ".join(s.head(3))),
                 product_name=("product_name", lambda s: next((str(v) for v in s if str(v).strip()), "Intern Voice")),
+                model_code=("model_code", summarize_unique_values),
             )
         )
+        intern_summary["intern_voice_prev_available"] = previous_year_available
+        if not previous_year_available:
+            intern_summary["intern_voice_prev_count"] = np.nan
         if not intern_summary.empty:
             voice = pd.DataFrame(
                 {
@@ -2311,6 +2409,7 @@ def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Dat
                     "product_raw": intern_summary["product_code"],
                     "product_code": intern_summary["product_code"],
                     "product_name": intern_summary["product_name"],
+                    "model_code": intern_summary["model_code"],
                     "avg_score_prev": np.nan,
                     "avg_score_now": np.nan,
                     "delta_avg_score": np.nan,
@@ -2326,6 +2425,8 @@ def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Dat
                     "sold_prev": np.nan,
                     "sold_now": np.nan,
                     "intern_voice_count": intern_summary["intern_voice_count"],
+                    "intern_voice_prev_count": intern_summary["intern_voice_prev_count"],
+                    "intern_voice_prev_available": intern_summary["intern_voice_prev_available"],
                     "voice_source": "Intern Voice",
                     "source_file": str(intern_source_file or FACTORIES["ZX"]["intern_voice_file"]),
                 }
@@ -3529,11 +3630,20 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
 
     cust = pd.DataFrame()
     if not voice.empty:
+        voice = voice.copy()
+        for column, default in {
+            "model_code": "",
+            "intern_voice_prev_count": np.nan,
+            "intern_voice_prev_available": False,
+        }.items():
+            if column not in voice.columns:
+                voice[column] = default
         cust = (
             voice.groupby(["factory_code", "factory_name", "supplier", "product_key"], as_index=False)
             .agg(
                 voice_product_code=("product_code", "first"),
                 voice_product_name=("product_name", "first"),
+                model_code=("model_code", summarize_unique_values),
                 hierarchy_2=("hierarchy_2", "first"),
                 rpm_now=("rpm_now", "mean"),
                 rpm_prev=("rpm_prev", "mean"),
@@ -3542,6 +3652,8 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
                 returned_now=("returned_now", "sum"),
                 nqc_now=("nqc_now", "sum"),
                 intern_voice_count=("intern_voice_count", "sum"),
+                intern_voice_prev_count=("intern_voice_prev_count", lambda s: s.sum(min_count=1)),
+                intern_voice_prev_available=("intern_voice_prev_available", "max"),
             )
         )
 
@@ -3567,6 +3679,9 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
     if "variant_count" not in product.columns:
         product["variant_count"] = 0
     product["variant_count"] = product["variant_count"].fillna(0).astype(int)
+    if "model_code" not in product.columns:
+        product["model_code"] = ""
+    product["model_code"] = product["model_code"].fillna("").astype(str)
     has_client_data = pd.Series(False, index=product.index)
     for column in ["voice_product_code", "voice_product_name", "rpm_now", "intern_voice_count"]:
         if column in product.columns:
@@ -4429,6 +4544,11 @@ def render_scope_data_map(
 ) -> None:
     scope_codes = DASHBOARD_SCOPES.get(scope_key, {}).get("factories", [])
     gap_matrix = build_data_gap_matrix(finished_df, voice_df, incoming_df, scope_codes)
+    if scope_key == "ZX":
+        gap_matrix = gap_matrix.drop(
+            columns=[t("Machine / Torque", "Machine / Torque"), "Rework"],
+            errors="ignore",
+        )
     st.markdown(
         f"<div class='product-section-note'>{html.escape(t('需要查看接入状态和缺口时，展开下面的数据地图 / README。', 'Expand the Data Map / README below to inspect coverage and gaps.'))}</div>",
         unsafe_allow_html=True,
@@ -4519,6 +4639,15 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
     view["plot_y"] = (view["client_signal"] + view["product_code"].map(lambda value: stable_jitter(value, 1.05))).clip(0, 100)
     view["bubble_size"] = np.log10(view["qty_inspected"].fillna(0).clip(lower=0) + 10)
     view["product_label_display"] = view["product_label"].map(localize_product_label)
+    model_code = view.get("model_code", pd.Series("", index=view.index)).fillna("").astype(str).str.strip()
+    model_name = view.get("voice_product_name", pd.Series("", index=view.index)).fillna("").astype(str).str.strip()
+    model_fallback = model_name.where(model_name.ne(""), view["product_label_display"].astype(str))
+    view["model_display"] = np.where(
+        model_code.ne("") & model_fallback.ne(""),
+        model_code + " · " + model_fallback,
+        model_code.where(model_code.ne(""), model_fallback),
+    )
+    view["model_display"] = pd.Series(view["model_display"], index=view.index).replace("", "-")
     top_label_index = view["cluster_score"].nlargest(min(18, len(view))).index
     view["cc_text"] = ""
     view.loc[top_label_index, "cc_text"] = view.loc[top_label_index, "product_code"].astype(str)
@@ -4538,15 +4667,24 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
     )
 
     risk_filter_options = [t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
-    _, filter_col = st.columns([5.5, 1.6])
-    with filter_col:
-        selected_risk_levels = st.multiselect(
-            t("风险筛选（可多选）", "Risk Filter (multi-select)"),
-            risk_filter_options,
-            default=risk_filter_options,
-            key=f"zx_cluster_risk_filter_multi_{language_query_code()}",
-        )
-    plot_view = view if not selected_risk_levels else view[view["cluster_risk_level"].isin(selected_risk_levels)]
+    with st.container(key="zx_cluster_control"):
+        filter_intro, filter_control = st.columns([0.34, 0.66], vertical_alignment="center")
+        with filter_intro:
+            st.markdown(
+                f"<div class='zx-filter-title'>{t('风险等级', 'Risk Levels')}</div>"
+                f"<div class='zx-filter-note'>{t('可多选；输入文字可快速搜索', 'Select multiple; type to search')}</div>",
+                unsafe_allow_html=True,
+            )
+        with filter_control:
+            selected_risk_levels = st.multiselect(
+                t("风险筛选（可多选）", "Risk Filter (multi-select)"),
+                risk_filter_options,
+                default=risk_filter_options,
+                key=f"zx_cluster_risk_filter_multi_{language_query_code()}",
+                placeholder=t("选择一个或多个风险等级", "Choose one or more risk levels"),
+                label_visibility="collapsed",
+            )
+    plot_view = view[view["cluster_risk_level"].isin(selected_risk_levels)].copy() if selected_risk_levels else view.iloc[0:0].copy()
     if plot_view.empty:
         st.info(t("当前筛选下没有对应风险等级的 CC。", "No CCs match the selected risk level."))
         return
@@ -4558,33 +4696,23 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
         color="cluster_risk_level",
         size="bubble_size",
         text="cc_text",
-        size_max=18,
+        size_max=26,
         color_discrete_map={
-            t("高风险", "High Risk"): "#dc2626",
-            t("中风险", "Medium Risk"): "#d97706",
-            t("低风险", "Low Risk"): "#16a34a",
+            t("高风险", "High Risk"): "#e85d68",
+            t("中风险", "Medium Risk"): "#f0a94a",
+            t("低风险", "Low Risk"): "#2aa876",
         },
-        hover_data={
-            "factory_name": True,
-            "product_code": True,
-            "product_label_display": True,
-            "qty_inspected": ":,.0f",
-            "defect_qty": ":,.0f",
-            "defect_rate": ":.2%",
-            "production_axis": ":.1f",
-            "rpm_now": ":,.0f",
-            "rpm_score": ":.1f",
-            "intern_voice_count": ":,.0f",
-            "intern_voice_score": ":.1f",
-            "returned_now": ":,.0f",
-            "cluster_score": ":.1f",
-            "client_signal": ":.1f",
-            "cluster_risk_formula": True,
-            "plot_x": False,
-            "plot_y": False,
-            "bubble_size": False,
-            "cc_text": False,
-        },
+        custom_data=[
+            "product_code",
+            "model_display",
+            "rpm_now",
+            "intern_voice_count",
+            "defect_rate",
+            "cluster_score",
+            "qty_inspected",
+            "defect_qty",
+            "cluster_risk_level",
+        ],
         labels={
             "plot_x": t("生产端风险分（QC不良率）", "Production Risk Score (QC defect rate)"),
             "plot_y": y_axis_label,
@@ -4597,9 +4725,34 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
             "cluster_risk_formula": t("风险分计算", "Risk Calculation"),
         },
     )
-    fig.update_traces(textposition="top center", marker=dict(opacity=0.76, line=dict(color="#ffffff", width=0.8)))
-    fig.update_xaxes(range=[-2, 50])
-    fig.update_yaxes(range=[-4, 60])
+    hover_template = (
+        f"<b>CC %{{customdata[0]}}</b><br>"
+        f"<b>Model</b> %{{customdata[1]}}<br>"
+        f"<b>RPM</b> %{{customdata[2]:,.0f}}<br>"
+        f"<b>IV</b> %{{customdata[3]:,.0f}}<br>"
+        f"<b>{t('不良率', 'Defect rate')}</b> %{{customdata[4]:.2%}}<br>"
+        f"<b>Risk score</b> %{{customdata[5]:.1f}}<br>"
+        f"<b>{t('检验数 / 疵点', 'Inspected / defects')}</b> %{{customdata[6]:,.0f}} / %{{customdata[7]:,.0f}}"
+        "<extra></extra>"
+    )
+    fig.update_traces(
+        textposition="top center",
+        textfont=dict(size=13, color="#344054"),
+        marker=dict(opacity=0.86, line=dict(color="#ffffff", width=1.4)),
+        hovertemplate=hover_template,
+    )
+    fig.update_layout(
+        transition=dict(duration=420, easing="cubic-in-out"),
+        hoverlabel=dict(
+            bgcolor="#ffffff",
+            bordercolor="#cbd5e1",
+            font=dict(size=16, color="#172033", family="Arial, sans-serif"),
+            align="left",
+            namelength=-1,
+        ),
+    )
+    fig.update_xaxes(range=[0, 50])
+    fig.update_yaxes(range=[0, 60])
     fig.add_vline(x=50, line_dash="dash", line_color="#8b96b8", opacity=0.45)
     fig.add_hline(y=55, line_dash="dash", line_color="#8b96b8", opacity=0.45)
     fig.add_annotation(
@@ -4612,7 +4765,8 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
         font=dict(size=13, color="#dc2626"),
         bgcolor="rgba(255,255,255,0.72)",
     )
-    plot_chart(fig, 620)
+    with st.container(key="zx_cluster_chart"):
+        plot_chart(fig, 620)
 
 
 def community_source_label(scope_key: str) -> str:
@@ -4788,7 +4942,108 @@ def render_alert_detail_table(alerts: pd.DataFrame, expanded: bool = False):
         )
 
 
-def render_stage_trend(finished_df: pd.DataFrame, source_label: str):
+def prepare_fixed_product_risk(products: pd.DataFrame) -> pd.DataFrame:
+    if products.empty:
+        return pd.DataFrame()
+    view = products.copy()
+    for column in [
+        "risk_score",
+        "production_score",
+        "client_score",
+        "defect_rate",
+        "qty_inspected",
+        "defect_qty",
+        "rpm_now",
+        "intern_voice_count",
+    ]:
+        view[column] = pd.to_numeric(view.get(column, pd.Series(np.nan, index=view.index)), errors="coerce")
+    fallback_production = view["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
+    view["production_score_fixed"] = view["production_score"].fillna(fallback_production).fillna(0).clip(0, 100)
+    view["client_score_fixed"] = view["client_score"].fillna(0).clip(0, 100)
+    view["risk_score_fixed"] = (view["production_score_fixed"] * 0.70 + view["client_score_fixed"] * 0.30).clip(0, 100)
+    view["risk_level_fixed"] = view["risk_score_fixed"].map(risk_level)
+    view["product_view"] = view["factory_code"].astype(str) + " / " + view["product_code"].astype(str)
+    view["product_label_display"] = view["product_label"].map(localize_product_label)
+    return view.sort_values("risk_score_fixed", ascending=False)
+
+
+def select_pareto_risk_products(products: pd.DataFrame, top_fraction: float = 0.20) -> pd.DataFrame:
+    view = prepare_fixed_product_risk(products)
+    if view.empty:
+        return view
+    positive = view[view["risk_score_fixed"] > 0].copy()
+    if positive.empty:
+        fallback_count = max(1, math.ceil(len(view) * top_fraction))
+        fallback = view.head(fallback_count).copy()
+        fallback["risk_contribution_share"] = 0.0
+        fallback["cumulative_risk_share"] = 0.0
+        return fallback
+    total_risk = float(positive["risk_score_fixed"].sum())
+    positive["risk_contribution_share"] = positive["risk_score_fixed"] / total_risk
+    positive["cumulative_risk_share"] = positive["risk_contribution_share"].cumsum()
+    top_count = max(1, math.ceil(len(positive) * top_fraction))
+    return positive.head(top_count).copy()
+
+
+def pareto_risk_cc_codes(products: pd.DataFrame, top_fraction: float = 0.20) -> list[str]:
+    pareto = select_pareto_risk_products(products, top_fraction)
+    return [
+        value
+        for value in dict.fromkeys(pareto.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip())
+        if value and value.lower() not in {"nan", "none"}
+    ]
+
+
+def render_cc_search_form(
+    options: list[str],
+    defaults: list[str],
+    *,
+    state_key: str,
+    form_key: str,
+    container_key: str,
+    title: str,
+    note: str,
+) -> list[str]:
+    options = list(dict.fromkeys(str(option) for option in options if str(option).strip()))
+    defaults = [value for value in defaults if value in options]
+    stored = [value for value in st.session_state.get(state_key, defaults) if value in options]
+    if not stored and defaults:
+        stored = defaults
+    widget_key = f"{state_key}_input"
+    if widget_key in st.session_state:
+        widget_values = [value for value in st.session_state[widget_key] if value in options]
+        if widget_values != list(st.session_state[widget_key]):
+            del st.session_state[widget_key]
+    with st.container(key=container_key):
+        st.markdown(
+            f"<div class='zx-filter-title'>{html.escape(title)}</div>"
+            f"<div class='zx-filter-note'>{html.escape(note)}</div>",
+            unsafe_allow_html=True,
+        )
+        with st.form(form_key, border=False):
+            select_col, action_col = st.columns([0.82, 0.18], vertical_alignment="bottom")
+            with select_col:
+                pending = st.multiselect(
+                    t("搜索并选择 CC", "Search and select CCs"),
+                    options,
+                    default=stored,
+                    key=widget_key,
+                    placeholder=t("输入 CC 搜索，可多选", "Type a CC to search; multi-select supported"),
+                )
+            with action_col:
+                submitted = st.form_submit_button(
+                    t("应用", "Apply"),
+                    type="primary",
+                    icon=":material/search:",
+                    use_container_width=True,
+                )
+        if submitted:
+            stored = pending
+            st.session_state[state_key] = pending
+    return stored
+
+
+def render_stage_trend(finished_df: pd.DataFrame, source_label: str, show_caption: bool = True):
     trend_source = finished_df.copy()
     trend_source["trend_week"] = (
         pd.to_datetime(trend_source["date"], errors="coerce", utc=True)
@@ -4817,10 +5072,71 @@ def render_stage_trend(finished_df: pd.DataFrame, source_label: str):
     )
     fig.update_yaxes(tickformat=".1%")
     plot_chart(fig, 330)
-    st.caption(t("按周和检验阶段拆分趋势，用于判断 Online 与 Final 是否同向恶化。", "Weekly trend split by inspection stage to compare online and final movement."))
+    if show_caption:
+        st.caption(t("按周和检验阶段拆分趋势，用于判断 Online 与 Final 是否同向恶化。", "Weekly trend split by inspection stage to compare online and final movement."))
 
 
-def render_defect_pareto(finished_df: pd.DataFrame, source_label: str):
+def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFrame) -> None:
+    options = sorted(
+        value
+        for value in finished_df.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique()
+        if value and value.lower() not in {"nan", "none"}
+    )
+    defaults = pareto_risk_cc_codes(products)
+    selected_ccs = render_cc_search_form(
+        options,
+        defaults,
+        state_key=f"zx_trend_cc_selection_{language_query_code()}",
+        form_key=f"zx_trend_cc_form_{language_query_code()}",
+        container_key="zx_cc_search",
+        title=t("By CC 合格率趋势", "Pass-rate trend by CC"),
+        note=t("默认载入综合风险排名前 20% 的 CC；也可搜索任意 CC 做对比。", "Defaults to the top 20% of CCs by overall risk; search any CC to compare."),
+    )
+    if not selected_ccs:
+        st.info(t("请至少选择一个 CC。", "Select at least one CC."))
+        return
+    trend_source = finished_df[finished_df["product_code"].astype(str).isin(selected_ccs)].copy()
+    trend_source["trend_week"] = (
+        pd.to_datetime(trend_source["date"], errors="coerce", utc=True)
+        .dt.tz_convert(None)
+        .dt.to_period("W")
+        .dt.start_time
+    )
+    trend = (
+        trend_source.dropna(subset=["trend_week"])
+        .groupby(["trend_week", "product_code"], as_index=False)
+        .agg(qty_inspected=("qty_inspected", "sum"), defect_qty=("defect_qty", "sum"))
+    )
+    trend["defect_rate"] = safe_rate(trend["defect_qty"], trend["qty_inspected"])
+    trend["pass_rate"] = (1 - trend["defect_rate"]).clip(0, 1)
+    if trend.empty:
+        st.info(t("当前日期范围没有所选 CC 的趋势数据。", "No trend data for the selected CCs in the current date range."))
+        return
+    st.markdown(
+        f"<span class='zx-pareto-chip'>{t('当前显示', 'Showing')} {len(selected_ccs)} {t('个 CC', 'CCs')}</span>",
+        unsafe_allow_html=True,
+    )
+    fig = px.line(
+        trend,
+        x="trend_week",
+        y="pass_rate",
+        color="product_code",
+        markers=True,
+        hover_data={"qty_inspected": ":,.0f", "defect_qty": ":,.0f"},
+        labels={
+            "trend_week": t("周", "Week"),
+            "pass_rate": t("合格率", "Pass Rate"),
+            "product_code": "CC",
+        },
+    )
+    fig.update_traces(line=dict(width=3), marker=dict(size=7, line=dict(width=1, color="#ffffff")))
+    y_min = max(0.0, float(trend["pass_rate"].min()) - 0.01)
+    fig.update_yaxes(tickformat=".1%", range=[y_min, 1.005])
+    fig.update_layout(hovermode="x unified", transition=dict(duration=320, easing="cubic-in-out"))
+    plot_chart(fig, 390)
+
+
+def render_defect_pareto(finished_df: pd.DataFrame, source_label: str, show_caption: bool = True):
     pareto = compute_pareto(finished_df[finished_df["defect_qty"] > 0], "defect_type", "defect_qty", limit=10)
     if pareto.empty:
         st.info(t("当前范围暂无疵点 Pareto。", "No defect Pareto under current scope."))
@@ -4837,33 +5153,31 @@ def render_defect_pareto(finished_df: pd.DataFrame, source_label: str):
     fig.update_yaxes(autorange="reversed")
     fig.update_traces(textposition="outside")
     plot_chart(fig, 330)
-    st.caption(t("按疵点数量做 Pareto，前几项即优先改善主题。", "Pareto by defect quantity; top items are improvement priorities."))
+    if show_caption:
+        st.caption(t("按疵点数量做 Pareto，前几项即优先改善主题。", "Pareto by defect quantity; top items are improvement priorities."))
 
 
-def render_product_priority(products: pd.DataFrame, source_label: str, risk_settings: dict | None = None):
+def render_product_priority(
+    products: pd.DataFrame,
+    source_label: str,
+    risk_settings: dict | None = None,
+    *,
+    pareto_mode: bool = False,
+    show_caption: bool = True,
+):
     if products.empty:
         st.info(t("当前范围暂无产品风险数据。", "No product risk data under current scope."))
         return
-    view = products.copy()
-    for column in [
-        "risk_score",
-        "production_score",
-        "client_score",
-        "defect_rate",
-        "qty_inspected",
-        "defect_qty",
-        "rpm_now",
-        "intern_voice_count",
-    ]:
-        view[column] = pd.to_numeric(view.get(column, pd.Series(np.nan, index=view.index)), errors="coerce")
-    fallback_production = view["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
-    view["production_score_fixed"] = view["production_score"].fillna(fallback_production).fillna(0).clip(0, 100)
-    view["client_score_fixed"] = view["client_score"].fillna(0).clip(0, 100)
-    view["risk_score_fixed"] = (view["production_score_fixed"] * 0.70 + view["client_score_fixed"] * 0.30).clip(0, 100)
-    view["risk_level_fixed"] = view["risk_score_fixed"].map(risk_level)
-    view = view.sort_values("risk_score_fixed", ascending=False).head(10).copy()
-    view["product_view"] = view["factory_code"].astype(str) + " / " + view["product_code"].astype(str)
-    view["product_label_display"] = view["product_label"].map(localize_product_label)
+    view = select_pareto_risk_products(products) if pareto_mode else prepare_fixed_product_risk(products).head(10).copy()
+    if view.empty:
+        st.info(t("当前范围暂无可排序的产品风险数据。", "No rankable product risk data under current scope."))
+        return
+    if pareto_mode:
+        achieved_share = float(view.get("cumulative_risk_share", pd.Series(0, index=view.index)).max())
+        st.markdown(
+            f"<span class='zx-pareto-chip'>80/20 · Top 20% · {len(view)} {t('个 CC 贡献', 'CCs contribute')} {achieved_share:.0%} {t('风险', 'of risk')}</span>",
+            unsafe_allow_html=True,
+        )
     view["risk_formula"] = view.apply(
         lambda row: t(
             "风险分 = "
@@ -4915,12 +5229,13 @@ def render_product_priority(products: pd.DataFrame, source_label: str, risk_sett
     fig.update_xaxes(range=[0, 105])
     fig.update_traces(textposition="outside")
     plot_chart(fig, 360)
-    st.caption(
-        t(
-            "产品综合风险 = 生产端风险 × 70% + 客户端风险 × 30%；生产端风险来自贝叶斯收缩后的 QC 不良率。",
-            "Product risk = production risk x 70% + client risk x 30%; production risk uses Bayesian-shrunk QC defect rate.",
+    if show_caption:
+        st.caption(
+            t(
+                "产品综合风险 = 生产端风险 × 70% + 客户端风险 × 30%；生产端风险来自贝叶斯收缩后的 QC 不良率。",
+                "Product risk = production risk x 70% + client risk x 30%; production risk uses Bayesian-shrunk QC defect rate.",
+            )
         )
-    )
 
 
 def render_process_risk_chart(processes: pd.DataFrame, source_label: str):
@@ -4951,6 +5266,104 @@ def render_process_risk_chart(processes: pd.DataFrame, source_label: str):
             "Process risk converts Bayesian-shrunk process defect rate to 0-100; inspection volume is retained to avoid small-sample overreaction.",
         )
     )
+
+
+def compute_zx_cc_process_summary(finished_df: pd.DataFrame, risk_settings: dict) -> pd.DataFrame:
+    if finished_df.empty:
+        return pd.DataFrame()
+    summary = (
+        finished_df.groupby(
+            ["factory_code", "factory_name", "supplier", "product_code", "process"],
+            as_index=False,
+        )
+        .agg(
+            qty_inspected=("qty_inspected", "sum"),
+            defect_qty=("defect_qty", "sum"),
+            worker_team_count=("worker_team", pd.Series.nunique),
+            work_order_count=("work_order", pd.Series.nunique),
+        )
+    )
+    summary = summary[summary["qty_inspected"] > 0].copy()
+    if summary.empty:
+        return summary
+    summary["defect_rate"] = safe_rate(summary["defect_qty"], summary["qty_inspected"])
+    summary["risk_score"] = summary.apply(
+        lambda row: defect_risk_score(
+            shrunk_defect_rate(
+                row["defect_qty"],
+                row["qty_inspected"],
+                settings_for_factory(risk_settings, row["factory_code"]).get("process_benchmark_pct", 5.0),
+            ),
+            settings_for_factory(risk_settings, row["factory_code"]).get("process_benchmark_pct", 5.0),
+        ),
+        axis=1,
+    )
+    summary["risk_level"] = summary["risk_score"].map(risk_level)
+    top_defects = compute_top_defects(finished_df, ["factory_code", "product_code", "process"])
+    summary = summary.merge(top_defects, on=["factory_code", "product_code", "process"], how="left")
+    summary["cc_process_view"] = summary["product_code"].astype(str) + " / " + summary["process"].astype(str)
+    return summary.sort_values("risk_score", ascending=False)
+
+
+def render_zx_process_risk_by_cc(
+    finished_df: pd.DataFrame,
+    products: pd.DataFrame,
+    risk_settings: dict,
+) -> None:
+    options = sorted(
+        value
+        for value in finished_df.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique()
+        if value and value.lower() not in {"nan", "none"}
+    )
+    defaults = pareto_risk_cc_codes(products)
+    selected_ccs = render_cc_search_form(
+        options,
+        defaults,
+        state_key=f"zx_process_cc_selection_{language_query_code()}",
+        form_key=f"zx_process_cc_form_{language_query_code()}",
+        container_key="zx_process_cc_filter",
+        title=t("按 CC 检查工序风险", "Inspect process risk by CC"),
+        note=t("默认使用综合风险排名前 20% 的 CC；可搜索并组合多个 CC。", "Defaults to the top 20% of CCs by overall risk; search and combine multiple CCs."),
+    )
+    if not selected_ccs:
+        st.info(t("请至少选择一个 CC。", "Select at least one CC."))
+        return
+    filtered = finished_df[finished_df["product_code"].astype(str).isin(selected_ccs)].copy()
+    process_view = compute_zx_cc_process_summary(filtered, risk_settings).head(14)
+    if process_view.empty:
+        st.info(t("当前筛选下没有可计算的工序风险。", "No process risk can be calculated for the current selection."))
+        return
+    plot_view = process_view.sort_values("risk_score", ascending=True)
+    fig = px.bar(
+        plot_view,
+        x="risk_score",
+        y="cc_process_view",
+        orientation="h",
+        color="risk_level",
+        text=plot_view["risk_score"].round(1),
+        hover_data={
+            "product_code": True,
+            "process": True,
+            "defect_rate": ":.2%",
+            "qty_inspected": ":,.0f",
+            "defect_qty": ":,.0f",
+            "top_defect": True,
+            "worker_team_count": ":,.0f",
+            "work_order_count": ":,.0f",
+            "cc_process_view": False,
+        },
+        labels={
+            "risk_score": t("工序风险分", "Process Risk Score"),
+            "cc_process_view": "CC / " + t("工序", "Process"),
+            "risk_level": t("风险等级", "Risk Level"),
+            "worker_team_count": t("工人 / 班组数", "Worker / Team Count"),
+            "work_order_count": t("工单数", "Work Orders"),
+        },
+        color_discrete_map=LEVEL_COLORS,
+    )
+    fig.update_xaxes(range=[0, 105])
+    fig.update_traces(textposition="outside")
+    plot_chart(fig, 430)
 
 
 def compute_supplier_production_process_distribution(
@@ -5474,10 +5887,49 @@ def render_se_data_summary(finished_df: pd.DataFrame, process_df: pd.DataFrame, 
             dataframe_with_format(process_view, height=320)
 
 
+def load_tu_jiandaoyun_fqc(refresh_token: int = 0) -> tuple[pd.DataFrame, dict, str]:
+    api_key = get_jdy_api_key()
+    if api_key:
+        try:
+            jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc_api(
+                api_key,
+                refresh_token,
+                JIANDAOYUN_CACHE_VERSION,
+            )
+            return jdy_fqc, jdy_meta, ""
+        except Exception as exc:
+            jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+            return jdy_fqc, jdy_meta, str(exc)
+    jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+    return jdy_fqc, jdy_meta, ""
+
+
+def jdy_fqc_rft_metrics(jdy_fqc: pd.DataFrame) -> dict[str, float | int]:
+    if jdy_fqc.empty:
+        return {"records": 0, "valid_records": 0, "pass_count": 0, "fail_count": 0, "rft": np.nan}
+    result_text = jdy_fqc.get("result", pd.Series("", index=jdy_fqc.index)).fillna("").astype(str)
+    fail_mask = (
+        jdy_fqc["is_fail"].fillna(False).astype(bool)
+        if "is_fail" in jdy_fqc.columns
+        else result_text.str.contains("FAIL|NG|NOK|不合格|拒", case=False, na=False)
+    )
+    pass_mask = result_text.str.contains("^PASS$|合格", case=False, na=False) & ~fail_mask
+    valid_result_mask = pass_mask | fail_mask
+    valid_records = int(valid_result_mask.sum())
+    pass_count = int(pass_mask.sum())
+    fail_count = int(fail_mask.sum())
+    return {
+        "records": len(jdy_fqc),
+        "valid_records": valid_records,
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "rft": pass_count / valid_records if valid_records else np.nan,
+    }
+
+
 def render_tu_jiandaoyun_snapshot() -> None:
     st.subheader(t("简道云 ZX（中兴）FQC RFT", "Jiandaoyun ZX FQC RFT"))
     api_key = get_jdy_api_key()
-    api_error = ""
     refresh_cols = st.columns([0.85, 2.6])
     if "tu_jdy_refresh_token" not in st.session_state:
         st.session_state.tu_jdy_refresh_token = 0
@@ -5486,20 +5938,12 @@ def render_tu_jiandaoyun_snapshot() -> None:
             if st.button(t("刷新简道云 API", "Refresh Jiandaoyun API"), key="tu_jdy_refresh_api"):
                 st.session_state.tu_jdy_refresh_token += 1
                 load_jiandaoyun_zx_fqc_api.clear()
-        try:
-            with st.spinner(t("正在读取简道云 ZX FQC 最新数据...", "Reading latest Jiandaoyun ZX FQC data...")):
-                jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc_api(
-                    api_key,
-                    st.session_state.tu_jdy_refresh_token,
-                    JIANDAOYUN_CACHE_VERSION,
-                )
-        except Exception as exc:
-            api_error = str(exc)
-            jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
     else:
         with refresh_cols[0]:
             st.caption(t("未配置 API Key", "No API key"))
-        jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+
+    with st.spinner(t("正在读取简道云 ZX FQC 最新数据...", "Reading latest Jiandaoyun ZX FQC data...")):
+        jdy_fqc, jdy_meta, api_error = load_tu_jiandaoyun_fqc(st.session_state.tu_jdy_refresh_token)
 
     if api_error:
         st.warning(t(f"简道云 API 调用失败，已回退到本地 CSV。错误：{api_error}", f"Jiandaoyun API failed, falling back to local CSV. Error: {api_error}"))
@@ -5541,11 +5985,12 @@ def render_tu_jiandaoyun_snapshot() -> None:
     jdy_view["_is_pass"] = pass_mask
     jdy_view["_valid_result"] = valid_result_mask
 
-    records = len(jdy_view)
-    valid_records = int(valid_result_mask.sum())
-    pass_count = int(pass_mask.sum())
-    fail_count = int(fail_mask.sum())
-    rft = pass_count / valid_records if valid_records else 0
+    rft_metrics = jdy_fqc_rft_metrics(jdy_view)
+    records = int(rft_metrics["records"])
+    valid_records = int(rft_metrics["valid_records"])
+    pass_count = int(rft_metrics["pass_count"])
+    fail_count = int(rft_metrics["fail_count"])
+    rft = float(rft_metrics["rft"]) if pd.notna(rft_metrics["rft"]) else 0
     sampling_series = pd.to_numeric(jdy_view["sampling_size"] if "sampling_size" in jdy_view.columns else pd.Series(0, index=jdy_view.index), errors="coerce").fillna(0)
     defect_series = pd.to_numeric(jdy_view["defect_qty"] if "defect_qty" in jdy_view.columns else pd.Series(0, index=jdy_view.index), errors="coerce").fillna(0)
     sampling = float(sampling_series.sum())
@@ -5686,6 +6131,85 @@ def render_tu_jiandaoyun_snapshot() -> None:
     st.caption(t(f"模式：{source_mode_text}。该报表仅放在 TU / ZX 页面，重点看 FQC RFT 和检验员 RFT；BME 和 SE 不使用简道云。", f"Mode: {source_mode_text}. This report is shown only on TU / ZX and focuses on FQC RFT and inspector RFT; BME and SE do not use Jiandaoyun."))
 
 
+def build_zx_kpi_cards(finished_df: pd.DataFrame, voice_df: pd.DataFrame) -> list[dict[str, str]]:
+    end_qc = finished_df[finished_df["inspection_stage"].eq("End QC / FQC")].copy()
+    eol_qty = float(pd.to_numeric(end_qc.get("qty_inspected", 0), errors="coerce").fillna(0).sum())
+    eol_defects = float(pd.to_numeric(end_qc.get("defect_qty", 0), errors="coerce").fillna(0).sum())
+    eol_rft = 1 - eol_defects / eol_qty if eol_qty else np.nan
+
+    refresh_token = int(st.session_state.get("tu_jdy_refresh_token", 0))
+    jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+    if jdy_fqc.empty:
+        jdy_fqc, _, _ = load_tu_jiandaoyun_fqc(refresh_token)
+    fqc_metrics = jdy_fqc_rft_metrics(jdy_fqc)
+    fqc_rft = float(fqc_metrics["rft"]) if pd.notna(fqc_metrics["rft"]) else np.nan
+
+    ytd_voice = (
+        voice_df[voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("YTD Compare")].copy()
+        if not voice_df.empty
+        else pd.DataFrame()
+    )
+    returned_now = float(pd.to_numeric(ytd_voice.get("returned_now", 0), errors="coerce").fillna(0).sum()) if not ytd_voice.empty else 0
+    sold_now = float(pd.to_numeric(ytd_voice.get("sold_now", 0), errors="coerce").fillna(0).sum()) if not ytd_voice.empty else 0
+    rpm_r12m = returned_now / sold_now * 1_000_000 if sold_now else np.nan
+
+    iv_voice = (
+        voice_df[voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("Intern Voice")].copy()
+        if not voice_df.empty
+        else pd.DataFrame()
+    )
+    iv_current = int(pd.to_numeric(iv_voice.get("intern_voice_count", 0), errors="coerce").fillna(0).sum()) if not iv_voice.empty else 0
+    previous_available = bool(iv_voice.get("intern_voice_prev_available", pd.Series(False, index=iv_voice.index)).fillna(False).astype(bool).any()) if not iv_voice.empty else False
+    iv_previous = float(pd.to_numeric(iv_voice.get("intern_voice_prev_count", np.nan), errors="coerce").sum(min_count=1)) if not iv_voice.empty else np.nan
+    if previous_available and pd.notna(iv_previous):
+        if iv_previous > 0:
+            yoy_change = (iv_current - iv_previous) / iv_previous
+            yoy_note = t(
+                f"同比下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"同比上升 {yoy_change:.1%}" if yoy_change > 0 else "同比持平",
+                f"YoY down {abs(yoy_change):.1%}" if yoy_change < 0 else f"YoY up {yoy_change:.1%}" if yoy_change > 0 else "YoY flat",
+            )
+        else:
+            yoy_note = t("去年同期为 0，无法计算降比", "Prior-year period was 0; change is not calculable")
+    else:
+        yoy_note = t("去年同期数据未接入", "Prior-year comparable data not loaded")
+
+    return [
+        {
+            "label": "FQC RFT",
+            "value": pct(fqc_rft) if pd.notna(fqc_rft) else "N/A",
+            "note": t(
+                f"简道云 · PASS {int(fqc_metrics['pass_count']):,} / 有效 {int(fqc_metrics['valid_records']):,}",
+                f"Jiandaoyun · PASS {int(fqc_metrics['pass_count']):,} / valid {int(fqc_metrics['valid_records']):,}",
+            ),
+            "level": "high" if pd.notna(fqc_rft) and fqc_rft < 0.92 else "medium" if pd.notna(fqc_rft) and fqc_rft < 0.97 else "low",
+        },
+        {
+            "label": t("End of line RFT", "End-of-line RFT"),
+            "value": pct(eol_rft) if pd.notna(eol_rft) else "N/A",
+            "note": t(
+                f"Excel · 检验 {compact_num(eol_qty)} / 疵点 {compact_num(eol_defects)}",
+                f"Excel · inspected {compact_num(eol_qty)} / defects {compact_num(eol_defects)}",
+            ),
+            "level": "high" if pd.notna(eol_rft) and eol_rft < 0.96 else "medium" if pd.notna(eol_rft) and eol_rft < 0.98 else "low",
+        },
+        {
+            "label": "RPM (R12M)",
+            "value": num(rpm_r12m, 0) if pd.notna(rpm_r12m) else "N/A",
+            "note": t(
+                f"退货 {compact_num(returned_now)} / 销量 {compact_num(sold_now)}",
+                f"Returns {compact_num(returned_now)} / sold {compact_num(sold_now)}",
+            ),
+            "level": "high" if pd.notna(rpm_r12m) and rpm_r12m >= 1_000 else "medium" if pd.notna(rpm_r12m) and rpm_r12m >= 500 else "low",
+        },
+        {
+            "label": t("IV 数量", "IV Cases"),
+            "value": f"{iv_current:,}",
+            "note": yoy_note,
+            "level": "high" if previous_available and pd.notna(iv_previous) and iv_current > iv_previous else "low",
+        },
+    ]
+
+
 def render_community_cockpit(
     scope_key: str,
     finished_df: pd.DataFrame,
@@ -5710,8 +6234,21 @@ def render_community_cockpit(
 
     render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
 
-    render_kpi_cards(
-        [
+    if scope_key == "ZX":
+        _, readme_col = st.columns([0.78, 0.22])
+        with readme_col:
+            render_readme_popover(
+                f"{t('README', 'README')} · {t('核心指标', 'Core Metrics')}",
+                t("TU / ZX 核心指标", "TU / ZX Core Metrics"),
+                t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
+                t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
+                t("FQC RFT = 简道云 PASS / 有效结果；End of line RFT = 1 - Excel 疵点数 / 检验数；RPM = 退货数 / 销量 x 1,000,000；IV 同比仅在上年同期数据已接入时计算。", "FQC RFT = Jiandaoyun PASS / valid results; end-of-line RFT = 1 - Excel defects / inspected; RPM = returns / sold x 1,000,000; IV YoY is calculated only when prior-year comparable data is loaded."),
+                "Jiandaoyun ZX FQC + ZX finished QC Excel + ZX R12M RPM/YTD + ZX Intern Voice",
+            )
+        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df))
+    else:
+        render_kpi_cards(
+            [
             {
                 "label": t("检验覆盖率", "Inspection Coverage"),
                 "value": pct(inspection_coverage) if pd.notna(inspection_coverage) else "N/A",
@@ -5739,10 +6276,13 @@ def render_community_cockpit(
                 "note": t("按工序风险分识别", "Identified by process risk score"),
                 "level": "high" if high_processes else "low",
             },
-        ]
-    )
+            ]
+        )
 
     if scope_key == "ZX":
+        zx_qc_source = "ZX Database/ZX成品质量检验数据.xlsx"
+        zx_client_source = "ZX Database/ZX YTD Compare hierarchy.csv + ZX Database/2026 ZX Intern Voice.xlsx"
+        zx_risk_source = f"{zx_qc_source} + {zx_client_source}"
         render_chart_heading(
             "K-means 高风险 CC 聚类",
             "K-means High-Risk CC Cluster",
@@ -5752,24 +6292,24 @@ def render_community_cockpit(
             "K-means groups each CC into high / medium / low risk by two risk dimensions.",
             "生产端风险来自 QC 不良率；客户端风险来自 RPM 与 Intern Voice；综合风险用于排序和颜色判断。",
             "Production risk comes from QC defect rate; client risk comes from RPM and Intern Voice; combined risk drives ranking and color.",
-            source_label,
+            zx_risk_source,
             "zx_cluster",
         )
-        render_zx_high_risk_cluster(product_df, risk_settings, source_label)
+        render_zx_high_risk_cluster(product_df, risk_settings, zx_risk_source)
 
         render_chart_heading(
             "产品风险 Top CC",
             "Product Risk Top CC",
             "把最需要优先复盘的 CC 排在前面。",
             "Rank the CCs that need review first.",
-            "按产品风险分排序，保留生产端和客户端分项。",
-            "Sort by product risk score while preserving production and client components.",
-            "产品风险 = 生产端风险 + 客户端风险；生产端使用小样本收缩后的 QC 不良率。",
-            "Product risk combines production and client risk; production uses Bayesian-shrunk QC defect rate.",
-            source_label,
+            "按产品风险分排序，仅保留综合风险排名前 20% 的 CC，并显示其实际风险贡献。",
+            "Rank by product risk, retain only the top 20% of CCs, and show their actual risk contribution.",
+            "产品风险 = 生产端 70% + 客户端 30%；Top 20% 按综合风险分降序选取，不假设它们必然贡献 80%。",
+            "Product risk = 70% production + 30% client; the top 20% are selected by descending risk without assuming they necessarily contribute 80%.",
+            zx_risk_source,
             "zx_product",
         )
-        render_product_priority(product_df, source_label, risk_settings)
+        render_product_priority(product_df, zx_risk_source, risk_settings, pareto_mode=True, show_caption=False)
 
         render_chart_heading(
             "Top Defect Pareto",
@@ -5780,32 +6320,28 @@ def render_community_cockpit(
             "Pareto ranking by defect quantity.",
             "同一疵点类型的疵点数求和，取 Top 项展示。",
             "Sum defect quantity by defect type and show the top contributors.",
-            source_label,
+            zx_qc_source,
             "zx_pareto",
         )
-        render_defect_pareto(finished_df, source_label)
+        render_defect_pareto(finished_df, zx_qc_source, show_caption=False)
 
         render_chart_heading(
-            "不良率趋势",
-            "Defect Rate Trend",
-            "观察 Online QC 和 End QC/FQC 是否同向恶化或改善。",
-            "Track whether Online QC and End QC/FQC are worsening or improving together.",
-            "按周聚合检验数量和疵点数，并按检验阶段拆线。",
-            "Aggregate inspected quantity and defects weekly, split by inspection stage.",
-            "周不良率 = 周疵点数 / 周检验数。",
-            "Weekly defect rate = weekly defects / weekly inspected quantity.",
-            source_label,
+            "By CC 合格率趋势",
+            "Pass Rate Trend by CC",
+            "跟踪综合风险排名前 20% CC 的合格率变化，也支持搜索任意 CC 对比。",
+            "Track pass-rate movement for the top 20% of CCs by overall risk and compare any searched CC.",
+            "默认载入 80/20 筛出的 Top 20% CC；用户可多选搜索，按周分别绘制。",
+            "Default to the top 20% CCs selected by the 80/20 focus; users can search multiple CCs and plot each weekly.",
+            "每个 CC 的周合格率 = 1 - 该 CC 周疵点数 / 该 CC 周检验数；hover 同时显示疵点数和检验数。",
+            "Weekly pass rate per CC = 1 - weekly defects / weekly inspected quantity; hover also shows defects and inspected quantity.",
+            zx_qc_source,
             "zx_trend",
         )
-        render_stage_trend(finished_df, source_label)
+        render_zx_cc_pass_rate_trend(finished_df, product_df)
 
-        with st.expander(t("更多分析：Alert / 工序 / 工人 / 原辅料 / 简道云", "More analysis: Alert / Process / Worker / Material / Jiandaoyun"), expanded=False):
-            st.markdown(f"**{t('Alert 清单', 'Alert List')}**")
-            render_alert_summary_cards(alert_df)
-            render_alert_detail_table(alert_df)
-
+        with st.expander(t("更多分析：工序 / 工人 / 原辅料 / 简道云", "More analysis: Process / Worker / Material / Jiandaoyun"), expanded=False):
             st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
-            render_process_risk_chart(process_df, source_label)
+            render_zx_process_risk_by_cc(finished_df, product_df, risk_settings)
 
             st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
             render_worker_focus(worker_df, source_label)
