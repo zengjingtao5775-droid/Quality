@@ -72,6 +72,17 @@ ENGLISH_DISPLAY_EXACT = {
     "返工作业申请书.xlsx": "Rework application records.xlsx",
     "qms最近一个月数据.xlsx": "QMS latest-month data.xlsx",
     "2026 ZX Intern Voice.xlsx": "2026 ZX Intern Voice.xlsx",
+    "缝纫不匀": "Uneven stitching",
+    "缝份不匀": "Uneven seam allowance",
+    "内里爆口": "Lining seam opening",
+    "网棉漏车": "Missed stitching on mesh padding",
+    "线头": "Loose threads",
+    "扭指": "Twisted finger section",
+    "明线不匀": "Uneven topstitching",
+    "线迹不良": "Poor stitching",
+    "网布抽丝": "Mesh fabric snagging",
+    "死皱": "Permanent creasing",
+    "吃丝不匀": "Uneven gathering",
 }
 
 ENGLISH_DISPLAY_TOKENS = {
@@ -1200,8 +1211,8 @@ DASHBOARD_SCOPES = {
         "code": "SE",
         "label_cn": "SE / Soft Equipment",
         "label_en": "SE / Soft Equipment",
-        "subtitle_cn": "Soft equipment community",
-        "subtitle_en": "Soft equipment community",
+        "subtitle_cn": "SE community",
+        "subtitle_en": "SE community",
         "factories": ["SE_TENT"],
         "section_cn": "Community",
         "section_en": "Community",
@@ -4340,8 +4351,14 @@ def localize_plotly_values(value: object) -> object:
     if isinstance(value, str):
         return english_display_text(value)
     if isinstance(value, np.ndarray):
+        if np.issubdtype(value.dtype, np.datetime64):
+            return value
         return [localize_plotly_values(item) for item in value.tolist()]
-    if isinstance(value, (pd.Series, pd.Index, list, tuple)):
+    if isinstance(value, (pd.Series, pd.Index)):
+        if pd.api.types.is_datetime64_any_dtype(value.dtype):
+            return value
+        return [localize_plotly_values(item) for item in list(value)]
+    if isinstance(value, (list, tuple)):
         return [localize_plotly_values(item) for item in list(value)]
     return value
 
@@ -4572,7 +4589,7 @@ def render_chart_heading(
         st.subheader(title)
     with right:
         render_readme_popover(
-            f"{t('README', 'README')} · {title[:12]}",
+            "README",
             title,
             t(purpose_cn, purpose_en),
             t(method_cn, method_en),
@@ -5297,15 +5314,14 @@ def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFra
         st.info(t("请至少选择一个 CC。", "Select at least one CC."))
         return
     trend_source = finished_df[finished_df["product_code"].astype(str).isin(selected_ccs)].copy()
-    trend_source["trend_week"] = (
+    trend_source["trend_day"] = (
         pd.to_datetime(trend_source["date"], errors="coerce", utc=True)
         .dt.tz_convert(None)
-        .dt.to_period("W")
-        .dt.start_time
+        .dt.normalize()
     )
     trend = (
-        trend_source.dropna(subset=["trend_week"])
-        .groupby(["trend_week", "product_code"], as_index=False)
+        trend_source.dropna(subset=["trend_day"])
+        .groupby(["trend_day", "product_code"], as_index=False)
         .agg(qty_inspected=("qty_inspected", "sum"), defect_qty=("defect_qty", "sum"))
     )
     trend["defect_rate"] = safe_rate(trend["defect_qty"], trend["qty_inspected"])
@@ -5319,13 +5335,13 @@ def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFra
     )
     fig = px.line(
         trend,
-        x="trend_week",
+        x="trend_day",
         y="pass_rate",
         color="product_code",
         markers=True,
         hover_data={"qty_inspected": ":,.0f", "defect_qty": ":,.0f"},
         labels={
-            "trend_week": t("周", "Week"),
+            "trend_day": t("日期", "Day"),
             "pass_rate": t("合格率", "Pass Rate"),
             "product_code": "CC",
         },
@@ -5333,6 +5349,7 @@ def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFra
     fig.update_traces(line=dict(width=3), marker=dict(size=7, line=dict(width=1, color="#ffffff")))
     y_min = max(0.0, float(trend["pass_rate"].min()) - 0.01)
     fig.update_yaxes(tickformat=".1%", range=[y_min, 1.005])
+    fig.update_xaxes(type="date", tickformat="%b %d", hoverformat="%Y-%m-%d")
     fig.update_layout(hovermode="x unified", transition=dict(duration=320, easing="cubic-in-out"))
     plot_chart(fig, 390)
 
@@ -5369,15 +5386,34 @@ def render_product_priority(
     if products.empty:
         st.info(t("当前范围暂无产品风险数据。", "No product risk data under current scope."))
         return
-    view = select_pareto_risk_products(products) if pareto_mode else prepare_fixed_product_risk(products).head(10).copy()
+    all_products = prepare_fixed_product_risk(products)
+    pareto_products = select_pareto_risk_products(products) if pareto_mode else pd.DataFrame()
+    if pareto_mode:
+        view_mode = st.segmented_control(
+            t("显示范围", "Display Range"),
+            ["top", "all"],
+            default="top",
+            format_func=lambda value: {
+                "top": t("Top 20% CC", "Top 20% CCs"),
+                "all": t("全部 CC", "All CCs"),
+            }[value],
+            key=f"zx_product_risk_view_{language_query_code()}",
+        )
+        view = pareto_products.copy() if view_mode == "top" else all_products.copy()
+    else:
+        view = all_products.head(10).copy()
     if view.empty:
         st.info(t("当前范围暂无可排序的产品风险数据。", "No rankable product risk data under current scope."))
         return
     if pareto_mode:
-        achieved_share = float(view.get("cumulative_risk_share", pd.Series(0, index=view.index)).max())
+        achieved_share = float(pareto_products.get("cumulative_risk_share", pd.Series(0, index=pareto_products.index)).max())
         st.markdown(
-            f"<span class='zx-pareto-chip'>80/20 · Top 20% · {len(view)} {t('个 CC 贡献', 'CCs contribute')} {achieved_share:.0%} {t('风险', 'of risk')}</span>",
+            f"<span class='zx-pareto-chip'>80/20 · Top 20% · {len(pareto_products)} {t('个 CC 贡献', 'CCs contribute')} {achieved_share:.0%} {t('风险', 'of risk')}</span>",
             unsafe_allow_html=True,
+        )
+        focus_codes = set(pareto_products["product_code"].astype(str))
+        view["focus_group"] = view["product_code"].astype(str).map(
+            lambda code: t("Top 20% CC", "Top 20% CC") if code in focus_codes else t("其他 CC", "Other CC")
         )
     view["risk_formula"] = view.apply(
         lambda row: t(
@@ -5400,7 +5436,7 @@ def render_product_priority(
         x="risk_score_fixed",
         y="product_view",
         orientation="h",
-        color="risk_level_fixed",
+        color="focus_group" if pareto_mode else "risk_level_fixed",
         text=sorted_view["risk_score_fixed"].round(1),
         hover_data={
             "risk_formula": True,
@@ -5414,6 +5450,7 @@ def render_product_priority(
             "product_label_display": True,
             "alert_reason": True,
             "risk_level_fixed": False,
+            "focus_group": False,
             "product_view": False,
         },
         labels={
@@ -5425,11 +5462,16 @@ def render_product_priority(
             "client_score_fixed": t("客户端风险分", "Client Risk Score"),
             "alert_reason": t("主要触发项", "Main Trigger"),
         },
-        color_discrete_map=LEVEL_COLORS,
+        color_discrete_map=(
+            {t("Top 20% CC", "Top 20% CC"): "#3341c4", t("其他 CC", "Other CC"): "#cbd5e1"}
+            if pareto_mode
+            else LEVEL_COLORS
+        ),
     )
     fig.update_xaxes(range=[0, 105])
     fig.update_traces(textposition="outside")
-    plot_chart(fig, 360)
+    product_chart_height = max(360, min(900, 120 + len(sorted_view) * 42)) if pareto_mode else 360
+    plot_chart(fig, product_chart_height)
     if show_caption:
         st.caption(
             t(
@@ -6444,7 +6486,7 @@ def render_community_cockpit(
         _, readme_col = st.columns([0.78, 0.22])
         with readme_col:
             render_readme_popover(
-                f"{t('README', 'README')} · {t('核心指标', 'Core Metrics')}",
+                "README",
                 t("TU / ZX 核心指标", "TU / ZX Core Metrics"),
                 t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
@@ -6524,8 +6566,8 @@ def render_community_cockpit(
         render_product_priority(product_df, zx_risk_source, risk_settings, pareto_mode=True, show_caption=False)
 
         render_chart_heading(
-            "Top Defect Pareto",
-            "Top Defect Pareto",
+            "Top 疵点类型 Pareto",
+            "Top Defect Type Pareto",
             "找出当前范围内贡献最大的疵点类型。",
             "Find the defect types contributing most in the current scope.",
             "按疵点数量做 Pareto 排序。",
@@ -6540,12 +6582,12 @@ def render_community_cockpit(
         render_chart_heading(
             "By CC 合格率趋势",
             "Pass Rate Trend by CC",
-            "跟踪综合风险排名前 20% CC 的合格率变化，也支持搜索任意 CC 对比。",
-            "Track pass-rate movement for the top 20% of CCs by overall risk and compare any searched CC.",
-            "默认载入 80/20 筛出的 Top 20% CC；用户可多选搜索，按周分别绘制。",
-            "Default to the top 20% CCs selected by the 80/20 focus; users can search multiple CCs and plot each weekly.",
-            "每个 CC 的周合格率 = 1 - 该 CC 周疵点数 / 该 CC 周检验数；hover 同时显示疵点数和检验数。",
-            "Weekly pass rate per CC = 1 - weekly defects / weekly inspected quantity; hover also shows defects and inspected quantity.",
+            "按天跟踪综合风险排名前 20% CC 的合格率变化，也支持搜索任意 CC 对比。",
+            "Track daily pass-rate movement for the top 20% of CCs by overall risk and compare any searched CC.",
+            "默认载入 80/20 筛出的 Top 20% CC；用户可多选搜索，按天分别绘制。",
+            "Default to the top 20% CCs selected by the 80/20 focus; users can search multiple CCs and plot each day.",
+            "每个 CC 的日合格率 = 1 - 该 CC 当日疵点数 / 该 CC 当日检验数；hover 同时显示疵点数和检验数。",
+            "Daily pass rate per CC = 1 - daily defects / daily inspected quantity; hover also shows defects and inspected quantity.",
             zx_qc_source,
             "zx_trend",
         )
