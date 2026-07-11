@@ -2431,11 +2431,17 @@ def load_finished_qc(
 
 
 @st.cache_data(show_spinner=False)
-def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.DataFrame:
+def load_customer_voice(
+    cache_version: int = DATA_SCOPE_CACHE_VERSION,
+    factory_codes: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
     _ = cache_version
     frames: list[pd.DataFrame] = []
+    active_codes = set(factory_codes or FACTORIES.keys())
 
     for factory_code, cfg in FACTORIES.items():
+        if factory_code not in active_codes:
+            continue
         if cfg.get("voice") is None:
             continue
         path = ROOT / cfg["voice"]
@@ -2486,7 +2492,7 @@ def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Dat
     intern_manifest = ROOT / FACTORIES["ZX"]["intern_voice_manifest"]
     intern = pd.DataFrame()
     intern_source_file = None
-    if intern_file.exists():
+    if "ZX" in active_codes and intern_file.exists():
         raw_intern = read_excel_any(intern_file, sheet_name=0)
         raw_intern.columns = [str(col).strip() for col in raw_intern.columns]
         row_count = len(raw_intern)
@@ -2504,13 +2510,13 @@ def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Dat
         intern["case_id"] = intern["iv_no"].replace({"": np.nan, "nan": np.nan}).fillna(fallback_case_id)
         intern["file_name"] = intern["case_id"]
         intern_source_file = FACTORIES["ZX"]["intern_voice_file"]
-    elif intern_manifest.exists():
+    elif "ZX" in active_codes and intern_manifest.exists():
         intern = pd.read_csv(intern_manifest)
         if "file_name" not in intern.columns:
             intern["file_name"] = ""
         intern["file_name"] = intern["file_name"].fillna("").astype(str)
         intern_source_file = FACTORIES["ZX"]["intern_voice_manifest"]
-    elif intern_dir.exists():
+    elif "ZX" in active_codes and intern_dir.exists():
         image_files = [p for p in intern_dir.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg"}]
         if image_files:
             intern = pd.DataFrame({"file_name": [p.name for p in image_files]})
@@ -2596,13 +2602,17 @@ def load_customer_voice(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Dat
 
 
 @st.cache_data(show_spinner=False)
-def load_incoming_material(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.DataFrame:
+def load_incoming_material(
+    cache_version: int = DATA_SCOPE_CACHE_VERSION,
+    factory_codes: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
     _ = cache_version
     frames: list[pd.DataFrame] = []
+    active_codes = set(factory_codes or FACTORIES.keys())
     zx_cfg = FACTORIES.get("ZX", {})
     path = ROOT / zx_cfg.get("incoming", Path(""))
     sheet_map = {"辅料不良明细记录": "辅料", "主料不良明细记录": "主料"}
-    if path.exists():
+    if "ZX" in active_codes and path.exists():
         for sheet_name, material_type in sheet_map.items():
             raw = pd.read_excel(path, sheet_name=sheet_name, header=None, engine="openpyxl")
             header_candidates = raw.index[raw.eq("批次").any(axis=1)].tolist()
@@ -2639,7 +2649,7 @@ def load_incoming_material(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.
 
     bme_cfg = FACTORIES.get("BME_CMW", {})
     bme_iqc_path = ROOT / bme_cfg.get("incoming", Path(""))
-    if bme_iqc_path.exists():
+    if "BME_CMW" in active_codes and bme_iqc_path.exists():
         raw = read_excel_any(bme_iqc_path, sheet_name=0, header=1)
         raw = clean_excel_columns(raw)
         data = pd.DataFrame(
@@ -2671,7 +2681,7 @@ def load_incoming_material(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.
         frames.append(data)
 
     bme_rework_path = ROOT / bme_cfg.get("rework", Path(""))
-    if bme_rework_path.exists():
+    if "BME_CMW" in active_codes and bme_rework_path.exists():
         raw = read_excel_any(bme_rework_path, sheet_name="数据结果")
         raw = clean_excel_columns(raw)
         qty_text = pick_first(raw, ["数量"], 0).astype(str).str.extract(r"([\d.]+)")[0]
@@ -2701,7 +2711,7 @@ def load_incoming_material(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.
 
     se_cfg = FACTORIES.get("SE_TENT", {})
     se_qms_path = ROOT / se_cfg.get("incoming", Path(""))
-    if se_qms_path.exists():
+    if "SE_TENT" in active_codes and se_qms_path.exists():
         raw = read_excel_any(se_qms_path, sheet_name="IQC记录")
         raw = clean_excel_columns(raw)
 
@@ -2786,7 +2796,11 @@ def load_all_data(
     cache_version: int = DATA_SCOPE_CACHE_VERSION,
     factory_codes: tuple[str, ...] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    return load_finished_qc(cache_version, factory_codes), load_customer_voice(cache_version), load_incoming_material(cache_version)
+    return (
+        load_finished_qc(cache_version, factory_codes),
+        load_customer_voice(cache_version, factory_codes),
+        load_incoming_material(cache_version, factory_codes),
+    )
 
 
 def normalize_column_key(value: object) -> str:
@@ -7292,19 +7306,27 @@ if product_search.strip():
         | finished["product_label"].astype(str).str.lower().str.contains(needle, na=False)
     ]
 
-voice = voice_all[voice_all["factory_code"].isin(selected_factories)].copy()
-if product_search.strip():
+voice = (
+    voice_all[voice_all["factory_code"].isin(selected_factories)].copy()
+    if "factory_code" in voice_all.columns
+    else pd.DataFrame()
+)
+if product_search.strip() and not voice.empty:
     needle = product_search.strip().lower()
     voice = voice[
         voice["product_raw"].astype(str).str.lower().str.contains(needle, na=False)
         | voice["product_code"].astype(str).str.lower().str.contains(needle, na=False)
     ]
 
-incoming = incoming_all[
-    (incoming_all["factory_code"].isin(selected_factories))
-    & (incoming_all["date"].dt.date >= start_date)
-    & (incoming_all["date"].dt.date <= end_date)
-].copy()
+incoming = (
+    incoming_all[
+        (incoming_all["factory_code"].isin(selected_factories))
+        & (incoming_all["date"].dt.date >= start_date)
+        & (incoming_all["date"].dt.date <= end_date)
+    ].copy()
+    if {"factory_code", "date"}.issubset(incoming_all.columns)
+    else pd.DataFrame()
+)
 
 if finished.empty:
     st.warning(t("当前筛选条件下没有成品检验数据。", "No finished QC data under current filters."))
