@@ -1856,39 +1856,21 @@ def render_product_weight_panel(profile: str | None = None) -> dict:
         settings = risk_settings_from_widget_state(profile_settings(payload, active_profile), active_profile)
         payload["profiles"][active_profile] = settings
     widget_prefix = risk_widget_prefix(active_profile)
-    st.markdown(t("**权重调整**", "**Weight adjustment**"))
-    st.caption(
-        t(
-            f"当前方案：{risk_profile_label(active_profile)}。每组只选择一个权重，另一项自动补足至100%。",
-            f"Current profile: {risk_profile_label(active_profile)}. Select one weight in each pair; the other automatically completes to 100%.",
-        )
-    )
     production_default = int(settings["product_weights"]["production_score"])
     production_options = sorted(set(range(0, 101, 5)) | {production_default})
-    product_production = st.selectbox(
-        t("生产端权重（客户端自动补足）", "Production weight (client auto-completes)"),
-        production_options,
-        index=production_options.index(production_default),
-        format_func=lambda value: f"{value}%",
-        key=f"{widget_prefix}_product_production_weight",
+    weight_cols = st.columns([1, 1, 0.34], vertical_alignment="bottom")
+    product_production = weight_cols[0].selectbox(
+        t("生产端", "Production"), production_options, index=production_options.index(production_default),
+        format_func=lambda value: f"{value}%", key=f"{widget_prefix}_product_production_weight",
     )
     product_client = 100 - int(product_production)
     rpm_default = int(settings["client_weights"]["rpm_score"])
     rpm_options = sorted(set(range(0, 101, 5)) | {rpm_default})
-    client_rpm = st.selectbox(
-        t("客户端内部RPM权重（Intern Voice自动补足）", "RPM weight within client (Intern Voice auto-completes)"),
-        rpm_options,
-        index=rpm_options.index(rpm_default),
-        format_func=lambda value: f"{value}%",
-        key=f"{widget_prefix}_client_rpm_weight",
+    client_rpm = weight_cols[1].selectbox(
+        t("客户端内 RPM", "RPM within client"), rpm_options, index=rpm_options.index(rpm_default),
+        format_func=lambda value: f"{value}%", key=f"{widget_prefix}_client_rpm_weight",
     )
     client_iv = 100 - int(client_rpm)
-    st.caption(
-        t(
-            f"生产端 {product_production}% / 客户端 {product_client}%｜客户端内部：RPM {client_rpm}% / Intern Voice {client_iv}%",
-            f"Production {product_production}% / client {product_client}% | Within client: RPM {client_rpm}% / Intern Voice {client_iv}%",
-        )
-    )
 
     current_settings = risk_settings_from_widget_state(settings, active_profile)
     current_settings["product_weights"] = {
@@ -1911,12 +1893,40 @@ def render_product_weight_panel(profile: str | None = None) -> dict:
                 "This environment cannot persist local files. The weights apply in the current session; use external storage for shared long-term profiles.",
             )
         )
-    if st.button(t("保存产品权重方案", "Save Product Profile"), key=f"{widget_prefix}_save_product_risk_settings"):
+    if weight_cols[2].button(t("保存", "Save"), icon=":material/save:", key=f"{widget_prefix}_save_product_risk_settings", use_container_width=True):
         save_risk_payload(runtime_payload)
         st.session_state.risk_payload = runtime_payload
         st.session_state.product_risk_save_status = True
         st.rerun()
 
+    st.session_state.risk_payload = runtime_payload
+    return attach_risk_profile_context(current_settings, runtime_payload, active_profile)
+
+
+def render_compact_supplier_weight_panel() -> dict:
+    payload, active_profile, settings = runtime_risk_payload()
+    widget_prefix = risk_widget_prefix(active_profile)
+    production_default = int(settings["supplier_weights"]["production_score"])
+    rpm_default = int(settings["client_weights"]["rpm_score"])
+    options = sorted(set(range(0, 101, 5)) | {production_default, rpm_default})
+    cols = st.columns([1, 1, 0.34], vertical_alignment="bottom")
+    production = cols[0].selectbox(
+        t("生产端", "Production"), options, index=options.index(production_default),
+        format_func=lambda value: f"{value}%", key=f"{widget_prefix}_supplier_production_weight",
+    )
+    rpm = cols[1].selectbox(
+        t("客户端内 RPM", "RPM within client"), options, index=options.index(rpm_default),
+        format_func=lambda value: f"{value}%", key=f"{widget_prefix}_client_rpm_weight",
+    )
+    current_settings = risk_settings_from_widget_state(settings, active_profile)
+    current_settings["supplier_weights"] = {"production_score": int(production), "client_score": 100 - int(production)}
+    current_settings["client_weights"] = {"rpm_score": int(rpm), "intern_voice_score": 100 - int(rpm)}
+    runtime_payload = merge_risk_payload(payload)
+    runtime_payload["active_profile"] = active_profile
+    runtime_payload["profiles"][active_profile] = current_settings
+    if cols[2].button(t("保存", "Save"), icon=":material/save:", key=f"{widget_prefix}_save_supplier_weights", use_container_width=True):
+        save_risk_payload(runtime_payload)
+        st.success(t("已保存", "Saved"))
     st.session_state.risk_payload = runtime_payload
     return attach_risk_profile_context(current_settings, runtime_payload, active_profile)
 
@@ -2317,11 +2327,17 @@ def load_se_tent_finished_qc(cfg: dict) -> pd.DataFrame:
 # 2. Data loading
 # ==========================================
 @st.cache_data(show_spinner=False)
-def load_finished_qc(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.DataFrame:
+def load_finished_qc(
+    cache_version: int = DATA_SCOPE_CACHE_VERSION,
+    factory_codes: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
     _ = cache_version
     frames: list[pd.DataFrame] = []
+    active_codes = set(factory_codes or FACTORIES.keys())
 
     for factory_code, cfg in FACTORIES.items():
+        if factory_code not in active_codes:
+            continue
         if factory_code == "BME_CMW":
             bme_finished = load_bme_cmw_finished_qc(cfg)
             if not bme_finished.empty:
@@ -2766,8 +2782,11 @@ def load_incoming_material(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.
 
 
 @st.cache_data(show_spinner=False)
-def load_all_data(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    return load_finished_qc(cache_version), load_customer_voice(cache_version), load_incoming_material(cache_version)
+def load_all_data(
+    cache_version: int = DATA_SCOPE_CACHE_VERSION,
+    factory_codes: tuple[str, ...] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return load_finished_qc(cache_version, factory_codes), load_customer_voice(cache_version), load_incoming_material(cache_version)
 
 
 def normalize_column_key(value: object) -> str:
@@ -7197,14 +7216,15 @@ def render_scope_nav(active_scope: str) -> None:
 # ==========================================
 # 5. Load data and sidebar filters
 # ==========================================
+active_scope_key = get_active_scope_key()
+scope_factory_codes = tuple(DASHBOARD_SCOPES[active_scope_key]["factories"])
 with st.spinner(t("正在读取供应商质量数据...", "Loading supplier quality data...")):
-    finished_all, voice_all, incoming_all = load_all_data()
+    finished_all, voice_all, incoming_all = load_all_data(DATA_SCOPE_CACHE_VERSION, scope_factory_codes)
 
 if finished_all.empty:
     st.error(t("未能读取本地成品检验数据，请检查各 Database 文件夹。", "No finished QC data was loaded."))
     st.stop()
 
-active_scope_key = get_active_scope_key()
 render_scope_nav(active_scope_key)
 selected_factories = DASHBOARD_SCOPES[active_scope_key]["factories"]
 selected_factory_source_label = ", ".join(english_display_text(FACTORIES[code]["name"]) for code in selected_factories)
@@ -7358,12 +7378,9 @@ if active_scope_key != "GENERAL":
 tabs = st.tabs(
     [
         t("01 总览", "01 Overview"),
-        t("03 供应商面板", "03 Supplier Panel"),
-        t("04 产品面板", "04 Product Panel"),
-        t("05 Panel管理", "05 Panel"),
-        t("06 过程/来料面板", "06 Process/Material Panel"),
-        t("07 分析工具", "07 Analysis Tools"),
-        t("08 简道云报表", "08 Jiandaoyun Reports"),
+        t("02 供应商面板", "02 Supplier Panel"),
+        t("03 产品面板", "03 Product Panel"),
+        t("04 Panel管理", "04 Panel"),
     ]
 )
 
@@ -7703,7 +7720,7 @@ if False:
 # ==========================================
 with tabs[1]:
     st.subheader(t("By Supplier 供应商质量风险看板", "By Supplier Quality Risk Dashboard"))
-    risk_settings = render_risk_settings_panel()
+    risk_settings = render_compact_supplier_weight_panel()
     active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
     supplier_prod_w = effective_weight_pct(risk_settings, "supplier_weights", "production_score")
     supplier_client_w = effective_weight_pct(risk_settings, "supplier_weights", "client_score")
@@ -7727,15 +7744,19 @@ with tabs[1]:
         f"<div>Intern Voice risk = min(return initiations / {risk_settings['intern_voice_cap']} * 100, 100); {risk_settings['intern_voice_cap']} is the current POC cap for 100 points.</div>"
         "<div>Note: weights apply to normalized 0-100 risk scores, not directly to raw counts. The default RPM 30% / IV 70% makes direct return-initiation evidence more sensitive in this POC.</div>"
     )
-    st.markdown(
-        f"""
-        <div class="action-strip">
-            <b>{t('风险分说明', 'Score logic')}:</b>
-            <div class="score-logic-lines">{t(score_logic_cn, score_logic_en)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    _, supplier_readme_col = st.columns([0.78, 0.22])
+    with supplier_readme_col:
+        render_readme_popover(
+            "README",
+            t("供应商风险分", "Supplier Risk Score"),
+            t("比较各 community / 供应商的生产端与客户端质量风险。", "Compare production-side and client-side quality risk across communities and suppliers."),
+            t("先把各信号标准化为 0-100 分，再按当前权重合成。", "Normalize each signal to 0-100 before applying the selected weights."),
+            t(
+                f"综合风险 = 生产端 {supplier_prod_w:.0f}% + 客户端 {supplier_client_w:.0f}%；客户端 = RPM {client_rpm_w:.0f}% + Intern Voice {client_iv_w:.0f}%。QC 基准 {risk_settings['qc_benchmark_pct']:.1f}% 对应 50 分，RPM {risk_settings['rpm_cap']:.0f} 对应 100 分；小样本不良率向基准收缩。",
+                f"Overall risk = production {supplier_prod_w:.0f}% + client {supplier_client_w:.0f}%; client = RPM {client_rpm_w:.0f}% + Intern Voice {client_iv_w:.0f}%. QC benchmark {risk_settings['qc_benchmark_pct']:.1f}% equals 50 points, RPM {risk_settings['rpm_cap']:.0f} equals 100; low-volume rates shrink toward the benchmark.",
+            ),
+            f"{selected_factory_source_label} QC + RPM + Intern Voice",
+        )
     supplier_display = supplier_summary.copy()
     supplier_display[t("风险等级", "Risk Level")] = supplier_display["risk_level"].map(risk_level_text)
     supplier_table = supplier_display[
@@ -7779,7 +7800,7 @@ with tabs[1]:
         }
     )
 
-    left, right = st.columns([1.1, 1])
+    left, right = st.columns([1, 0.001])
     with left:
         component = supplier_summary.melt(
             id_vars=["factory_name"],
@@ -7808,10 +7829,12 @@ with tabs[1]:
         )
         fig.update_traces(textposition="outside")
         fig.update_yaxes(range=[0, 115])
-        plot_chart(fig, 390)
+        fig.update_layout(font=dict(size=16), bargap=0.18)
+        fig.update_traces(textfont=dict(size=16))
+        plot_chart(fig, 520)
         st.caption(t(f"{selected_factory_source_label} QC data + RPM + Intern Voice。分项风险越高，代表该信号越需要优先下钻。", f"{selected_factory_source_label} QC data + RPM + Intern Voice. Higher component score means higher drill-down priority."))
 
-    with right:
+    if False:
         selected_supplier = st.selectbox(
             t("供应商下钻", "Supplier Drill-down"),
             supplier_summary["factory_code"].tolist(),
@@ -7962,8 +7985,8 @@ with tabs[2]:
         product_finished = product_finished_scope[product_finished_scope["factory_code"] == product_factory].copy()
         product_voice = product_voice_scope[product_voice_scope["factory_code"] == product_factory].copy()
 
-        st.markdown(t("### 02 权重与计算", "### 02 Weights and calculation"))
-        weight_col, formula_col = st.columns([1, 1.15])
+        st.markdown(t("### 02 风险分权重", "### 02 Risk weights"))
+        weight_col, formula_col = st.columns([0.78, 0.22], vertical_alignment="bottom")
         with weight_col:
             risk_settings = render_product_weight_panel(product_factory)
         product_factory_summary = compute_product_summary(product_finished, product_voice, risk_settings)
@@ -7975,22 +7998,16 @@ with tabs[2]:
         client_rpm_w = effective_weight_pct(risk_settings, "client_weights", "rpm_score")
         client_iv_w = effective_weight_pct(risk_settings, "client_weights", "intern_voice_score")
         with formula_col:
-            st.markdown(t("**风险分计算公式**", "**Risk score formula**"))
-            formula_cn = (
-                f"<div><b>改善优先指数</b> = 生产端风险 × {product_prod_w:.0f}% + 客户端风险指数 × {product_client_w:.0f}%</div>"
-                f"<div><b>生产端风险</b>：QC不良率经小样本收缩后换算；{risk_settings['qc_benchmark_pct']:.1f}% = 50分，{risk_settings['qc_benchmark_pct'] * 3:.1f}% = 100分</div>"
-                f"<div><b>客户端风险指数</b> = RPM百分位 × {client_rpm_w:.0f}% + Intern Voice次数百分位 × {client_iv_w:.0f}%</div>"
-                f"<div><b>聚类</b>：K-means仅使用双端数据齐全的CC；缺失端单独展示，不按0分参与计算</div>"
-            )
-            formula_en = (
-                f"<div><b>Improvement priority</b> = production risk × {product_prod_w:.0f}% + client risk index × {product_client_w:.0f}%</div>"
-                f"<div><b>Production risk</b>: QC defect rate after low-volume shrinkage; {risk_settings['qc_benchmark_pct']:.1f}% = 50, {risk_settings['qc_benchmark_pct'] * 3:.1f}% = 100</div>"
-                f"<div><b>Client risk index</b> = RPM percentile × {client_rpm_w:.0f}% + Intern Voice-count percentile × {client_iv_w:.0f}%</div>"
-                f"<div><b>Clustering</b>: K-means uses only CCs with both sides; a missing side remains visible and is not treated as zero</div>"
-            )
-            st.markdown(
-                f"<div class='action-strip'><div class='score-logic-lines'>{t(formula_cn, formula_en)}</div></div>",
-                unsafe_allow_html=True,
+            render_readme_popover(
+                "README",
+                t("产品风险分", "Product Risk Score"),
+                t("识别同时存在生产端和客户端风险的 CC，并形成改善优先级。", "Identify CCs with combined production and client risk and rank improvement priority."),
+                t("QC 使用小样本收缩后的不良率；客户端使用 RPM 和 Intern Voice；双端完整 CC 参与 K-means。", "QC uses a low-volume-shrunk defect rate; the client side uses RPM and Intern Voice; CCs with both sides enter K-means."),
+                t(
+                    f"改善优先指数 = 生产端 {product_prod_w:.0f}% + 客户端 {product_client_w:.0f}%；客户端 = RPM百分位 {client_rpm_w:.0f}% + Intern Voice次数百分位 {client_iv_w:.0f}%。QC {risk_settings['qc_benchmark_pct']:.1f}% = 50分，三倍基准 = 100分；缺失端不按0分参与聚类。",
+                    f"Improvement priority = production {product_prod_w:.0f}% + client {product_client_w:.0f}%; client = RPM percentile {client_rpm_w:.0f}% + Intern Voice-count percentile {client_iv_w:.0f}%. QC {risk_settings['qc_benchmark_pct']:.1f}% = 50 points and 3x benchmark = 100; missing sides are not treated as zero in clustering.",
+                ),
+                product_source,
             )
 
         product_date_min = product_finished["date"].min()
@@ -8281,7 +8298,47 @@ with tabs[2]:
 # 11. Panel benchmark
 # ==========================================
 with tabs[3]:
-    st.subheader(t("Panel 管理 / 供应商横向 Benchmark", "Panel Management / Supplier Benchmark"))
+    st.subheader(t("Panel 管理 / RPM", "Panel Management / RPM"))
+    rpm_source = voice[voice.get("voice_source", pd.Series("", index=voice.index)).eq("YTD Compare")].copy()
+    if rpm_source.empty:
+        st.info(t("当前筛选范围没有 RPM 数据。", "No RPM data is available under the current filters."))
+    else:
+        rpm_table = (
+            rpm_source.groupby(["factory_code", "factory_name", "product_code", "product_name"], as_index=False)
+            .agg(
+                rpm_now=("rpm_now", "mean"),
+                delta_rpm=("delta_rpm", "mean"),
+                returned_now=("returned_now", "sum"),
+                sold_now=("sold_now", "sum"),
+                avg_score_now=("avg_score_now", "mean"),
+            )
+            .sort_values(["rpm_now", "returned_now"], ascending=False, na_position="last")
+            .rename(
+                columns={
+                    "factory_name": t("工厂", "Factory"),
+                    "product_code": "CC",
+                    "product_name": t("产品", "Product"),
+                    "rpm_now": "RPM",
+                    "delta_rpm": t("RPM 变化", "RPM Change"),
+                    "returned_now": t("退货数", "Returns"),
+                    "sold_now": t("销量", "Sold Qty"),
+                    "avg_score_now": t("客户评分", "Customer Score"),
+                }
+            )
+        )
+        dataframe_with_format(
+            rpm_table[[t("工厂", "Factory"), "CC", t("产品", "Product"), "RPM", t("RPM 变化", "RPM Change"), t("退货数", "Returns"), t("销量", "Sold Qty"), t("客户评分", "Customer Score")]],
+            column_config={
+                "RPM": st.column_config.NumberColumn("RPM", format="%.0f"),
+                t("RPM 变化", "RPM Change"): st.column_config.NumberColumn(format="%+.0f"),
+                t("退货数", "Returns"): st.column_config.NumberColumn(format="%,.0f"),
+                t("销量", "Sold Qty"): st.column_config.NumberColumn(format="%,.0f"),
+                t("客户评分", "Customer Score"): st.column_config.NumberColumn(format="%.2f"),
+            },
+            height=520,
+        )
+    st.stop()
+
     scenario = st.radio(
         t("Benchmark 场景", "Benchmark Scenario"),
         [
