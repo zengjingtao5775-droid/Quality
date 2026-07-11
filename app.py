@@ -8325,7 +8325,7 @@ with tabs[3]:
     if rpm_source.empty:
         st.info(t("当前筛选范围没有 RPM 数据。", "No RPM data is available under the current filters."))
     else:
-        rpm_table = (
+        rpm_summary = (
             rpm_source.groupby(["factory_code", "factory_name", "product_code", "product_name"], as_index=False)
             .agg(
                 rpm_now=("rpm_now", "mean"),
@@ -8335,30 +8335,66 @@ with tabs[3]:
                 avg_score_now=("avg_score_now", "mean"),
             )
             .sort_values(["rpm_now", "returned_now"], ascending=False, na_position="last")
-            .rename(
-                columns={
-                    "factory_name": t("工厂", "Factory"),
-                    "product_code": "CC",
-                    "product_name": t("产品", "Product"),
-                    "rpm_now": "RPM",
-                    "delta_rpm": t("RPM 变化", "RPM Change"),
-                    "returned_now": t("退货数", "Returns"),
-                    "sold_now": t("销量", "Sold Qty"),
-                    "avg_score_now": t("客户评分", "Customer Score"),
-                }
-            )
         )
-        dataframe_with_format(
-            rpm_table[[t("工厂", "Factory"), "CC", t("产品", "Product"), "RPM", t("RPM 变化", "RPM Change"), t("退货数", "Returns"), t("销量", "Sold Qty"), t("客户评分", "Customer Score")]],
-            column_config={
-                "RPM": st.column_config.NumberColumn("RPM", format="%.0f"),
-                t("RPM 变化", "RPM Change"): st.column_config.NumberColumn(format="%+.0f"),
-                t("退货数", "Returns"): st.column_config.NumberColumn(format="%,.0f"),
-                t("销量", "Sold Qty"): st.column_config.NumberColumn(format="%,.0f"),
-                t("客户评分", "Customer Score"): st.column_config.NumberColumn(format="%.2f"),
+        rpm_summary = rpm_summary[pd.to_numeric(rpm_summary["rpm_now"], errors="coerce").notna()].copy()
+        rpm_summary["product_view"] = rpm_summary["factory_code"].astype(str) + " / " + rpm_summary["product_code"].astype(str)
+        top_count = max(1, math.ceil(len(rpm_summary) * 0.20))
+        top_codes = set(rpm_summary.head(top_count)["product_view"])
+        rpm_view_mode = st.segmented_control(
+            t("显示范围", "Display Range"),
+            ["top", "all"],
+            default="top",
+            format_func=lambda value: {
+                "top": t("Top 20% CC", "Top 20% CCs"),
+                "all": t("全部 CC", "All CCs"),
+            }[value],
+            key=f"panel_rpm_view_{language_query_code()}",
+        )
+        rpm_view = rpm_summary.head(top_count).copy() if rpm_view_mode == "top" else rpm_summary.copy()
+        rpm_view["focus_group"] = rpm_view["product_view"].map(
+            lambda value: t("Top 20% CC", "Top 20% CC") if value in top_codes else t("其他 CC", "Other CC")
+        )
+        st.markdown(
+            f"<span class='zx-pareto-chip'>Top 20% · {top_count} CC</span>",
+            unsafe_allow_html=True,
+        )
+        chart_view = rpm_view.sort_values("rpm_now", ascending=True)
+        fig = px.bar(
+            chart_view,
+            x="rpm_now",
+            y="product_view",
+            orientation="h",
+            color="focus_group",
+            text=chart_view["rpm_now"].round(0),
+            hover_data={
+                "factory_name": True,
+                "product_name": True,
+                "delta_rpm": ":+.0f",
+                "returned_now": ":,.0f",
+                "sold_now": ":,.0f",
+                "avg_score_now": ":.2f",
+                "focus_group": False,
+                "product_view": False,
             },
-            height=520,
+            labels={
+                "rpm_now": "RPM",
+                "product_view": t("工厂 / CC", "Factory / CC"),
+                "factory_name": t("工厂", "Factory"),
+                "product_name": t("产品", "Product"),
+                "delta_rpm": t("RPM 变化", "RPM Change"),
+                "returned_now": t("退货数", "Returns"),
+                "sold_now": t("销量", "Sold Qty"),
+                "avg_score_now": t("客户评分", "Customer Score"),
+            },
+            color_discrete_map={
+                t("Top 20% CC", "Top 20% CC"): "#3341c4",
+                t("其他 CC", "Other CC"): "#cbd5e1",
+            },
         )
+        fig.update_traces(textposition="outside")
+        fig.update_xaxes(rangemode="tozero")
+        panel_chart_height = max(420, min(1000, 140 + len(chart_view) * 38))
+        plot_chart(fig, panel_chart_height)
     st.stop()
 
     scenario = st.radio(
