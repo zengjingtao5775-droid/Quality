@@ -54,6 +54,130 @@ def t(cn_text: str, en_text: str) -> str:
     return cn_text if st.session_state.lang == "中文" else en_text
 
 
+ENGLISH_DISPLAY_EXACT = {
+    "中兴": "Zhongxing",
+    "ZX / 中兴": "ZX / Zhongxing",
+    "BME / CMW 自行车": "BME / CMW Bicycle",
+    "未记录": "Not recorded",
+    "未知疵点": "Unknown defect",
+    "良品": "Conforming",
+    "合格": "Conforming",
+    "不合格": "Nonconforming",
+    "中间检验": "In-process inspection",
+    "成品检验": "Finished-goods inspection",
+    "主料": "Main material",
+    "辅料": "Auxiliary material",
+    "ZX成品质量检验数据.xlsx": "ZX finished quality inspection data.xlsx",
+    "PQC生产扭力记录表.xlsx": "PQC production torque records.xlsx",
+    "返工作业申请书.xlsx": "Rework application records.xlsx",
+    "qms最近一个月数据.xlsx": "QMS latest-month data.xlsx",
+    "2026 ZX Intern Voice.xlsx": "2026 ZX Intern Voice.xlsx",
+}
+
+ENGLISH_DISPLAY_TOKENS = {
+    "外观和做工": "appearance and workmanship",
+    "质量问题": "quality issue",
+    "严重疵点": "critical defect",
+    "大疵点": "major defect",
+    "小疵点": "minor defect",
+    "疵点描述": "defect description",
+    "检验结果": "inspection result",
+    "检查人员": "inspector",
+    "检验人员": "inspector",
+    "检验员": "inspector",
+    "抽样数量": "sampling quantity",
+    "检查数量": "inspection quantity",
+    "订单数量": "order quantity",
+    "生产工人": "production worker",
+    "不良工序": "defect process",
+    "生产通知单": "production order",
+    "原辅料": "materials",
+    "自行车": "bicycle",
+    "中兴": "Zhongxing",
+    "不合格": "nonconforming",
+    "合格": "conforming",
+    "未记录": "not recorded",
+    "返工": "rework",
+    "退货": "return",
+    "检验": "inspection",
+    "检查": "inspection",
+    "工序": "process",
+    "工人": "worker",
+    "班组": "team",
+    "车间": "workshop",
+    "供应商": "supplier",
+    "主料": "main material",
+    "辅料": "auxiliary material",
+    "材料": "material",
+    "包装": "packaging",
+    "外观": "appearance",
+    "做工": "workmanship",
+    "功能": "function",
+    "内里": "lining",
+    "尺寸": "dimensions",
+    "颜色": "color",
+    "款式": "style",
+    "型号": "model",
+    "车缝": "sewing",
+    "结构": "structure",
+    "配件": "accessories",
+    "清洁": "cleaning",
+    "车架": "frame",
+    "前叉": "fork",
+    "链条": "chain",
+    "座垫": "saddle",
+    "组装": "assembly",
+    "角度": "angle",
+    "间隙": "gap",
+    "错误": "error",
+    "影响": "affects",
+    "使用": "use",
+    "折皱": "wrinkle",
+    "抛线": "loose thread",
+    "问题": "issue",
+    "数量": "quantity",
+    "记录": "record",
+    "日期": "date",
+}
+
+
+def english_display_text(value: object) -> str:
+    text = str(value if value is not None else "")
+    if st.session_state.get("lang") != "English" or not re.search(r"[\u3400-\u9fff]", text):
+        return text
+    if text in ENGLISH_DISPLAY_EXACT:
+        return ENGLISH_DISPLAY_EXACT[text]
+    for chinese, english in sorted(ENGLISH_DISPLAY_EXACT.items(), key=lambda item: len(item[0]), reverse=True):
+        text = text.replace(chinese, english)
+    for chinese, english in sorted(ENGLISH_DISPLAY_TOKENS.items(), key=lambda item: len(item[0]), reverse=True):
+        text = text.replace(chinese, english)
+
+    def fallback(match: re.Match[str]) -> str:
+        digest = hashlib.sha1(match.group(0).encode("utf-8")).hexdigest()[:6].upper()
+        return f"Source item {digest}"
+
+    return re.sub(r"[\u3400-\u9fff]+", fallback, text)
+
+
+def localize_display_value(value: object) -> object:
+    if st.session_state.get("lang") != "English" or not isinstance(value, str):
+        return value
+    return english_display_text(value)
+
+
+def localize_display_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if st.session_state.get("lang") != "English" or df.empty:
+        return df
+    display = df.copy()
+    for column in display.columns:
+        if (
+            pd.api.types.is_object_dtype(display[column])
+            or isinstance(display[column].dtype, (pd.StringDtype, pd.CategoricalDtype))
+        ):
+            display[column] = display[column].map(localize_display_value)
+    return display
+
+
 def sync_language_to_query() -> None:
     params = dict(st.query_params)
     params["lang"] = language_query_code()
@@ -61,7 +185,7 @@ def sync_language_to_query() -> None:
 
 
 st.set_page_config(
-    page_title="迪卡侬NEA质量看板",
+    page_title=t("迪卡侬NEA质量看板", "Decathlon NEA Quality Dashboard"),
     page_icon="Q",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -122,7 +246,7 @@ st.markdown(
         color: #172033 !important;
     }
     button[data-testid="stExpandSidebarButton"]::after {
-        content: "筛选";
+        content: "";
         position: absolute;
         left: 54px;
         top: 8px;
@@ -986,6 +1110,10 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+st.markdown(
+    f"<style>button[data-testid='stExpandSidebarButton']::after {{content: '{t('筛选', 'Filters')}';}}</style>",
+    unsafe_allow_html=True,
+)
 
 # ==========================================
 # 1. Data paths and canonical schema
@@ -1403,7 +1531,7 @@ def risk_profile_options() -> list[str]:
 def risk_profile_label(profile: str) -> str:
     if profile == "__default__":
         return t("全局默认", "Global default")
-    return FACTORIES.get(profile, {}).get("name", profile)
+    return english_display_text(FACTORIES.get(profile, {}).get("name", profile))
 
 
 def normalize_profile_key(profile: object) -> str:
@@ -2902,7 +3030,7 @@ def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_versi
     fields_res = jdy_api_post(api_key, "/api/v5/app/entry/widget/list", fields_payload)
     widgets = fields_res.get("widgets") or []
 
-    all_records: list[dict] = []
+    normalized_batches: list[pd.DataFrame] = []
     last_data_id = None
     page_count = 0
     while True:
@@ -2918,7 +3046,9 @@ def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_versi
         batch = data_res.get("data") or []
         if not batch:
             break
-        all_records.extend(batch)
+        raw_batch = flatten_jdy_records(batch, widgets)
+        normalized_batch, _ = normalize_jdy_flat(raw_batch, {})
+        normalized_batches.append(normalized_batch)
         page_count += 1
         if len(batch) < 100:
             break
@@ -2926,7 +3056,6 @@ def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_versi
         if not last_data_id:
             break
 
-    raw = flatten_jdy_records(all_records, widgets)
     meta = {
         "source_label": source["label"],
         "source_name": source["source_name"],
@@ -2939,7 +3068,10 @@ def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_versi
         "entry_id": source["entry_id"],
         "pages": page_count,
     }
-    fqc, meta = normalize_jdy_flat(raw, meta)
+    fqc = pd.concat(normalized_batches, ignore_index=True) if normalized_batches else pd.DataFrame()
+    meta["records"] = len(fqc)
+    meta["columns"] = len(fqc.columns)
+    meta["period"] = source_date_range(fqc)
     meta["pulled_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return fqc, meta
 
@@ -4202,10 +4334,60 @@ def clean_plotly_hover(fig: go.Figure) -> go.Figure:
     return fig
 
 
+def localize_plotly_values(value: object) -> object:
+    if st.session_state.get("lang") != "English" or value is None:
+        return value
+    if isinstance(value, str):
+        return english_display_text(value)
+    if isinstance(value, np.ndarray):
+        return [localize_plotly_values(item) for item in value.tolist()]
+    if isinstance(value, (pd.Series, pd.Index, list, tuple)):
+        return [localize_plotly_values(item) for item in list(value)]
+    return value
+
+
+def localize_plotly_figure(fig: go.Figure) -> go.Figure:
+    if st.session_state.get("lang") != "English":
+        return fig
+    for trace in fig.data:
+        for attribute in ["name", "legendgroup", "text", "hovertext", "hovertemplate", "customdata", "x", "y", "labels"]:
+            if hasattr(trace, attribute):
+                value = getattr(trace, attribute, None)
+                if value is not None:
+                    try:
+                        setattr(trace, attribute, localize_plotly_values(value))
+                    except (TypeError, ValueError):
+                        pass
+        marker = getattr(trace, "marker", None)
+        if marker is not None and getattr(marker, "colorbar", None) is not None:
+            title = getattr(marker.colorbar, "title", None)
+            if title is not None and getattr(title, "text", None):
+                title.text = english_display_text(title.text)
+
+    if fig.layout.title and fig.layout.title.text:
+        fig.layout.title.text = english_display_text(fig.layout.title.text)
+    for annotation in fig.layout.annotations or []:
+        if annotation.text:
+            annotation.text = english_display_text(annotation.text)
+    layout_json = fig.layout.to_plotly_json()
+    for axis_name in [name for name in layout_json if name.startswith(("xaxis", "yaxis"))]:
+        axis = getattr(fig.layout, axis_name, None)
+        if axis is None:
+            continue
+        if axis.title and axis.title.text:
+            axis.title.text = english_display_text(axis.title.text)
+        if axis.ticktext is not None:
+            axis.ticktext = localize_plotly_values(axis.ticktext)
+        if axis.categoryarray is not None:
+            axis.categoryarray = localize_plotly_values(axis.categoryarray)
+    return fig
+
+
 def plot_chart(fig: go.Figure, height: int = 420, key: str | None = None):
     st.session_state["_plot_chart_counter"] = int(st.session_state.get("_plot_chart_counter", 0)) + 1
+    prepared_fig = localize_plotly_figure(clean_plotly_hover(fig))
     st.plotly_chart(
-        chart_layout(clean_plotly_hover(fig), height),
+        chart_layout(prepared_fig, height),
         config={"displayModeBar": False, "responsive": True},
         key=key or f"plotly_chart_{st.session_state['_plot_chart_counter']}",
     )
@@ -4257,7 +4439,7 @@ def dataframe_with_format(df: pd.DataFrame, column_config: dict | None = None, h
         if column in display_labels and column not in resolved_config:
             resolved_config[column] = st.column_config.Column(display_labels[column])
     st.dataframe(
-        df,
+        localize_display_frame(df),
         width="stretch",
         hide_index=True,
         height=height,
@@ -4280,12 +4462,12 @@ def render_requirement_mapping(rows: list[dict[str, str]]):
     ]
     for row in rows:
         level = row.get("level", "watch")
-        status_text = row.get("status", t("需关注", "Watch"))
+        status_text = english_display_text(row.get("status", t("需关注", "Watch")))
         rows_html.append(
             "<tr>"
-            f"<td>{html.escape(str(row['item']))}</td>"
-            f"<td class='mapping-target'>{html.escape(str(row['target']))}</td>"
-            f"<td class='mapping-current {level}'>{html.escape(str(row['current']))}</td>"
+            f"<td>{html.escape(english_display_text(row['item']))}</td>"
+            f"<td class='mapping-target'>{html.escape(english_display_text(row['target']))}</td>"
+            f"<td class='mapping-current {level}'>{html.escape(english_display_text(row['current']))}</td>"
             f"<td><span class='status-badge {level}'>{html.escape(status_text)}</span></td>"
             "</tr>"
         )
@@ -4294,7 +4476,13 @@ def render_requirement_mapping(rows: list[dict[str, str]]):
 
 
 def render_ai_card(title: str, priority: str, evidence: Iterable[str], root_cause: str, action: str, owner: str, timeline: str):
-    evidence_html = "<br>".join(f"- {item}" for item in evidence)
+    title = html.escape(english_display_text(title))
+    priority = html.escape(english_display_text(priority))
+    evidence_html = "<br>".join(f"- {html.escape(english_display_text(item))}" for item in evidence)
+    root_cause = html.escape(english_display_text(root_cause))
+    action = html.escape(english_display_text(action))
+    owner = html.escape(english_display_text(owner))
+    timeline = html.escape(english_display_text(timeline))
     st.markdown(
         f"""
         <div class="poc-card">
@@ -4329,6 +4517,7 @@ def render_hero(
     hero_title = t("迪卡侬NEA质量看板", "Decathlon NEA Quality Dashboard")
     if scope_key != "GENERAL":
         hero_title = t(f"{scope_display(scope_key)} 看板", f"{scope_display(scope_key)} Dashboard")
+    hero_title = html.escape(english_display_text(hero_title))
     st.markdown(
         f"""
         <div class="hero">
@@ -4352,6 +4541,11 @@ def render_readme_popover(
     logic: str,
     source: str,
 ) -> None:
+    title = english_display_text(title)
+    purpose = english_display_text(purpose)
+    method = english_display_text(method)
+    logic = english_display_text(logic)
+    source = english_display_text(source)
     with st.popover(label, use_container_width=True):
         st.markdown(f"### {title}")
         st.markdown(f"**{t('这个图表的功能', 'Purpose')}**  \n{purpose}")
@@ -4388,34 +4582,37 @@ def render_chart_heading(
 
 
 def render_kpi_cards(cards: list[dict[str, str]]):
-    html = ['<div class="kpi-grid">']
+    html_parts = ['<div class="kpi-grid">']
     for card in cards:
-        html.append(
+        label = html.escape(english_display_text(card["label"]))
+        value = html.escape(english_display_text(card["value"]))
+        note = html.escape(english_display_text(card["note"]))
+        html_parts.append(
             f"<div class=\"kpi-card {card.get('level', 'medium')}\">"
-            f"<div class=\"kpi-label\">{card['label']}</div>"
-            f"<div class=\"kpi-value\">{card['value']}</div>"
-            f"<div class=\"kpi-note\">{card['note']}</div>"
+            f"<div class=\"kpi-label\">{label}</div>"
+            f"<div class=\"kpi-value\">{value}</div>"
+            f"<div class=\"kpi-note\">{note}</div>"
             f"</div>"
         )
-    html.append("</div>")
-    st.markdown("\n".join(html), unsafe_allow_html=True)
+    html_parts.append("</div>")
+    st.markdown("\n".join(html_parts), unsafe_allow_html=True)
 
 
 def render_signal_cards(cards: list[dict[str, str]]):
-    html = ['<div class="signal-grid">']
+    html_parts = ['<div class="signal-grid">']
     for card in cards:
         level = card.get("level", "medium")
-        html.append(
+        html_parts.append(
             f"<div class=\"signal-card {level}\">"
-            f"<span class=\"risk-pill {level}\">{card['pill']}</span>"
-            f"<div class=\"signal-kicker\">{card['kicker']}</div>"
-            f"<div class=\"signal-title\">{card['title']}</div>"
-            f"<div class=\"signal-value\">{card['value']}</div>"
-            f"<div class=\"signal-evidence\">{card['evidence']}</div>"
+            f"<span class=\"risk-pill {level}\">{english_display_text(card['pill'])}</span>"
+            f"<div class=\"signal-kicker\">{english_display_text(card['kicker'])}</div>"
+            f"<div class=\"signal-title\">{english_display_text(card['title'])}</div>"
+            f"<div class=\"signal-value\">{english_display_text(card['value'])}</div>"
+            f"<div class=\"signal-evidence\">{english_display_text(card['evidence'])}</div>"
             f"</div>"
         )
-    html.append("</div>")
-    st.markdown("\n".join(html), unsafe_allow_html=True)
+    html_parts.append("</div>")
+    st.markdown("\n".join(html_parts), unsafe_allow_html=True)
 
 
 def sparkline_from_rates(values: pd.Series) -> str:
@@ -4513,6 +4710,7 @@ def render_data_gap_matrix(matrix: pd.DataFrame) -> None:
     if matrix.empty:
         st.info(t("当前没有可展示的数据接入状态。", "No data-availability status to display."))
         return
+    matrix = localize_display_frame(matrix)
     loaded_labels = {t("已接入", "Loaded"), "已接入", "Loaded"}
     missing_labels = {t("缺失", "Missing"), "缺失", "Missing"}
     header = "".join(f"<th>{html.escape(str(col))}</th>" for col in matrix.columns)
@@ -4905,12 +5103,15 @@ def render_alert_summary_cards(alerts: pd.DataFrame):
 
     html_parts = ['<div class="alert-card-grid">']
     for card in cards:
+        card_title = english_display_text(card["title"])
+        card_value = english_display_text(card["value"])
+        card_note = english_display_text(card["note"])
         html_parts.append(
             f"<div class=\"alert-tile {html.escape(card['level'])}\">"
             f"<div class=\"alert-tile-menu\">≡</div>"
-            f"<div class=\"alert-tile-title\">{html.escape(card['title'])}</div>"
-            f"<div class=\"alert-tile-value\">{html.escape(card['value'])}</div>"
-            f"<div class=\"alert-tile-note\">{html.escape(card['note'])}</div>"
+            f"<div class=\"alert-tile-title\">{html.escape(card_title)}</div>"
+            f"<div class=\"alert-tile-value\">{html.escape(card_value)}</div>"
+            f"<div class=\"alert-tile-note\">{html.escape(card_note)}</div>"
             f"</div>"
         )
     html_parts.append("</div>")
@@ -6285,8 +6486,14 @@ def render_community_cockpit(
         )
 
     if scope_key == "ZX":
-        zx_qc_source = "ZX Database/ZX成品质量检验数据.xlsx"
-        zx_client_source = "ZX Database/ZX YTD Compare hierarchy.csv + ZX Database/2026 ZX Intern Voice.xlsx"
+        zx_qc_source = t(
+            "ZX Database/ZX成品质量检验数据.xlsx",
+            "ZX finished quality inspection Excel",
+        )
+        zx_client_source = t(
+            "ZX Database/ZX YTD Compare hierarchy.csv + ZX Database/2026 ZX Intern Voice.xlsx",
+            "ZX R12M RPM/YTD data + ZX Intern Voice data",
+        )
         zx_risk_source = f"{zx_qc_source} + {zx_client_source}"
         render_chart_heading(
             "K-means 高风险 CC 聚类",
@@ -6345,16 +6552,31 @@ def render_community_cockpit(
         render_zx_cc_pass_rate_trend(finished_df, product_df)
 
         with st.expander(t("更多分析：工序 / 工人 / 原辅料 / 简道云", "More analysis: Process / Worker / Material / Jiandaoyun"), expanded=False):
-            st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
-            render_zx_process_risk_by_cc(finished_df, product_df, risk_settings)
-
-            st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
-            render_worker_focus(worker_df, source_label)
-
-            st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
-            render_material_focus(incoming_df, source_label, compact=False)
-
-            render_tu_jiandaoyun_snapshot()
+            analysis_labels = {
+                "process": t("工序", "Process"),
+                "worker": t("工人", "Worker"),
+                "material": t("原辅料", "Material"),
+                "jiandaoyun": t("简道云", "Jiandaoyun"),
+            }
+            selected_analysis = st.segmented_control(
+                t("分析模块", "Analysis Module"),
+                list(analysis_labels),
+                default="process",
+                format_func=lambda value: analysis_labels[value],
+                key=f"zx_more_analysis_{language_query_code()}",
+                width="stretch",
+            )
+            if selected_analysis == "process":
+                st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
+                render_zx_process_risk_by_cc(finished_df, product_df, risk_settings)
+            elif selected_analysis == "worker":
+                st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
+                render_worker_focus(worker_df, source_label)
+            elif selected_analysis == "material":
+                st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
+                render_material_focus(incoming_df, source_label, compact=False)
+            elif selected_analysis == "jiandaoyun":
+                render_tu_jiandaoyun_snapshot()
         return
 
     render_chart_heading(
@@ -6865,17 +7087,18 @@ if finished_all.empty:
 active_scope_key = get_active_scope_key()
 render_scope_nav(active_scope_key)
 selected_factories = DASHBOARD_SCOPES[active_scope_key]["factories"]
-selected_factory_source_label = ", ".join(FACTORIES[code]["name"] for code in selected_factories)
+selected_factory_source_label = ", ".join(english_display_text(FACTORIES[code]["name"]) for code in selected_factories)
 
 st.sidebar.markdown(
-    f"<div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language / 语言'))}</div>",
+    f"<div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>",
     unsafe_allow_html=True,
 )
 st.sidebar.radio(
-    "Language / 语言",
+    t("Language / 语言", "Language"),
     ["中文", "English"],
     key="lang",
     horizontal=True,
+    format_func=lambda value: t(value, "Chinese" if value == "中文" else "English"),
     label_visibility="collapsed",
     on_change=sync_language_to_query,
 )
@@ -7091,7 +7314,7 @@ with tabs[0]:
     supplier_col = t("供应商", "Supplier")
     supplier_plot[supplier_col] = supplier_plot["factory_name"]
     supplier_color_map = {
-        FACTORIES[code]["name"]: FACTORY_CHART_COLORS.get(code, "#3341c4")
+        english_display_text(FACTORIES[code]["name"]): FACTORY_CHART_COLORS.get(code, "#3341c4")
         for code in FACTORIES
     }
     fig = px.bar(
@@ -7120,7 +7343,7 @@ with tabs[0]:
         .agg(qty_inspected=("qty_inspected", "sum"), defect_qty=("defect_qty", "sum"))
     )
     trend["defect_rate"] = safe_rate(trend["defect_qty"], trend["qty_inspected"])
-    trend["factory"] = trend["factory_code"].map(lambda code: FACTORIES[code]["name"])
+    trend["factory"] = trend["factory_code"].map(lambda code: english_display_text(FACTORIES[code]["name"]))
     fig = px.line(
         trend,
         x="month",
@@ -7472,7 +7695,7 @@ with tabs[1]:
         selected_supplier = st.selectbox(
             t("供应商下钻", "Supplier Drill-down"),
             supplier_summary["factory_code"].tolist(),
-            format_func=lambda code: FACTORIES[code]["name"],
+            format_func=lambda code: english_display_text(FACTORIES[code]["name"]),
         )
         focus = finished[finished["factory_code"] == selected_supplier].copy()
         if not focus.empty:
@@ -7611,11 +7834,11 @@ with tabs[2]:
             product_factory = st.selectbox(
                 t("分析工厂", "Analysis Factory"),
                 product_factory_options,
-                format_func=lambda code: FACTORIES.get(code, {}).get("name", code),
+                format_func=lambda code: english_display_text(FACTORIES.get(code, {}).get("name", code)),
                 key="product_factory_filter",
                 label_visibility="collapsed",
             )
-        product_factory_name = FACTORIES.get(product_factory, {}).get("name", product_factory)
+        product_factory_name = english_display_text(FACTORIES.get(product_factory, {}).get("name", product_factory))
         product_finished = product_finished_scope[product_finished_scope["factory_code"] == product_factory].copy()
         product_voice = product_voice_scope[product_voice_scope["factory_code"] == product_factory].copy()
 
@@ -8163,7 +8386,9 @@ with tabs[3]:
 # 12. By Process and material
 # ==========================================
 with tabs[4]:
-    pm_factory_label = " + ".join(FACTORIES.get(code, {}).get("name", code) for code in process_material_codes)
+    pm_factory_label = " + ".join(
+        english_display_text(FACTORIES.get(code, {}).get("name", code)) for code in process_material_codes
+    )
     st.subheader(t("过程/来料风险看板", "Process / Material Risk Dashboard"))
     st.caption(
         t(
@@ -8334,7 +8559,7 @@ with tabs[5]:
     method_factory = st.selectbox(
         t("分析工厂", "Analysis Factory"),
         method_factory_options,
-        format_func=lambda code: FACTORIES.get(code, {}).get("name", code),
+        format_func=lambda code: english_display_text(FACTORIES.get(code, {}).get("name", code)),
         key="method_factory_filter",
     )
     method_finished = method_finished_scope[method_finished_scope["factory_code"] == method_factory].copy()
@@ -8345,7 +8570,7 @@ with tabs[5]:
     material_best_lag = best_material_lag(material_correlations)
     material_lag = material_best_lag["lag"] if material_best_lag else 0
     weekly_material_process = compute_weekly_material_process(method_finished, method_incoming, material_lag)
-    method_factory_name = FACTORIES.get(method_factory, {}).get("name", method_factory)
+    method_factory_name = english_display_text(FACTORIES.get(method_factory, {}).get("name", method_factory))
     method_date_min = method_finished["date"].min()
     method_date_max = method_finished["date"].max()
     method_period = (
