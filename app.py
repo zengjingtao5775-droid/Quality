@@ -1868,7 +1868,7 @@ def render_product_weight_panel(profile: str | None = None) -> dict:
     rpm_options = sorted(set(range(0, 101, 5)) | {rpm_default})
     client_rpm = weight_cols[1].selectbox(
         t("客户端内 RPM", "RPM within client"), rpm_options, index=rpm_options.index(rpm_default),
-        format_func=lambda value: f"{value}%", key=f"{widget_prefix}_client_rpm_weight",
+        format_func=lambda value: f"{value}%", key=f"{widget_prefix}_product_client_rpm_weight",
     )
     client_iv = 100 - int(client_rpm)
 
