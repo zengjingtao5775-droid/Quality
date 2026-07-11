@@ -4797,28 +4797,16 @@ def render_scope_data_map(
             columns=[t("Machine / Torque", "Machine / Torque"), "Rework"],
             errors="ignore",
         )
-    st.markdown(
-        f"<div class='product-section-note'>{html.escape(t('需要查看接入状态和缺口时，展开下面的数据地图 / README。', 'Expand the Data Map / README below to inspect coverage and gaps.'))}</div>",
-        unsafe_allow_html=True,
-    )
-    with st.expander(t("数据地图 / README", "Data Map / README"), expanded=False):
-        st.markdown(f"### {t('当前页面数据地图', 'Current Page Data Map')}")
-        st.markdown(
-            t(
-                "这里用于查看当前 community / supplier 已接入和缺失的数据字段。默认收起，避免干扰主看板；需要排查数据完整性时再打开。",
-                "Use this to review which data fields are loaded or missing for the current community / supplier. It stays collapsed by default so the main dashboard stays focused.",
-            )
-        )
+    with st.expander(t("数据地图", "Data Map"), expanded=False):
         render_data_gap_matrix(gap_matrix)
-        st.markdown(
-            t(
-                "**阅读方式**：绿色代表已接入，红色代表当前缺失；缺失项优先补齐后，相关图表的解释力会更强。",
-                "**How to read**: green means loaded, red means missing. Fill missing items first to improve the related chart explanations.",
-            )
-        )
 
 
-def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, source_label: str) -> None:
+def render_zx_high_risk_cluster(
+    products: pd.DataFrame,
+    risk_settings: dict,
+    source_label: str,
+    widget_key: str,
+) -> None:
     if products.empty:
         st.info(t("当前范围暂无可聚类的 CC 数据。", "No CC data available for clustering under current scope."))
         return
@@ -4852,7 +4840,33 @@ def render_zx_high_risk_cluster(products: pd.DataFrame, risk_settings: dict, sou
         view["client_signal"] = (qty_log / qty_anchor * 100).clip(0, 100)
         y_axis_label = t("检验量强度", "Inspection Volume Strength")
         high_corner_label = t("右上：高不良率 + 高检验量", "Upper-right: high defect + high volume")
-    view["cluster_score"] = (view["production_axis"] * 0.70 + view["client_signal"] * 0.30).clip(0, 100)
+    control_col, summary_col = st.columns([0.22, 0.78])
+    with control_col:
+        with st.popover(t("权重调整", "Adjust Weights"), use_container_width=True):
+            production_weight = st.slider(
+                t("生产端权重", "Production Weight"),
+                min_value=0,
+                max_value=100,
+                value=70,
+                step=5,
+                key=f"{widget_key}_cluster_production_weight",
+            )
+            secondary_weight = 100 - production_weight
+            st.metric(
+                t("客户端 / 检验量权重", "Client / Volume Weight"),
+                f"{secondary_weight}%",
+            )
+    with summary_col:
+        st.caption(
+            t(
+                f"当前权重：生产端 {production_weight}% · 客户端 / 检验量 {secondary_weight}%",
+                f"Current weights: production {production_weight}% · client / volume {secondary_weight}%",
+            )
+        )
+    view["cluster_score"] = (
+        view["production_axis"] * (production_weight / 100)
+        + view["client_signal"] * (secondary_weight / 100)
+    ).clip(0, 100)
     view["has_cluster_signal"] = view[["production_axis", "client_signal"]].notna().any(axis=1)
     cluster_input = view.loc[view["has_cluster_signal"], ["production_axis", "client_signal"]].fillna(0).to_numpy(dtype=float)
 
@@ -6690,8 +6704,8 @@ def render_community_cockpit(
         )
         zx_risk_source = f"{zx_qc_source} + {zx_client_source}"
         render_chart_heading(
-            "K-means 高风险 CC 聚类",
-            "K-means High-Risk CC Cluster",
+            "高风险产品聚类分析",
+            "High-Risk Product Cluster Analysis",
             "识别哪些 CC 同时存在生产端质量风险和客户端风险。",
             "Identify CCs with combined production-side and client-side quality risk.",
             "使用 K-means 将每个 CC 按两个风险维度聚成高 / 中 / 低风险组。",
@@ -6701,7 +6715,7 @@ def render_community_cockpit(
             zx_risk_source,
             "zx_cluster",
         )
-        render_zx_high_risk_cluster(product_df, risk_settings, zx_risk_source)
+        render_zx_high_risk_cluster(product_df, risk_settings, zx_risk_source, "zx")
 
         render_chart_heading(
             "产品风险 Top CC",
@@ -6774,8 +6788,8 @@ def render_community_cockpit(
         return
 
     render_chart_heading(
-        "K-means 高风险产品聚类",
-        "K-means High-Risk Product Cluster",
+        "高风险产品聚类分析",
+        "High-Risk Product Cluster Analysis",
         "先看当前 community 哪些产品或款号处在高风险区域。",
         "Start by identifying which products/styles are in the high-risk area.",
         "使用 K-means 对产品风险进行聚类；没有客户端信号时，用生产端风险和检验量强度聚类。",
@@ -6785,7 +6799,7 @@ def render_community_cockpit(
         source_label,
         f"{scope_key}_cluster",
     )
-    render_zx_high_risk_cluster(product_df, risk_settings, source_label)
+    render_zx_high_risk_cluster(product_df, risk_settings, source_label, scope_key.lower())
 
     render_chart_heading(
         "产品风险 Top CC",
@@ -7483,7 +7497,6 @@ tabs = st.tabs(
 with tabs[0]:
     st.subheader(t("Community 风险总览", "Community Risk Overview"))
     render_community_risk_cards(finished, supplier_summary)
-    st.caption(t("用于 NEA manager 快速比较 TU、BME、SE：每张卡包含综合不良率、月度趋势迷你图和风险供应商数。", "For NEA managers to compare TU, BME, and SE: each card shows defect rate, a monthly mini trend, and the number of risk suppliers."))
 
     total_qty = finished["qty_inspected"].sum()
     total_ordered = pd.to_numeric(finished.get("qty_ordered", pd.Series(0, index=finished.index)), errors="coerce").fillna(0).sum()
