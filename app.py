@@ -5354,11 +5354,47 @@ def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFra
     plot_chart(fig, 390)
 
 
-def render_defect_pareto(finished_df: pd.DataFrame, source_label: str, show_caption: bool = True):
-    pareto = compute_pareto(finished_df[finished_df["defect_qty"] > 0], "defect_type", "defect_qty", limit=10)
-    if pareto.empty:
+def render_defect_pareto(
+    finished_df: pd.DataFrame,
+    source_label: str,
+    show_caption: bool = True,
+    focus_mode: bool = False,
+):
+    all_defects = compute_pareto(
+        finished_df[finished_df["defect_qty"] > 0],
+        "defect_type",
+        "defect_qty",
+        limit=max(1, finished_df["defect_type"].nunique()),
+    )
+    if all_defects.empty:
         st.info(t("当前范围暂无疵点 Pareto。", "No defect Pareto under current scope."))
         return
+    top_count = max(1, math.ceil(len(all_defects) * 0.20))
+    top_defect_types = set(all_defects.head(top_count)["defect_type"].astype(str))
+    if focus_mode:
+        view_mode = st.segmented_control(
+            t("显示范围", "Display Range"),
+            ["top", "all"],
+            default="top",
+            format_func=lambda value: {
+                "top": t("Top 20% 疵点类型", "Top 20% Defect Types"),
+                "all": t("全部疵点类型", "All Defect Types"),
+            }[value],
+            key=f"defect_pareto_view_{language_query_code()}_{source_label}",
+        )
+        pareto = all_defects.head(top_count).copy() if view_mode == "top" else all_defects.copy()
+        pareto["focus_group"] = pareto["defect_type"].astype(str).map(
+            lambda value: t("Top 20% 疵点类型", "Top 20% Defect Types")
+            if value in top_defect_types
+            else t("其他疵点类型", "Other Defect Types")
+        )
+        top_share = float(all_defects.head(top_count)["share"].sum())
+        st.markdown(
+            f"<span class='zx-pareto-chip'>Top 20% · {top_count} {t('类疵点贡献', 'defect types contribute')} {top_share:.0%}</span>",
+            unsafe_allow_html=True,
+        )
+    else:
+        pareto = all_defects.head(10).copy()
     fig = px.bar(
         pareto,
         x="defect_qty",
@@ -5366,11 +5402,21 @@ def render_defect_pareto(finished_df: pd.DataFrame, source_label: str, show_capt
         orientation="h",
         text=pareto["defect_qty"].round(0),
         labels={"defect_qty": t("疵点数", "Defects"), "defect_type": t("疵点类型", "Defect Type")},
-        color_discrete_sequence=["#3341c4"],
+        color="focus_group" if focus_mode else None,
+        color_discrete_map=(
+            {
+                t("Top 20% 疵点类型", "Top 20% Defect Types"): "#3341c4",
+                t("其他疵点类型", "Other Defect Types"): "#cbd5e1",
+            }
+            if focus_mode
+            else None
+        ),
+        color_discrete_sequence=None if focus_mode else ["#3341c4"],
     )
     fig.update_yaxes(autorange="reversed")
     fig.update_traces(textposition="outside")
-    plot_chart(fig, 330)
+    pareto_height = max(330, min(900, 120 + len(pareto) * 38)) if focus_mode else 330
+    plot_chart(fig, pareto_height)
     if show_caption:
         st.caption(t("按疵点数量做 Pareto，前几项即优先改善主题。", "Pareto by defect quantity; top items are improvement priorities."))
 
@@ -5389,6 +5435,7 @@ def render_product_priority(
     all_products = prepare_fixed_product_risk(products)
     pareto_products = select_pareto_risk_products(products) if pareto_mode else pd.DataFrame()
     if pareto_mode:
+        product_view_key = hashlib.sha1(source_label.encode("utf-8")).hexdigest()[:8]
         view_mode = st.segmented_control(
             t("显示范围", "Display Range"),
             ["top", "all"],
@@ -5397,7 +5444,7 @@ def render_product_priority(
                 "top": t("Top 20% CC", "Top 20% CCs"),
                 "all": t("全部 CC", "All CCs"),
             }[value],
-            key=f"zx_product_risk_view_{language_query_code()}",
+            key=f"product_risk_view_{language_query_code()}_{product_view_key}",
         )
         view = pareto_products.copy() if view_mode == "top" else all_products.copy()
     else:
@@ -5431,6 +5478,22 @@ def render_product_priority(
         axis=1,
     )
     sorted_view = view.sort_values("risk_score_fixed", ascending=True)
+    hover_data = {
+        "risk_formula": True,
+        "production_score_fixed": ":.1f",
+        "client_score_fixed": ":.1f",
+        "defect_rate": ":.2%",
+        "qty_inspected": ":,.0f",
+        "defect_qty": ":,.0f",
+        "rpm_now": ":,.0f",
+        "intern_voice_count": ":,.0f",
+        "product_label_display": True,
+        "alert_reason": True,
+        "risk_level_fixed": False,
+        "product_view": False,
+    }
+    if pareto_mode:
+        hover_data["focus_group"] = False
     fig = px.bar(
         sorted_view,
         x="risk_score_fixed",
@@ -5438,21 +5501,7 @@ def render_product_priority(
         orientation="h",
         color="focus_group" if pareto_mode else "risk_level_fixed",
         text=sorted_view["risk_score_fixed"].round(1),
-        hover_data={
-            "risk_formula": True,
-            "production_score_fixed": ":.1f",
-            "client_score_fixed": ":.1f",
-            "defect_rate": ":.2%",
-            "qty_inspected": ":,.0f",
-            "defect_qty": ":,.0f",
-            "rpm_now": ":,.0f",
-            "intern_voice_count": ":,.0f",
-            "product_label_display": True,
-            "alert_reason": True,
-            "risk_level_fixed": False,
-            "focus_group": False,
-            "product_view": False,
-        },
+        hover_data=hover_data,
         labels={
             "risk_score_fixed": t("风险分", "Risk Score"),
             "product_view": t("CC / 款式", "CC / Style"),
@@ -6577,7 +6626,7 @@ def render_community_cockpit(
             zx_qc_source,
             "zx_pareto",
         )
-        render_defect_pareto(finished_df, zx_qc_source, show_caption=False)
+        render_defect_pareto(finished_df, zx_qc_source, show_caption=False, focus_mode=True)
 
         render_chart_heading(
             "By CC 合格率趋势",
@@ -6640,18 +6689,18 @@ def render_community_cockpit(
         "Product Risk Top CC",
         "把最需要优先复盘的产品 / 款号排在前面。",
         "Rank the products/styles that need review first.",
-        "按产品风险分排序，保留生产端和可用客户端分项。",
-        "Sort by product risk score while preserving production and available client components.",
-        "产品风险主要来自小样本收缩后的 QC 不良率；有客户端信号时叠加 RPM / IV。",
-        "Product risk mainly uses Bayesian-shrunk QC defect rate; RPM / IV are added when available.",
+        "按产品风险分排序，默认显示 Top 20% CC，也可切换查看全部 CC。",
+        "Sort by product risk score, showing the top 20% of CCs by default with an option to view all CCs.",
+        "产品风险主要来自小样本收缩后的 QC 不良率；有客户端信号时叠加 RPM / IV；Top 20% 按风险分降序选取。",
+        "Product risk mainly uses Bayesian-shrunk QC defect rate; RPM / IV are added when available; the top 20% are selected by descending risk.",
         source_label,
         f"{scope_key}_product",
     )
-    render_product_priority(product_df, source_label, risk_settings)
+    render_product_priority(product_df, source_label, risk_settings, pareto_mode=True, show_caption=False)
 
     render_chart_heading(
-        "Top Defect Pareto",
-        "Top Defect Pareto",
+        "Top 疵点类型 Pareto",
+        "Top Defect Type Pareto",
         "找出当前 community 贡献最大的疵点类型。",
         "Find the defect types contributing most in the current community.",
         "按疵点数量做 Pareto 排序。",
@@ -6661,7 +6710,7 @@ def render_community_cockpit(
         source_label,
         f"{scope_key}_pareto",
     )
-    render_defect_pareto(finished_df, source_label)
+    render_defect_pareto(finished_df, source_label, show_caption=False, focus_mode=True)
 
     render_chart_heading(
         "不良率趋势",
@@ -6692,28 +6741,57 @@ def render_community_cockpit(
         )
         render_bme_machine_focus(finished_df, source_label)
         with st.expander(t("更多分析：Alert / 工序 / IQC / 返工 / 工人", "More analysis: Alert / Process / IQC / Rework / Worker"), expanded=False):
-            st.markdown(f"**{t('Alert 清单', 'Alert List')}**")
-            render_alert_summary_cards(alert_df)
-            render_alert_detail_table(alert_df)
-            st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
-            render_process_risk_chart(process_df, source_label)
-            st.markdown(f"**{t('IQC / 返工风险', 'IQC / Rework Risk')}**")
-            render_material_focus(incoming_df, source_label)
-            st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
-            render_worker_focus(worker_df, source_label)
+            analysis_labels = {
+                "alert": t("Alert", "Alert"),
+                "process": t("工序", "Process"),
+                "material": t("IQC / 返工", "IQC / Rework"),
+                "worker": t("工人", "Worker"),
+            }
+            selected_analysis = st.segmented_control(
+                t("分析模块", "Analysis Module"),
+                list(analysis_labels),
+                default="process",
+                format_func=lambda value: analysis_labels[value],
+                key=f"bme_more_analysis_{language_query_code()}",
+                width="stretch",
+            )
+            if selected_analysis == "alert":
+                render_alert_summary_cards(alert_df)
+                render_alert_detail_table(alert_df)
+            elif selected_analysis == "process":
+                render_process_risk_chart(process_df, source_label)
+            elif selected_analysis == "material":
+                render_material_focus(incoming_df, source_label)
+            elif selected_analysis == "worker":
+                render_worker_focus(worker_df, source_label)
     elif scope_key == "SE_TENT":
         with st.expander(t("更多分析：Alert / 工序 / FQC-IPQC / 工人", "More analysis: Alert / Process / FQC-IPQC / Worker"), expanded=False):
-            st.markdown(f"**{t('Alert 清单', 'Alert List')}**")
-            render_alert_summary_cards(alert_df)
-            render_alert_detail_table(alert_df)
-            st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
-            render_process_risk_chart(process_df, source_label)
-            st.markdown(f"**{t('FQC / IPQC 检验分布', 'FQC / IPQC Inspection Distribution')}**")
-            render_se_inspection_focus(finished_df, source_label)
-            st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
-            render_worker_focus(worker_df, source_label)
-            st.markdown(f"**{t('字段可用性摘要', 'Field Availability Summary')}**")
-            render_se_data_summary(finished_df, process_df, source_label)
+            analysis_labels = {
+                "alert": t("Alert", "Alert"),
+                "process": t("工序", "Process"),
+                "inspection": t("FQC / IPQC", "FQC / IPQC"),
+                "worker": t("工人", "Worker"),
+                "coverage": t("字段可用性", "Field Availability"),
+            }
+            selected_analysis = st.segmented_control(
+                t("分析模块", "Analysis Module"),
+                list(analysis_labels),
+                default="process",
+                format_func=lambda value: analysis_labels[value],
+                key=f"se_more_analysis_{language_query_code()}",
+                width="stretch",
+            )
+            if selected_analysis == "alert":
+                render_alert_summary_cards(alert_df)
+                render_alert_detail_table(alert_df)
+            elif selected_analysis == "process":
+                render_process_risk_chart(process_df, source_label)
+            elif selected_analysis == "inspection":
+                render_se_inspection_focus(finished_df, source_label)
+            elif selected_analysis == "worker":
+                render_worker_focus(worker_df, source_label)
+            elif selected_analysis == "coverage":
+                render_se_data_summary(finished_df, process_df, source_label)
 
 
 def product_alert_cards(product_summary: pd.DataFrame, limit: int = 4) -> list[dict[str, str]]:
