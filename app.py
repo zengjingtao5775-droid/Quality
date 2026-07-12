@@ -1041,7 +1041,8 @@ st.markdown(
     }
     .st-key-zx_cluster_control,
     .st-key-zx_cc_search,
-    .st-key-zx_process_cc_filter {
+    .st-key-zx_process_cc_filter,
+    .st-key-worker_skill_control {
         background: rgba(255, 255, 255, 0.96);
         border: 1px solid #d6ddfb;
         border-radius: 8px;
@@ -1051,7 +1052,8 @@ st.markdown(
     }
     .st-key-zx_cluster_control [data-baseweb="select"] > div,
     .st-key-zx_cc_search [data-baseweb="select"] > div,
-    .st-key-zx_process_cc_filter [data-baseweb="select"] > div {
+    .st-key-zx_process_cc_filter [data-baseweb="select"] > div,
+    .st-key-worker_skill_control [data-baseweb="select"] > div {
         background: #f8faff !important;
         border-color: #cbd5ff !important;
         border-radius: 8px !important;
@@ -1059,7 +1061,8 @@ st.markdown(
     }
     .st-key-zx_cluster_control [data-baseweb="tag"],
     .st-key-zx_cc_search [data-baseweb="tag"],
-    .st-key-zx_process_cc_filter [data-baseweb="tag"] {
+    .st-key-zx_process_cc_filter [data-baseweb="tag"],
+    .st-key-worker_skill_control [data-baseweb="tag"] {
         background: #eef2ff !important;
         border: 1px solid #c7d2fe !important;
         border-radius: 7px !important;
@@ -1068,7 +1071,8 @@ st.markdown(
     }
     .st-key-zx_cluster_control [data-baseweb="tag"] *,
     .st-key-zx_cc_search [data-baseweb="tag"] *,
-    .st-key-zx_process_cc_filter [data-baseweb="tag"] * {
+    .st-key-zx_process_cc_filter [data-baseweb="tag"] *,
+    .st-key-worker_skill_control [data-baseweb="tag"] * {
         color: #2434a7 !important;
         fill: #2434a7 !important;
     }
@@ -2837,10 +2841,18 @@ def normalize_jdy_result(value: object) -> str:
     if not text or text.lower() in {"nan", "none"}:
         return t("未记录", "Unknown")
     upper = text.upper()
+    if (
+        "FAIL" in upper
+        or "NG" in upper
+        or "不合格" in text
+        or "拒" in text
+        or "RE-CHECK" in upper
+        or "RECHECK" in upper
+        or "重验" in text
+    ):
+        return "FAIL"
     if "PASS" in upper or "合格" in text:
         return "PASS"
-    if "FAIL" in upper or "NG" in upper or "不合格" in text or "拒" in text:
-        return "FAIL"
     return text
 
 
@@ -4436,6 +4448,25 @@ def localize_plotly_figure(fig: go.Figure) -> go.Figure:
 def plot_chart(fig: go.Figure, height: int = 420, key: str | None = None):
     st.session_state["_plot_chart_counter"] = int(st.session_state.get("_plot_chart_counter", 0)) + 1
     prepared_fig = localize_plotly_figure(clean_plotly_hover(fig))
+    layout_json = prepared_fig.layout.to_plotly_json()
+    for axis_name in [name for name in layout_json if name.startswith("yaxis")]:
+        axis = getattr(prepared_fig.layout, axis_name, None)
+        if axis is None or not axis.title or not axis.title.text:
+            continue
+        title_text = axis.title.text
+        axis.title.text = ""
+        is_right_axis = getattr(axis, "side", None) == "right"
+        prepared_fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=1 if is_right_axis else 0,
+            y=1.045,
+            xanchor="right" if is_right_axis else "left",
+            yanchor="bottom",
+            text=title_text,
+            showarrow=False,
+            font=dict(size=12, color="#667085"),
+        )
     st.plotly_chart(
         chart_layout(prepared_fig, height),
         config={"displayModeBar": False, "responsive": True},
@@ -4617,7 +4648,7 @@ def render_chart_heading(
     key: str,
 ) -> None:
     title = t(title_cn, title_en)
-    left, right = st.columns([0.78, 0.22])
+    left, right = st.columns([0.84, 0.16])
     with left:
         st.subheader(title)
     with right:
@@ -4840,29 +4871,8 @@ def render_zx_high_risk_cluster(
         view["client_signal"] = (qty_log / qty_anchor * 100).clip(0, 100)
         y_axis_label = t("检验量强度", "Inspection Volume Strength")
         high_corner_label = t("右上：高不良率 + 高检验量", "Upper-right: high defect + high volume")
-    control_col, summary_col = st.columns([0.22, 0.78])
-    with control_col:
-        with st.popover(t("权重调整", "Adjust Weights"), use_container_width=True):
-            production_weight = st.slider(
-                t("生产端权重", "Production Weight"),
-                min_value=0,
-                max_value=100,
-                value=70,
-                step=5,
-                key=f"{widget_key}_cluster_production_weight",
-            )
-            secondary_weight = 100 - production_weight
-            st.metric(
-                t("客户端 / 检验量权重", "Client / Volume Weight"),
-                f"{secondary_weight}%",
-            )
-    with summary_col:
-        st.caption(
-            t(
-                f"当前权重：生产端 {production_weight}% · 客户端 / 检验量 {secondary_weight}%",
-                f"Current weights: production {production_weight}% · client / volume {secondary_weight}%",
-            )
-        )
+    production_weight = int(st.session_state.get(f"{widget_key}_cluster_production_weight", 70))
+    secondary_weight = 100 - production_weight
     view["cluster_score"] = (
         view["production_axis"] * (production_weight / 100)
         + view["client_signal"] * (secondary_weight / 100)
@@ -4930,11 +4940,23 @@ def render_zx_high_risk_cluster(
 
     risk_filter_options = [t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
     with st.container(key="zx_cluster_control"):
-        filter_intro, filter_control = st.columns([0.34, 0.66], vertical_alignment="center")
+        weight_control, filter_intro, filter_control = st.columns([0.18, 0.22, 0.60], vertical_alignment="center")
+        with weight_control:
+            with st.popover(t("权重调整", "Adjust Weights"), use_container_width=True):
+                production_weight = st.slider(
+                    t("生产端权重", "Production Weight"),
+                    min_value=0,
+                    max_value=100,
+                    value=production_weight,
+                    step=5,
+                    key=f"{widget_key}_cluster_production_weight",
+                )
+                secondary_weight = 100 - production_weight
+                st.metric(t("客户端 / 检验量权重", "Client / Volume Weight"), f"{secondary_weight}%")
         with filter_intro:
             st.markdown(
                 f"<div class='zx-filter-title'>{t('风险等级', 'Risk Levels')}</div>"
-                f"<div class='zx-filter-note'>{t('可多选；输入文字可快速搜索', 'Select multiple; type to search')}</div>",
+                f"<div class='zx-filter-note'>{t('可多选', 'Multi-select')}</div>",
                 unsafe_allow_html=True,
             )
         with filter_control:
@@ -5268,6 +5290,7 @@ def render_cc_search_form(
     container_key: str,
     title: str,
     note: str,
+    show_header: bool = True,
 ) -> list[str]:
     options = list(dict.fromkeys(str(option) for option in options if str(option).strip()))
     defaults = [value for value in defaults if value in options]
@@ -5280,11 +5303,12 @@ def render_cc_search_form(
         if widget_values != list(st.session_state[widget_key]):
             del st.session_state[widget_key]
     with st.container(key=container_key):
-        st.markdown(
-            f"<div class='zx-filter-title'>{html.escape(title)}</div>"
-            f"<div class='zx-filter-note'>{html.escape(note)}</div>",
-            unsafe_allow_html=True,
-        )
+        if show_header:
+            st.markdown(
+                f"<div class='zx-filter-title'>{html.escape(title)}</div>"
+                f"<div class='zx-filter-note'>{html.escape(note)}</div>",
+                unsafe_allow_html=True,
+            )
         with st.form(form_key, border=False):
             select_col, action_col = st.columns([0.82, 0.18], vertical_alignment="bottom")
             with select_col:
@@ -5356,6 +5380,7 @@ def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFra
         container_key="zx_cc_search",
         title=t("By CC 合格率趋势", "Pass-rate trend by CC"),
         note=t("默认载入综合风险排名前 20% 的 CC；也可搜索任意 CC 做对比。", "Defaults to the top 20% of CCs by overall risk; search any CC to compare."),
+        show_header=False,
     )
     if not selected_ccs:
         st.info(t("请至少选择一个 CC。", "Select at least one CC."))
@@ -5377,7 +5402,7 @@ def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFra
         st.info(t("当前日期范围没有所选 CC 的趋势数据。", "No trend data for the selected CCs in the current date range."))
         return
     st.markdown(
-        f"<span class='zx-pareto-chip'>{t('当前显示', 'Showing')} {len(selected_ccs)} {t('个 CC', 'CCs')}</span>",
+        f"<span class='zx-pareto-chip'>{t('默认 Top 20% · 当前显示', 'Default Top 20% · Showing')} {len(selected_ccs)} {t('个 CC', 'CCs')}</span>",
         unsafe_allow_html=True,
     )
     fig = px.line(
@@ -5910,12 +5935,13 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         with col:
             st.metric(label, int(counts.get(label, 0)))
 
-    selected_skill_levels = st.multiselect(
-        t("工人分类筛选", "Worker Level Filter"),
-        skill_options,
-        default=skill_options,
-        key=f"worker_skill_filter_{language_query_code()}",
-    )
+    with st.container(key="worker_skill_control"):
+        selected_skill_levels = st.multiselect(
+            t("工人分类筛选", "Worker Level Filter"),
+            skill_options,
+            default=skill_options,
+            key=f"worker_skill_filter_{language_query_code()}",
+        )
     plot_source = worker_view[worker_view["skill_level"].isin(selected_skill_levels)].copy() if selected_skill_levels else worker_view.iloc[0:0].copy()
     if plot_source.empty:
         st.info(t("当前筛选下没有对应工人分类。", "No worker level matches the current filter."))
@@ -5972,6 +5998,7 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         },
     )
     fig.update_traces(textposition="top center", marker=dict(opacity=0.78, line=dict(color="#ffffff", width=0.8)))
+    fig.update_layout(legend=dict(font=dict(size=11), itemsizing="constant"))
     fig.update_xaxes(range=[-4, 104])
     fig.update_yaxes(range=[-4, 104])
     fig.add_vline(x=55, line_dash="dash", line_color="#8b96b8", opacity=0.40)
@@ -5987,7 +6014,6 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         bgcolor="rgba(255,255,255,0.72)",
     )
     plot_chart(fig, 420)
-    st.caption(t("每个点代表一个工人/工序组合；K-means 按不良率风险分和检验量强度聚类，高危工使用更保守的前10%阈值，避免把普通波动误判为高危。点越大代表疵点越多。", "Each point is one worker/process combination. K-means clusters defect-rate risk and inspection-volume strength; high-risk workers use a conservative top-10% threshold to avoid over-labeling normal variation. Larger bubbles mean more defects."))
 
 
 def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact: bool = False):
@@ -6042,7 +6068,6 @@ def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact:
             render_type_chart()
         with right:
             render_issue_chart()
-    st.caption(t("仅统计非 OK、退货数量大于 0 或有明确问题描述的来料/返工记录，帮助判断上游或返工压力点。", "Only non-OK, returned-quantity, or explicit issue incoming/rework records are aggregated to identify upstream pressure points."))
 
 
 def render_bme_machine_focus(finished_df: pd.DataFrame, source_label: str):
@@ -6243,17 +6268,22 @@ def load_tu_jiandaoyun_fqc(refresh_token: int = 0) -> tuple[pd.DataFrame, dict, 
     return jdy_fqc, jdy_meta, ""
 
 
+def jdy_first_pass_masks(jdy_fqc: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
+    result_text = jdy_fqc.get("result_raw", jdy_fqc.get("result", pd.Series("", index=jdy_fqc.index))).fillna("").astype(str)
+    fail_mask = result_text.str.contains(
+        "FAIL|NG|NOK|不合格|拒|RE-CHECK|RECHECK|重验",
+        case=False,
+        na=False,
+    )
+    pass_mask = result_text.str.contains("PASS|合格", case=False, na=False) & ~fail_mask
+    valid_result_mask = pass_mask | fail_mask
+    return pass_mask, fail_mask, valid_result_mask
+
+
 def jdy_fqc_rft_metrics(jdy_fqc: pd.DataFrame) -> dict[str, float | int]:
     if jdy_fqc.empty:
         return {"records": 0, "valid_records": 0, "pass_count": 0, "fail_count": 0, "rft": np.nan}
-    result_text = jdy_fqc.get("result", pd.Series("", index=jdy_fqc.index)).fillna("").astype(str)
-    fail_mask = (
-        jdy_fqc["is_fail"].fillna(False).astype(bool)
-        if "is_fail" in jdy_fqc.columns
-        else result_text.str.contains("FAIL|NG|NOK|不合格|拒", case=False, na=False)
-    )
-    pass_mask = result_text.str.contains("^PASS$|合格", case=False, na=False) & ~fail_mask
-    valid_result_mask = pass_mask | fail_mask
+    pass_mask, fail_mask, valid_result_mask = jdy_first_pass_masks(jdy_fqc)
     valid_records = int(valid_result_mask.sum())
     pass_count = int(pass_mask.sum())
     fail_count = int(fail_mask.sum())
@@ -6381,14 +6411,7 @@ def render_tu_jiandaoyun_snapshot() -> None:
         )
 
     jdy_view = jdy_fqc.copy()
-    result_text = jdy_view["result"].fillna("").astype(str) if "result" in jdy_view.columns else pd.Series("", index=jdy_view.index)
-    fail_mask = (
-        jdy_view["is_fail"].fillna(False).astype(bool)
-        if "is_fail" in jdy_view.columns
-        else result_text.str.contains("FAIL|NG|NOK|不合格|拒", case=False, na=False)
-    )
-    pass_mask = result_text.str.contains("^PASS$|合格", case=False, na=False) & ~fail_mask
-    valid_result_mask = pass_mask | fail_mask
+    pass_mask, fail_mask, valid_result_mask = jdy_first_pass_masks(jdy_view)
     jdy_view["_is_fail"] = fail_mask
     jdy_view["_is_pass"] = pass_mask
     jdy_view["_valid_result"] = valid_result_mask
@@ -6649,14 +6672,14 @@ def render_community_cockpit(
     render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
 
     if scope_key == "ZX":
-        _, readme_col = st.columns([0.78, 0.22])
+        _, readme_col = st.columns([0.84, 0.16])
         with readme_col:
             render_readme_popover(
                 "README",
                 t("TU / ZX 核心指标", "TU / ZX Core Metrics"),
                 t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
-                t("FQC RFT = 简道云 PASS / 有效结果；End of line RFT = 1 - Excel 疵点数 / 检验数；RPM = 退货数 / 销量 x 1,000,000；IV 同比仅在上年同期数据已接入时计算。", "FQC RFT = Jiandaoyun PASS / valid results; end-of-line RFT = 1 - Excel defects / inspected; RPM = returns / sold x 1,000,000; IV YoY is calculated only when prior-year comparable data is loaded."),
+                t("FQC RFT = 简道云首次 PASS / 有效结果；FAIL 与重验合格均不计入首次 PASS。End of line RFT = 1 - Excel 疵点数 / 检验数；RPM = 退货数 / 销量 x 1,000,000；IV 同比仅在上年同期数据已接入时计算。", "FQC RFT = Jiandaoyun first-pass records / valid results; FAIL and pass-after-recheck are not first-pass records. End-of-line RFT = 1 - Excel defects / inspected; RPM = returns / sold x 1,000,000; IV YoY is calculated only when prior-year comparable data is loaded."),
                 "Jiandaoyun ZX FQC + ZX finished QC Excel + ZX R12M RPM/YTD + ZX Intern Voice",
             )
         render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df))
@@ -6759,7 +6782,7 @@ def render_community_cockpit(
         )
         render_zx_cc_pass_rate_trend(finished_df, product_df)
 
-        with st.expander(t("更多分析：工序 / 工人 / 原辅料 / 简道云", "More analysis: Process / Worker / Material / Jiandaoyun"), expanded=False):
+        with st.expander(t("更多分析", "More Analysis"), expanded=False):
             analysis_labels = {
                 "process": t("工序", "Process"),
                 "worker": t("工人", "Worker"),
