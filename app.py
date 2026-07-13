@@ -1233,7 +1233,17 @@ JIANDAOYUN_SOURCES = {
         "raw_pattern": "ZX_FQC_Jiandaoyun_raw_*.json",
         "fields_pattern": "ZX_FQC_Jiandaoyun_fields_*.json",
         "source_name": "Jiandaoyun Gloves / ZX FQC",
-    }
+    },
+    "ZX_CP": {
+        "label": "ZX 控制计划数据库",
+        "app_id": "660389615b25f1d03168b4c9",
+        "entry_id": "656fdd73a2f2c0d7a773db5e",
+        "directory": Path("POC_Raw_Data/04_Gloves/ZX_CP"),
+        "flat_pattern": "ZX_CP_Jiandaoyun_flat_*.csv",
+        "raw_pattern": "ZX_CP_Jiandaoyun_raw_*.json",
+        "fields_pattern": "ZX_CP_Jiandaoyun_fields_*.json",
+        "source_name": "Jiandaoyun ZX Control Plan Database",
+    },
 }
 JIANDAOYUN_CACHE_VERSION = 4
 DATA_SCOPE_CACHE_VERSION = 6
@@ -3132,6 +3142,91 @@ def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_versi
     return fqc, meta
 
 
+@st.cache_data(show_spinner=False, ttl=900)
+def load_jiandaoyun_zx_cp_api(api_key: str, refresh_token: int = 0) -> tuple[pd.DataFrame, dict]:
+    del refresh_token
+    source = JIANDAOYUN_SOURCES["ZX_CP"]
+    widgets_res = jdy_api_post(api_key, "/api/v5/app/entry/widget/list", {"app_id": source["app_id"], "entry_id": source["entry_id"]})
+    widgets = widgets_res.get("widgets") or []
+    frames: list[pd.DataFrame] = []
+    last_data_id = None
+    while True:
+        payload = {"app_id": source["app_id"], "entry_id": source["entry_id"], "filter": {}, "limit": 100}
+        if last_data_id:
+            payload["data_id"] = last_data_id
+        response = jdy_api_post(api_key, "/api/v5/app/entry/data/list", payload)
+        batch = response.get("data") or []
+        if not batch:
+            break
+        frames.append(flatten_jdy_records(batch, widgets))
+        if len(batch) < 100:
+            break
+        last_data_id = batch[-1].get("_id")
+        if not last_data_id:
+            break
+    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if raw.empty:
+        return raw, {"records": 0, "mode": "live_api"}
+    cp = pd.DataFrame(
+        {
+            "process": coalesce_columns(raw, ["制程 Process"], "").astype(str),
+            "control_point": coalesce_columns(raw, ["管控点 Control Point"], "").astype(str),
+            "control_method": coalesce_columns(raw, ["参考管控文件 Control Method"], "").astype(str),
+            "requirement": coalesce_columns(raw, ["管控要求 Control Requirement"], "").astype(str),
+            "risk_level": coalesce_columns(raw, ["风险等级 Risk Level"], "").astype(str),
+            "updated_at": pd.to_datetime(coalesce_columns(raw, ["更新时间"], pd.NaT), errors="coerce"),
+        }
+    )
+    return cp, {"records": len(cp), "mode": "live_api", "source_name": source["source_name"]}
+
+
+@st.cache_data(show_spinner=False, ttl=1800, max_entries=20)
+def generate_qwen_quality_summary(report_scope: str, facts_json: str, language: str, model: str, api_key_fingerprint: str, _api_key: str) -> dict:
+    del api_key_fingerprint
+    output_language = "Chinese" if language == "中文" else "English"
+    response = post_json(
+        get_secret_value(["DASHSCOPE_BASE_URL", "QWEN_BASE_URL"], default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"),
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": f"You are a senior NEA quality manager. Write a concise {output_language} management summary for {report_scope}. Use only supplied facts, distinguish evidence from hypotheses, and provide priorities, owners, and next actions. Do not invent causes or numbers."},
+                {"role": "user", "content": facts_json},
+            ],
+            "temperature": 0.15,
+            "max_tokens": 1800,
+            "stream": False,
+        },
+        {"Authorization": f"Bearer {_api_key}"},
+    )
+    choices = response.get("choices") or []
+    content = str((choices[0].get("message") or {}).get("content", "")).strip() if choices else ""
+    if not content:
+        raise RuntimeError("The model returned an empty report.")
+    return {"content": content, "model": str(response.get("model") or model), "generated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+
+def render_qwen_summary_panel(key: str, title: str, facts: dict) -> None:
+    st.markdown(f"### {title}")
+    api_key = get_qwen_api_key()
+    model = get_secret_value(["QWEN_MODEL"], default="qwen-flash")
+    if not api_key:
+        st.info(t("尚未配置 DASHSCOPE_API_KEY。", "DASHSCOPE_API_KEY is not configured."))
+        return
+    facts_json = json.dumps(facts, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    if st.button(t("生成 AI 总结报告", "Generate AI Summary"), type="primary", key=f"{key}_generate"):
+        try:
+            with st.spinner(t("通义千问正在生成管理总结...", "Qwen is generating the management summary...")):
+                report = generate_qwen_quality_summary(title, facts_json, st.session_state.lang, model, hashlib.sha256(api_key.encode()).hexdigest()[:12], api_key)
+            st.session_state[f"{key}_report"] = report
+            st.session_state[f"{key}_facts"] = hashlib.sha256(facts_json.encode()).hexdigest()
+        except Exception as exc:
+            st.error(t(f"AI 总结生成失败：{exc}", f"AI summary failed: {exc}"))
+    report = st.session_state.get(f"{key}_report")
+    if report and st.session_state.get(f"{key}_facts") == hashlib.sha256(facts_json.encode()).hexdigest():
+        st.markdown(report["content"])
+        st.caption(t(f"通义千问 {report['model']} · {report['generated_at']}。数字来自当前看板事实，根因仍需现场验证。", f"Qwen {report['model']} · {report['generated_at']}. Numbers come from dashboard facts; root causes still require on-site validation."))
+
+
 def jdy_section_pareto(fqc: pd.DataFrame) -> pd.DataFrame:
     if fqc.empty:
         return pd.DataFrame()
@@ -4629,10 +4724,9 @@ def render_readme_popover(
     source = english_display_text(source)
     with st.popover(label, use_container_width=True):
         st.markdown(f"### {title}")
-        st.markdown(f"**{t('这个图表的功能', 'Purpose')}**  \n{purpose}")
-        st.markdown(f"**{t('分析方法', 'Method')}**  \n{method}")
-        st.markdown(f"**{t('计算逻辑', 'Calculation')}**  \n{logic}")
-        st.markdown(f"**{t('数据来源', 'Data Source')}**  \n{source}")
+        st.markdown(f"**1. {t('数据分析方法', 'Data Analysis Method')}**  \n{method}")
+        st.markdown(f"**2. {t('计算逻辑', 'Calculation Logic')}**  \n{logic}")
+        st.markdown(f"**3. {t('数据来源', 'Data Source')}**  \n{source}")
 
 
 def render_chart_heading(
@@ -5010,13 +5104,12 @@ def render_zx_high_risk_cluster(
         },
     )
     hover_template = (
-        f"<b>CC %{{customdata[0]}}</b><br>"
-        f"<b>Model</b> %{{customdata[1]}}<br>"
-        f"<b>RPM</b> %{{customdata[2]:,.0f}}<br>"
-        f"<b>IV</b> %{{customdata[3]:,.0f}}<br>"
-        f"<b>{t('不良率', 'Defect rate')}</b> %{{customdata[4]:.2%}}<br>"
-        f"<b>Risk score</b> %{{customdata[5]:.1f}}<br>"
-        f"<b>{t('检验数 / 疵点', 'Inspected / defects')}</b> %{{customdata[6]:,.0f}} / %{{customdata[7]:,.0f}}"
+        f"<b>CC %{{customdata[0]}} · %{{customdata[8]}}</b><br>"
+        f"<span style='color:#667085'>Model</span>  %{{customdata[1]}}<br>"
+        f"━━━━━━━━━━━━━━━━━━━━<br>"
+        f"RPM  <b>%{{customdata[2]:,.0f}}</b>　 IV  <b>%{{customdata[3]:,.0f}}</b><br>"
+        f"{t('不良率', 'Defect rate')}  <b>%{{customdata[4]:.2%}}</b>　 Risk  <b>%{{customdata[5]:.1f}}</b><br>"
+        f"{t('检验数', 'Inspected')}  %{{customdata[6]:,.0f}}　 {t('疵点', 'Defects')}  %{{customdata[7]:,.0f}}"
         "<extra></extra>"
     )
     fig.update_traces(
@@ -5028,9 +5121,9 @@ def render_zx_high_risk_cluster(
     fig.update_layout(
         transition=dict(duration=420, easing="cubic-in-out"),
         hoverlabel=dict(
-            bgcolor="#ffffff",
-            bordercolor="#cbd5e1",
-            font=dict(size=16, color="#172033", family="Arial, sans-serif"),
+            bgcolor="#f8faff",
+            bordercolor="#8795e8",
+            font=dict(size=14, color="#172033", family="Arial, sans-serif"),
             align="left",
             namelength=-1,
         ),
@@ -5550,6 +5643,14 @@ def render_product_priority(
         axis=1,
     )
     sorted_view = view.sort_values("risk_score_fixed", ascending=True)
+    model_code = sorted_view.get("model_code", pd.Series("", index=sorted_view.index)).fillna("").astype(str).str.strip()
+    model_name = sorted_view["product_label_display"].fillna("").astype(str).str.strip()
+    sorted_view["model_hover"] = np.where(
+        model_code.ne("") & model_name.ne(""),
+        model_code + " · " + model_name,
+        model_code.where(model_code.ne(""), model_name),
+    )
+    sorted_view["model_hover"] = pd.Series(sorted_view["model_hover"], index=sorted_view.index).replace("", "-")
     hover_data = {
         "risk_formula": True,
         "production_score_fixed": ":.1f",
@@ -5574,6 +5675,7 @@ def render_product_priority(
         color="focus_group" if pareto_mode else "risk_level_fixed",
         text=sorted_view["risk_score_fixed"].round(1),
         hover_data=hover_data,
+        custom_data=["product_code", "model_hover", "rpm_now", "intern_voice_count", "defect_rate", "risk_score_fixed", "qty_inspected", "defect_qty"],
         labels={
             "risk_score_fixed": t("风险分", "Risk Score"),
             "product_view": t("CC / 款式", "CC / Style"),
@@ -5588,6 +5690,18 @@ def render_product_priority(
             if pareto_mode
             else LEVEL_COLORS
         ),
+    )
+    fig.update_traces(
+        hovertemplate=(
+            "<b>CC %{customdata[0]}</b><br>"
+            "<span style='color:#667085'>Model</span>  %{customdata[1]}<br>"
+            "━━━━━━━━━━━━━━━━━━━━<br>"
+            "RPM  <b>%{customdata[2]:,.0f}</b>　 IV  <b>%{customdata[3]:,.0f}</b><br>"
+            f"{t('不良率', 'Defect rate')}  <b>%{{customdata[4]:.2%}}</b>　 Risk  <b>%{{customdata[5]:.1f}}</b><br>"
+            f"{t('检验数', 'Inspected')}  %{{customdata[6]:,.0f}}　 {t('疵点', 'Defects')}  %{{customdata[7]:,.0f}}"
+            "<extra></extra>"
+        ),
+        hoverlabel=dict(bgcolor="#f8faff", bordercolor="#8795e8", font=dict(size=14, color="#172033")),
     )
     fig.update_xaxes(range=[0, 105])
     fig.update_traces(textposition="outside")
@@ -6563,6 +6677,67 @@ def render_tu_jiandaoyun_snapshot() -> None:
     st.caption(t(f"模式：{source_mode_text}。该报表仅放在 TU / ZX 页面，重点看 FQC RFT 和检验员 RFT；BME 和 SE 不使用简道云。", f"Mode: {source_mode_text}. This report is shown only on TU / ZX and focuses on FQC RFT and inspector RFT; BME and SE do not use Jiandaoyun."))
 
 
+def render_tu_jiandaoyun_ytd_cp() -> None:
+    st.subheader(t("简道云 YTD FQC + CP", "Jiandaoyun YTD FQC + CP"))
+    api_key = get_jdy_api_key()
+    if not api_key:
+        st.warning(t("未配置简道云 API Key。", "Jiandaoyun API key is not configured."))
+        return
+    refresh_token = int(st.session_state.get("tu_jdy_refresh_token", 0))
+    with st.spinner(t("正在读取简道云 FQC 与控制计划...", "Loading Jiandaoyun FQC and control plan...")):
+        fqc, _, api_error = load_tu_jiandaoyun_fqc(refresh_token)
+        try:
+            cp, _ = load_jiandaoyun_zx_cp_api(api_key, refresh_token)
+        except Exception as exc:
+            cp = pd.DataFrame()
+            api_error = f"{api_error}; CP: {exc}" if api_error else f"CP: {exc}"
+    if api_error:
+        st.warning(t(f"部分实时数据读取失败：{api_error}", f"Some live data could not be loaded: {api_error}"))
+    if not fqc.empty and fqc["date"].notna().any():
+        ytd_year = int(fqc["date"].dropna().dt.year.max())
+        fqc = fqc[fqc["date"].dt.year.eq(ytd_year)].copy()
+    else:
+        ytd_year = dt.date.today().year
+    metrics = jdy_fqc_rft_metrics(fqc)
+    sample = float(pd.to_numeric(fqc.get("sampling_size", 0), errors="coerce").fillna(0).sum()) if not fqc.empty else 0
+    defects = float(pd.to_numeric(fqc.get("defect_qty", 0), errors="coerce").fillna(0).sum()) if not fqc.empty else 0
+    cp_processes = cp["process"].replace("", np.nan).nunique() if not cp.empty else 0
+    cp_points = cp["control_point"].replace("", np.nan).nunique() if not cp.empty else 0
+    render_kpi_cards(
+        [
+            {"label": f"FQC RFT · YTD {ytd_year}", "value": pct(metrics["rft"]), "note": t(f"首次 PASS {metrics['pass_count']:,} / 有效 {metrics['valid_records']:,}", f"First pass {metrics['pass_count']:,} / valid {metrics['valid_records']:,}"), "level": "medium"},
+            {"label": t("YTD 抽样疵点率", "YTD Sample Defect Rate"), "value": pct(defects / sample if sample else np.nan), "note": t(f"抽样 {compact_num(sample)} / 疵点 {compact_num(defects)}", f"Sample {compact_num(sample)} / defects {compact_num(defects)}"), "level": "medium"},
+            {"label": t("CP 制程覆盖", "CP Process Coverage"), "value": str(cp_processes), "note": t(f"{cp_points} 个管控点", f"{cp_points} control points"), "level": "low"},
+            {"label": t("CP 记录", "CP Records"), "value": compact_num(len(cp)), "note": t("ZX 控制计划数据库", "ZX Control Plan Database"), "level": "low"},
+        ]
+    )
+    left, right = st.columns(2)
+    with left:
+        st.markdown(f"**{t('FQC YTD 月度趋势', 'FQC YTD Monthly Trend')}**")
+        monthly = fqc.dropna(subset=["date"]).copy()
+        if not monthly.empty:
+            monthly["month_view"] = monthly["date"].dt.to_period("M").astype(str)
+            monthly = monthly.groupby("month_view", as_index=False).agg(sampling=("sampling_size", "sum"), defects=("defect_qty", "sum"))
+            monthly["pass_rate"] = (1 - safe_rate(monthly["defects"], monthly["sampling"])).clip(0, 1)
+            fig = px.line(monthly, x="month_view", y="pass_rate", markers=True, labels={"month_view": t("月份", "Month"), "pass_rate": t("抽样合格率", "Sample Pass Rate")})
+            fig.update_yaxes(tickformat=".1%")
+            plot_chart(fig, 320)
+    with right:
+        st.markdown(f"**{t('CP 风险等级结构', 'CP Risk-Level Structure')}**")
+        if not cp.empty:
+            cp_mix = cp.assign(risk_view=cp["risk_level"].replace("", t("未记录", "Unknown"))).groupby("risk_view", as_index=False).size()
+            fig = px.bar(cp_mix, x="risk_view", y="size", text="size", color="risk_view", labels={"risk_view": t("风险等级", "Risk Level"), "size": t("管控点", "Control Points")})
+            fig.update_traces(textposition="outside")
+            plot_chart(fig, 320)
+    facts = {
+        "scope": "TU / ZX Jiandaoyun YTD FQC and CP",
+        "year": ytd_year,
+        "fqc": {"records": len(fqc), "first_pass_rft": finite_number(metrics["rft"]), "sampling": finite_number(sample), "defects": finite_number(defects)},
+        "cp": {"records": len(cp), "processes": int(cp_processes), "control_points": int(cp_points), "risk_levels": cp["risk_level"].value_counts().to_dict() if not cp.empty else {}},
+    }
+    render_qwen_summary_panel("tu_jdy_cp", t("FQC + CP 总结报告", "FQC + CP Summary Report"), facts)
+
+
 def build_zx_kpi_cards(finished_df: pd.DataFrame, voice_df: pd.DataFrame) -> list[dict[str, str]]:
     end_qc = finished_df[finished_df["inspection_stage"].eq("End QC / FQC")].copy()
     eol_qty = float(pd.to_numeric(end_qc.get("qty_inspected", 0), errors="coerce").fillna(0).sum())
@@ -6807,7 +6982,7 @@ def render_community_cockpit(
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
             elif selected_analysis == "jiandaoyun":
-                render_tu_jiandaoyun_snapshot()
+                render_tu_jiandaoyun_ytd_cp()
         return
 
     render_chart_heading(
@@ -7510,8 +7685,35 @@ tabs = st.tabs(
         t("02 供应商面板", "02 Supplier Panel"),
         t("03 产品面板", "03 Product Panel"),
         t("04 Panel管理", "04 Panel"),
+        t("05 AI总结报告", "05 AI Summary"),
     ]
 )
+
+with tabs[4]:
+    st.subheader(t("NEA 三个 Community AI 总结", "NEA Three-Community AI Summary"))
+    community_facts = []
+    for scope_code in ["ZX", "BME_CMW", "SE_TENT"]:
+        codes = DASHBOARD_SCOPES[scope_code]["factories"]
+        scope_data = finished[finished["factory_code"].isin(codes)].copy()
+        qty = float(scope_data["qty_inspected"].sum()) if not scope_data.empty else 0
+        defects = float(scope_data["defect_qty"].sum()) if not scope_data.empty else 0
+        scope_products = product_summary[product_summary["factory_code"].isin(codes)] if not product_summary.empty else pd.DataFrame()
+        community_facts.append(
+            {
+                "community": scope_display(scope_code),
+                "inspected": finite_number(qty),
+                "defects": finite_number(defects),
+                "defect_rate": finite_number(defects / qty if qty else 0),
+                "rft": finite_number(1 - defects / qty if qty else None),
+                "high_risk_products": int(scope_products[scope_products["risk_level"].isin(["High", "Critical"])].shape[0]) if not scope_products.empty else 0,
+                "period": source_date_range(scope_data),
+            }
+        )
+    render_qwen_summary_panel(
+        "nea_overview",
+        t("NEA Quality Manager 总结报告", "NEA Quality Manager Summary"),
+        {"scope": "NEA / TU + BME + SE", "communities": community_facts, "data_limit": "Use only dashboard QC facts; comparisons must consider different inspected quantities."},
+    )
 
 
 # ==========================================
