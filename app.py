@@ -6900,6 +6900,69 @@ def load_tu_jiandaoyun_fqc(refresh_token: int = 0) -> tuple[pd.DataFrame, dict, 
     return jdy_fqc, jdy_meta, ""
 
 
+def render_tu_jdy_refresh_control(
+    panel_key: str,
+    *,
+    include_cp: bool = False,
+) -> tuple[pd.DataFrame, dict, str]:
+    data_state_key = f"{panel_key}_jdy_live_fqc"
+    meta_state_key = f"{panel_key}_jdy_live_meta"
+    cp_state_key = f"{panel_key}_jdy_live_cp"
+    error_state_key = f"{panel_key}_jdy_refresh_error"
+    token_state_key = f"{panel_key}_jdy_refresh_token"
+
+    local_fqc, local_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+    api_key = get_jdy_api_key()
+    action_col, status_col = st.columns([0.24, 0.76], vertical_alignment="center")
+    with action_col:
+        refresh_clicked = st.button(
+            t("刷新简道云 API", "Refresh Jiandaoyun API"),
+            key=f"{panel_key}_jdy_refresh_button",
+            icon=":material/refresh:",
+            type="primary",
+            use_container_width=True,
+            disabled=not bool(api_key),
+        )
+
+    if refresh_clicked and api_key:
+        token = int(st.session_state.get(token_state_key, 0)) + 1
+        st.session_state[token_state_key] = token
+        try:
+            with st.spinner(t("正在刷新简道云数据...", "Refreshing Jiandaoyun data...")):
+                live_fqc, live_meta = load_jiandaoyun_zx_fqc_api(
+                    api_key,
+                    token,
+                    JIANDAOYUN_CACHE_VERSION,
+                )
+                live_cp = pd.DataFrame()
+                if include_cp:
+                    live_cp, _ = load_jiandaoyun_zx_cp_api(api_key, token)
+            st.session_state[data_state_key] = live_fqc
+            st.session_state[meta_state_key] = live_meta
+            if include_cp:
+                st.session_state[cp_state_key] = live_cp
+            st.session_state[error_state_key] = ""
+        except Exception as exc:
+            st.session_state[error_state_key] = str(exc)
+
+    live_fqc = st.session_state.get(data_state_key)
+    using_live = isinstance(live_fqc, pd.DataFrame) and not live_fqc.empty
+    current_fqc = live_fqc.copy() if using_live else local_fqc
+    current_meta = dict(st.session_state.get(meta_state_key, {})) if using_live else local_meta
+    current_error = str(st.session_state.get(error_state_key, ""))
+    mode = t("本次会话实时数据", "Live data in this session") if using_live else t("本地缓存快照", "Local cached snapshot")
+    updated_at = current_meta.get("pulled_at", "")
+    status_text = t(
+        f"当前：{mode} · {len(current_fqc):,} 条" + (f" · {updated_at}" if updated_at else ""),
+        f"Current: {mode} · {len(current_fqc):,} records" + (f" · {updated_at}" if updated_at else ""),
+    )
+    with status_col:
+        st.caption(status_text if api_key else t(f"{status_text} · 未配置 API Key", f"{status_text} · API key not configured"))
+    if current_error:
+        st.warning(t("实时刷新失败，继续使用上一次可用数据。", "Live refresh failed; the last available data remains in use."))
+    return current_fqc, current_meta, current_error
+
+
 def jdy_first_pass_masks(jdy_fqc: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
     result_text = jdy_fqc.get("result_raw", jdy_fqc.get("result", pd.Series("", index=jdy_fqc.index))).fillna("").astype(str)
     fail_mask = result_text.str.contains(
@@ -7195,22 +7258,15 @@ def render_tu_jiandaoyun_snapshot() -> None:
     st.caption(t(f"模式：{source_mode_text}。该报表仅放在 TU / ZX 页面，重点看 FQC RFT 和检验员 RFT；BME 和 SE 不使用简道云。", f"Mode: {source_mode_text}. This report is shown only on TU / ZX and focuses on FQC RFT and inspector RFT; BME and SE do not use Jiandaoyun."))
 
 
-def render_tu_jiandaoyun_ytd_cp() -> None:
+def render_tu_jiandaoyun_ytd_cp(
+    jdy_fqc: pd.DataFrame | None = None,
+    *,
+    panel_key: str = "zx_panel",
+) -> None:
     st.subheader(t("简道云 YTD FQC + CP", "Jiandaoyun YTD FQC + CP"))
-    api_key = get_jdy_api_key()
-    if not api_key:
-        st.warning(t("未配置简道云 API Key。", "Jiandaoyun API key is not configured."))
-        return
-    refresh_token = int(st.session_state.get("tu_jdy_refresh_token", 0))
-    with st.spinner(t("正在读取简道云 FQC 与控制计划...", "Loading Jiandaoyun FQC and control plan...")):
-        fqc, _, api_error = load_tu_jiandaoyun_fqc(refresh_token)
-        try:
-            cp, _ = load_jiandaoyun_zx_cp_api(api_key, refresh_token)
-        except Exception as exc:
-            cp = pd.DataFrame()
-            api_error = f"{api_error}; CP: {exc}" if api_error else f"CP: {exc}"
-    if api_error:
-        st.warning(t(f"部分实时数据读取失败：{api_error}", f"Some live data could not be loaded: {api_error}"))
+    fqc = jdy_fqc.copy() if isinstance(jdy_fqc, pd.DataFrame) else load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)[0]
+    cp = st.session_state.get(f"{panel_key}_jdy_live_cp", pd.DataFrame())
+    cp = cp.copy() if isinstance(cp, pd.DataFrame) else pd.DataFrame()
     if not fqc.empty and fqc["date"].notna().any():
         ytd_year = int(fqc["date"].dropna().dt.year.max())
         fqc = fqc[fqc["date"].dt.year.eq(ytd_year)].copy()
@@ -7256,16 +7312,18 @@ def render_tu_jiandaoyun_ytd_cp() -> None:
     render_qwen_summary_panel("tu_jdy_cp", t("FQC + CP 总结报告", "FQC + CP Summary Report"), facts)
 
 
-def build_zx_kpi_cards(finished_df: pd.DataFrame, voice_df: pd.DataFrame) -> list[dict[str, str]]:
+def build_zx_kpi_cards(
+    finished_df: pd.DataFrame,
+    voice_df: pd.DataFrame,
+    jdy_fqc: pd.DataFrame | None = None,
+) -> list[dict[str, str]]:
     end_qc = finished_df[finished_df["inspection_stage"].eq("End QC / FQC")].copy()
     eol_qty = float(pd.to_numeric(end_qc.get("qty_inspected", 0), errors="coerce").fillna(0).sum())
     eol_defects = float(pd.to_numeric(end_qc.get("defect_qty", 0), errors="coerce").fillna(0).sum())
     eol_rft = 1 - eol_defects / eol_qty if eol_qty else np.nan
 
-    refresh_token = int(st.session_state.get("tu_jdy_refresh_token", 0))
-    jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
-    if jdy_fqc.empty:
-        jdy_fqc, _, _ = load_tu_jiandaoyun_fqc(refresh_token)
+    if not isinstance(jdy_fqc, pd.DataFrame):
+        jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
     fqc_metrics = jdy_fqc_rft_metrics(jdy_fqc)
     fqc_rft = float(fqc_metrics["rft"]) if pd.notna(fqc_metrics["rft"]) else np.nan
 
@@ -7363,7 +7421,9 @@ def render_community_cockpit(
 
     render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
 
+    jdy_fqc = pd.DataFrame()
     if scope_key == "ZX":
+        jdy_fqc, _, _ = render_tu_jdy_refresh_control("zx_panel", include_cp=True)
         _, readme_col = st.columns([0.84, 0.16])
         with readme_col:
             render_readme_popover(
@@ -7374,7 +7434,7 @@ def render_community_cockpit(
                 t("FQC RFT = 简道云首次 PASS / 有效结果；FAIL 与重验合格均不计入首次 PASS。End of line RFT = 1 - Excel 疵点数 / 检验数；RPM = 退货数 / 销量 x 1,000,000；IV 同比仅在上年同期数据已接入时计算。", "FQC RFT = Jiandaoyun first-pass records / valid results; FAIL and pass-after-recheck are not first-pass records. End-of-line RFT = 1 - Excel defects / inspected; RPM = returns / sold x 1,000,000; IV YoY is calculated only when prior-year comparable data is loaded."),
                 "Jiandaoyun ZX FQC + ZX finished QC Excel + ZX R12M RPM/YTD + ZX Intern Voice",
             )
-        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df))
+        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc))
     else:
         render_kpi_cards(
             [
@@ -7499,7 +7559,7 @@ def render_community_cockpit(
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
             elif selected_analysis == "jiandaoyun":
-                render_tu_jiandaoyun_ytd_cp()
+                render_tu_jiandaoyun_ytd_cp(jdy_fqc, panel_key="zx_panel")
         return
 
     render_chart_heading(
@@ -7889,14 +7949,11 @@ def render_zx_management_dashboard_v2(
         width="stretch",
     ) or "overview"
 
-    jdy_fqc = pd.DataFrame()
-    jdy_error = ""
-    if active_page in {"overview", "supplier", "settings"}:
-        jdy_fqc, _, jdy_error = load_tu_jiandaoyun_fqc(int(st.session_state.get("zx_v2_jdy_refresh_token", 0)))
+    jdy_fqc, _, jdy_error = render_tu_jdy_refresh_control("zx_v2_panel")
 
     if active_page == "overview":
         st.subheader(t("TU / ZX 问题总览", "TU / ZX Problem Overview"))
-        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df))
+        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc))
         high_risk_count = int(product_df.get("risk_level", pd.Series(dtype=object)).isin(["High", "Critical"]).sum())
         confidence = zx_data_confidence(finished_df, voice_df, jdy_fqc)
         render_kpi_cards(
