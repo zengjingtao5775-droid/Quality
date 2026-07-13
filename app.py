@@ -3202,8 +3202,9 @@ def generate_qwen_quality_summary(report_scope: str, facts_json: str, language: 
     return {"content": content, "model": str(response.get("model") or model), "generated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 
-def render_qwen_summary_panel(key: str, title: str, facts: dict) -> None:
-    st.markdown(f"### {title}")
+def render_qwen_summary_panel(key: str, title: str, facts: dict, *, show_title: bool = True) -> None:
+    if show_title:
+        st.markdown(f"### {title}")
     api_key = get_qwen_api_key()
     model = get_secret_value(["QWEN_MODEL"], default="qwen-flash")
     facts_json = json.dumps(facts, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -7717,6 +7718,7 @@ with tabs[4]:
         "nea_overview",
         t("NEA Quality Manager 总结报告", "NEA Quality Manager Summary"),
         {"scope": "NEA / TU + BME + SE", "communities": community_facts, "data_limit": "Use only dashboard QC facts; comparisons must consider different inspected quantities."},
+        show_title=False,
     )
 
 
