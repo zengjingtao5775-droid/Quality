@@ -4983,7 +4983,28 @@ def localize_plotly_figure(fig: go.Figure) -> go.Figure:
     return fig
 
 
-def plot_chart(fig: go.Figure, height: int = 420, key: str | None = None):
+def _sync_cc_focus_from_chart(chart_key: str, customdata_index: int) -> None:
+    event = st.session_state.get(chart_key, {})
+    points = event.get("selection", {}).get("points", []) if isinstance(event, dict) else []
+    if not points:
+        st.session_state["focused_cc"] = ""
+        return
+    customdata = points[0].get("customdata", [])
+    if not isinstance(customdata, (list, tuple)) or customdata_index >= len(customdata):
+        return
+    cc = re.sub(r"\.0$", "", str(customdata[customdata_index] or "").strip())
+    if not cc or cc.lower() in {"nan", "none"}:
+        return
+    st.session_state["focused_cc"] = "" if st.session_state.get("focused_cc") == cc else cc
+
+
+def plot_chart(
+    fig: go.Figure,
+    height: int = 420,
+    key: str | None = None,
+    *,
+    cc_customdata_index: int | None = None,
+):
     st.session_state["_plot_chart_counter"] = int(st.session_state.get("_plot_chart_counter", 0)) + 1
     prepared_fig = localize_plotly_figure(clean_plotly_hover(fig))
     layout_json = prepared_fig.layout.to_plotly_json()
@@ -5005,10 +5026,18 @@ def plot_chart(fig: go.Figure, height: int = 420, key: str | None = None):
             showarrow=False,
             font=dict(size=12, color="#667085"),
         )
+    chart_key = key or f"plotly_chart_{st.session_state['_plot_chart_counter']}"
+    chart_kwargs = {}
+    if cc_customdata_index is not None:
+        chart_kwargs = {
+            "on_select": lambda: _sync_cc_focus_from_chart(chart_key, cc_customdata_index),
+            "selection_mode": "points",
+        }
     st.plotly_chart(
         chart_layout(prepared_fig, height),
         config={"displayModeBar": False, "responsive": True},
-        key=key or f"plotly_chart_{st.session_state['_plot_chart_counter']}",
+        key=chart_key,
+        **chart_kwargs,
     )
 
 
@@ -5468,7 +5497,9 @@ def render_zx_high_risk_cluster(
 
     view["plot_x"] = (view["production_axis"] + view["product_code"].map(stable_jitter)).clip(0, 100)
     view["plot_y"] = (view["client_signal"] + view["product_code"].map(lambda value: stable_jitter(value, 1.05))).clip(0, 100)
-    view["bubble_size"] = np.log10(view["qty_inspected"].fillna(0).clip(lower=0) + 10)
+    # Plotly maps `size` to marker area, so the composite risk score directly
+    # controls visual prominence: a larger circle always means higher risk.
+    view["bubble_size"] = view["cluster_score"].fillna(0).clip(lower=0.1)
     view["product_label_display"] = view["product_label"].map(localize_product_label)
     model_code = view.get("model_code", pd.Series("", index=view.index)).fillna("").astype(str).str.strip()
     model_name = view.get("voice_product_name", pd.Series("", index=view.index)).fillna("").astype(str).str.strip()
@@ -5608,7 +5639,7 @@ def render_zx_high_risk_cluster(
         bgcolor="rgba(255,255,255,0.72)",
     )
     with st.container(key="zx_cluster_chart"):
-        plot_chart(fig, 620)
+        plot_chart(fig, 620, key=f"{widget_key}_cluster_plot", cc_customdata_index=0)
 
 
 def community_source_label(scope_key: str) -> str:
@@ -5969,6 +6000,7 @@ def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFra
         y="pass_rate",
         color="product_code",
         markers=True,
+        custom_data=["product_code", "qty_inspected", "defect_qty"],
         hover_data={"qty_inspected": ":,.0f", "defect_qty": ":,.0f"},
         labels={
             "trend_day": t("日期", "Day"),
@@ -5981,7 +6013,64 @@ def render_zx_cc_pass_rate_trend(finished_df: pd.DataFrame, products: pd.DataFra
     fig.update_yaxes(tickformat=".1%", range=[y_min, 1.005])
     fig.update_xaxes(type="date", tickformat="%b %d", hoverformat="%Y-%m-%d")
     fig.update_layout(hovermode="x unified", transition=dict(duration=320, easing="cubic-in-out"))
-    plot_chart(fig, 390)
+    plot_chart(fig, 390, key="zx_cc_pass_rate_trend_chart", cc_customdata_index=0)
+
+
+def render_zx_cc_defect_rate_trend(finished_df: pd.DataFrame, products: pd.DataFrame) -> None:
+    options = sorted(
+        value
+        for value in finished_df.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique()
+        if value and value.lower() not in {"nan", "none"}
+    )
+    selected_ccs = render_cc_search_form(
+        options,
+        pareto_risk_cc_codes(products),
+        state_key=f"zx_v2_defect_trend_cc_selection_{language_query_code()}",
+        form_key=f"zx_v2_defect_trend_cc_form_{language_query_code()}",
+        container_key="zx_v2_cc_defect_search",
+        title=t("By CC 不良率趋势", "Defect-rate trend by CC"),
+        note=t("默认 Top 20%，可搜索并多选。", "Defaults to the top 20%; searchable and multi-select."),
+        show_header=False,
+    )
+    if not selected_ccs:
+        st.info(t("请至少选择一个 CC。", "Select at least one CC."))
+        return
+    source = finished_df[finished_df["product_code"].astype(str).isin(selected_ccs)].copy()
+    source["trend_day"] = pd.to_datetime(source["date"], errors="coerce", utc=True).dt.tz_convert(None).dt.normalize()
+    trend = source.dropna(subset=["trend_day"]).groupby(["trend_day", "product_code"], as_index=False).agg(
+        qty_inspected=("qty_inspected", "sum"), defect_qty=("defect_qty", "sum")
+    )
+    trend["defect_rate"] = safe_rate(trend["defect_qty"], trend["qty_inspected"])
+    if trend.empty:
+        st.info(t("当前日期范围没有所选 CC 的趋势数据。", "No trend data exists for the selected CCs in the current date range."))
+        return
+    st.markdown(
+        f"<span class='zx-pareto-chip'>{t('当前显示', 'Showing')} {len(selected_ccs)} {t('个 CC', 'CCs')}</span>",
+        unsafe_allow_html=True,
+    )
+    fig = px.line(
+        trend,
+        x="trend_day",
+        y="defect_rate",
+        color="product_code",
+        markers=True,
+        custom_data=["product_code", "qty_inspected", "defect_qty"],
+        labels={"trend_day": t("日期", "Day"), "defect_rate": t("不良率", "Defect Rate"), "product_code": "CC"},
+    )
+    fig.update_traces(
+        line=dict(width=3),
+        marker=dict(size=7, line=dict(width=1, color="#ffffff")),
+        hovertemplate=(
+            "<b>CC %{customdata[0]}</b><br>"
+            f"{t('不良率', 'Defect rate')} <b>%{{y:.2%}}</b><br>"
+            f"{t('检验数', 'Inspected')} %{{customdata[1]:,.0f}}<br>"
+            f"{t('疵点', 'Defects')} %{{customdata[2]:,.0f}}<extra></extra>"
+        ),
+    )
+    fig.update_yaxes(tickformat=".2%", rangemode="tozero")
+    fig.update_xaxes(type="date", tickformat="%b %d", hoverformat="%Y-%m-%d")
+    fig.update_layout(hovermode="x unified", transition=dict(duration=320, easing="cubic-in-out"))
+    plot_chart(fig, 390, key="zx_v2_cc_defect_rate_trend_chart", cc_customdata_index=0)
 
 
 def render_defect_pareto(
@@ -6171,7 +6260,12 @@ def render_product_priority(
     fig.update_xaxes(range=[0, 105])
     fig.update_traces(textposition="outside")
     product_chart_height = max(360, min(900, 120 + len(sorted_view) * 42)) if pareto_mode else 360
-    plot_chart(fig, product_chart_height)
+    plot_chart(
+        fig,
+        product_chart_height,
+        key=f"product_priority_{hashlib.sha1(source_label.encode('utf-8')).hexdigest()[:8]}",
+        cc_customdata_index=0,
+    )
     if show_caption:
         st.caption(
             t(
@@ -7532,6 +7626,243 @@ def render_community_cockpit(
                 render_se_data_summary(finished_df, process_df, source_label)
 
 
+ZX_DKL_INSPECTOR_PATTERNS = (
+    "eric zeng",
+    "wuhao",
+    "daisy",
+    "韩永红",
+    "李秀玲",
+)
+
+
+def field_completeness(frame: pd.DataFrame, columns: list[str]) -> tuple[float, int, int]:
+    if frame.empty or not columns:
+        return 0.0, 0, len(columns)
+    valid_cells = 0
+    total_cells = len(frame) * len(columns)
+    for column in columns:
+        if column not in frame.columns:
+            continue
+        series = frame[column]
+        if pd.api.types.is_numeric_dtype(series) or pd.api.types.is_datetime64_any_dtype(series):
+            valid_cells += int(series.notna().sum())
+        else:
+            valid_cells += int(series.fillna("").astype(str).str.strip().ne("").sum())
+    return valid_cells / total_cells if total_cells else 0.0, valid_cells, total_cells
+
+
+def zx_data_confidence(
+    finished_df: pd.DataFrame,
+    voice_df: pd.DataFrame,
+    jdy_fqc: pd.DataFrame,
+) -> dict[str, object]:
+    definitions = [
+        ("QC", finished_df, ["date", "supplier", "product_code", "qty_inspected", "defect_qty"], 0.50),
+        ("RPM / IV", voice_df, ["product_code", "rpm_now", "intern_voice_count"], 0.20),
+        ("Jiandaoyun FQC / DKL", jdy_fqc, ["date", "inspector", "cc", "sampling_size", "defect_qty", "result"], 0.30),
+    ]
+    sources = []
+    weighted_score = 0.0
+    for name, frame, fields, weight in definitions:
+        completeness, valid_cells, total_cells = field_completeness(frame, fields)
+        weighted_score += completeness * weight
+        missing_fields = [
+            field
+            for field in fields
+            if field not in frame.columns
+            or frame[field].isna().all()
+            or (not pd.api.types.is_numeric_dtype(frame[field]) and frame[field].fillna("").astype(str).str.strip().eq("").all())
+        ]
+        sources.append(
+            {
+                "source": name,
+                "records": len(frame),
+                "completeness": completeness,
+                "valid_cells": valid_cells,
+                "total_cells": total_cells,
+                "loaded_fields": [field for field in fields if field not in missing_fields],
+                "missing_fields": missing_fields,
+                "weight": weight,
+            }
+        )
+    return {"score": weighted_score, "sources": sources}
+
+
+def render_zx_v2_data_map(
+    finished_df: pd.DataFrame,
+    voice_df: pd.DataFrame,
+    incoming_df: pd.DataFrame,
+    jdy_fqc: pd.DataFrame,
+) -> None:
+    confidence = zx_data_confidence(finished_df, voice_df, jdy_fqc)
+    rows = []
+    for item in confidence["sources"]:
+        rows.append(
+            {
+                t("数据源", "Data Source"): item["source"],
+                t("状态", "Status"): t("已接入", "Loaded") if item["records"] else t("缺失", "Missing"),
+                t("记录数", "Records"): item["records"],
+                t("关键字段完整度", "Key-field Completeness"): item["completeness"],
+                t("有效字段单元", "Valid Field Cells"): f"{item['valid_cells']:,} / {item['total_cells']:,}",
+            }
+        )
+    matrix = pd.DataFrame(rows)
+    st.dataframe(
+        matrix,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            t("关键字段完整度", "Key-field Completeness"): st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
+        },
+    )
+    with st.expander(t("展开字段缺口", "Expand Field Gaps"), expanded=False):
+        for item in confidence["sources"]:
+            loaded = ", ".join(item["loaded_fields"]) or t("无", "None")
+            missing = ", ".join(item["missing_fields"]) or t("无", "None")
+            st.markdown(
+                f"**{item['source']}**  \n"
+                f"{t('已接入字段', 'Loaded fields')}: `{loaded}`  \n"
+                f"{t('缺失字段', 'Missing fields')}: `{missing}`"
+            )
+        incoming_status = t("已接入", "Loaded") if not incoming_df.empty else t("缺失", "Missing")
+        st.markdown(f"**IQC / Material**  \n{t('状态', 'Status')}: {incoming_status}")
+
+
+def render_supplier_risk_cluster(supplier_df: pd.DataFrame) -> None:
+    if supplier_df.empty:
+        st.info(t("当前没有供应商风险数据。", "No supplier-risk data is available."))
+        return
+    view = supplier_df.copy()
+    for column in ["production_score", "client_score", "risk_score", "defect_rate", "qty_inspected", "defect_qty"]:
+        view[column] = pd.to_numeric(view.get(column, np.nan), errors="coerce").fillna(0)
+    view["bubble_size"] = view["risk_score"].clip(lower=0.1)
+    view["supplier_label"] = view["supplier"].fillna(view["factory_name"]).astype(str)
+    view["cluster_level"] = view["risk_level"].map(risk_level_text)
+    if len(view) >= 2:
+        labels, _ = deterministic_kmeans(view[["production_score", "client_score"]].to_numpy(dtype=float), cluster_count=3)
+        view["_cluster_id"] = labels
+        rank = view.groupby("_cluster_id")["risk_score"].mean().sort_values().index.tolist()
+        names = {}
+        if rank:
+            names[rank[0]] = t("低风险", "Low Risk")
+            names[rank[-1]] = t("高风险", "High Risk")
+        for cluster_id in rank[1:-1]:
+            names[cluster_id] = t("中风险", "Medium Risk")
+        view["cluster_level"] = view["_cluster_id"].map(names)
+    fig = px.scatter(
+        view,
+        x="production_score",
+        y="client_score",
+        size="bubble_size",
+        color="cluster_level",
+        text="supplier_label",
+        size_max=42,
+        hover_data={
+            "supplier_label": False,
+            "risk_score": ":.1f",
+            "defect_rate": ":.2%",
+            "qty_inspected": ":,.0f",
+            "defect_qty": ":,.0f",
+            "production_score": ":.1f",
+            "client_score": ":.1f",
+            "bubble_size": False,
+        },
+        labels={
+            "production_score": t("生产端风险分", "Production Risk Score"),
+            "client_score": t("客户端风险分", "Client Risk Score"),
+            "cluster_level": t("聚类风险等级", "Cluster Risk Level"),
+            "risk_score": t("供应商综合风险分", "Supplier Composite Risk"),
+            "defect_rate": t("QC不良率", "QC Defect Rate"),
+        },
+        color_discrete_map={
+            t("高风险", "High Risk"): "#e85d68",
+            t("中风险", "Medium Risk"): "#f0a94a",
+            t("低风险", "Low Risk"): "#2aa876",
+            t("严重", "Critical"): "#c01048",
+            t("高", "High"): "#e85d68",
+            t("中", "Medium"): "#f0a94a",
+            t("低", "Low"): "#2aa876",
+        },
+    )
+    fig.update_traces(textposition="top center", marker=dict(opacity=0.86, line=dict(color="#ffffff", width=1.4)))
+    fig.update_xaxes(range=[0, 105])
+    fig.update_yaxes(range=[0, 105])
+    plot_chart(fig, 430, key="zx_v2_supplier_cluster_chart")
+
+
+def normalize_inspector_for_match(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
+
+
+def is_zx_dkl_inspector(value: object) -> bool:
+    normalized = normalize_inspector_for_match(value)
+    return any(pattern in normalized for pattern in ZX_DKL_INSPECTOR_PATTERNS)
+
+
+def render_zx_supplier_defect_trend(finished_df: pd.DataFrame, jdy_fqc: pd.DataFrame) -> None:
+    trend_frames: list[pd.DataFrame] = []
+    online = finished_df[
+        finished_df.get("inspection_stage", pd.Series("", index=finished_df.index)).fillna("").astype(str).str.contains("Online", case=False, na=False)
+    ].copy()
+    if not online.empty:
+        online["month"] = pd.to_datetime(online["date"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+        online_trend = online.dropna(subset=["month"]).groupby("month", as_index=False).agg(
+            inspected=("qty_inspected", "sum"), defects=("defect_qty", "sum")
+        )
+        online_trend["inspection_type"] = t("在线检验", "Online Inspection")
+        trend_frames.append(online_trend)
+
+    if not jdy_fqc.empty:
+        jdy = jdy_fqc.copy()
+        jdy["date"] = pd.to_datetime(jdy["date"], errors="coerce", utc=True).dt.tz_convert(None)
+        jdy["month"] = jdy["date"].dt.to_period("M").dt.to_timestamp()
+        jdy["is_dkl"] = jdy.get("inspector", pd.Series("", index=jdy.index)).map(is_zx_dkl_inspector)
+        if finished_df.get("date", pd.Series(dtype="datetime64[ns]")).notna().any():
+            finished_dates = pd.to_datetime(finished_df["date"], errors="coerce", utc=True).dt.tz_convert(None)
+            start = finished_dates.min()
+            end = finished_dates.max()
+            jdy = jdy[jdy["date"].between(start, end, inclusive="both")]
+        for is_dkl, label in [
+            (False, t("FQC 开箱检", "FQC Unboxing")),
+            (True, "DKL"),
+        ]:
+            subset = jdy[jdy["is_dkl"].eq(is_dkl)].dropna(subset=["month"])
+            if subset.empty:
+                continue
+            summary = subset.groupby("month", as_index=False).agg(
+                inspected=("sampling_size", "sum"), defects=("defect_qty", "sum"), records=("record_id", "count")
+            )
+            summary["inspection_type"] = label
+            trend_frames.append(summary)
+
+    if not trend_frames:
+        st.info(t("当前范围没有在线、FQC 或 DKL 趋势数据。", "No Online, FQC, or DKL trend data is available."))
+        return
+    trend = pd.concat(trend_frames, ignore_index=True, sort=False)
+    trend["defect_rate"] = safe_rate(trend["defects"], trend["inspected"])
+    fig = px.line(
+        trend,
+        x="month",
+        y="defect_rate",
+        color="inspection_type",
+        markers=True,
+        custom_data=["inspection_type", "inspected", "defects"],
+        labels={
+            "month": t("月份", "Month"),
+            "defect_rate": t("不良率", "Defect Rate"),
+            "inspection_type": t("检验类型", "Inspection Type"),
+            "inspected": t("检验量", "Inspected"),
+            "defects": t("疵点数", "Defects"),
+        },
+        color_discrete_map={t("在线检验", "Online Inspection"): "#3341c4", t("FQC 开箱检", "FQC Unboxing"): "#60a5fa", "DKL": "#e85d68"},
+    )
+    fig.update_traces(line=dict(width=3), marker=dict(size=8, line=dict(color="#ffffff", width=1)))
+    fig.update_yaxes(tickformat=".2%", rangemode="tozero")
+    fig.update_xaxes(type="date", tickformat="%Y-%m")
+    fig.update_layout(hovermode="x unified")
+    plot_chart(fig, 390, key="zx_v2_supplier_defect_trend")
+
+
 def render_zx_management_dashboard_v2(
     finished_df: pd.DataFrame,
     voice_df: pd.DataFrame,
@@ -7558,9 +7889,34 @@ def render_zx_management_dashboard_v2(
         width="stretch",
     ) or "overview"
 
+    jdy_fqc = pd.DataFrame()
+    jdy_error = ""
+    if active_page in {"overview", "supplier", "settings"}:
+        jdy_fqc, _, jdy_error = load_tu_jiandaoyun_fqc(int(st.session_state.get("zx_v2_jdy_refresh_token", 0)))
+
     if active_page == "overview":
         st.subheader(t("TU / ZX 问题总览", "TU / ZX Problem Overview"))
         render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df))
+        high_risk_count = int(product_df.get("risk_level", pd.Series(dtype=object)).isin(["High", "Critical"]).sum())
+        confidence = zx_data_confidence(finished_df, voice_df, jdy_fqc)
+        render_kpi_cards(
+            [
+                {
+                    "label": t("High Risk CC 数量", "High-Risk CCs"),
+                    "value": f"{high_risk_count:,}",
+                    "note": t(f"{len(product_df):,} 个已评分 CC", f"{len(product_df):,} scored CCs"),
+                    "level": "high" if high_risk_count else "low",
+                },
+                {
+                    "label": t("数据置信度", "Data Confidence"),
+                    "value": f"{confidence['score']:.0%}",
+                    "note": t("QC 50% · RPM/IV 20% · 简道云 30%", "QC 50% · RPM/IV 20% · Jiandaoyun 30%"),
+                    "level": "low" if confidence["score"] >= 0.90 else "medium" if confidence["score"] >= 0.70 else "high",
+                },
+            ]
+        )
+        if jdy_error:
+            st.caption(t("简道云实时读取失败，本页置信度已使用最近本地快照。", "Live Jiandaoyun read failed; data confidence uses the latest local snapshot."))
         st.markdown(f"### {t('优先问题卡', 'Priority Problem Cards')}")
         alert_cards = product_alert_cards(product_df, limit=4)
         if alert_cards:
@@ -7571,19 +7927,6 @@ def render_zx_management_dashboard_v2(
 
     if active_page == "supplier":
         st.subheader(t("供应商风险", "Supplier Risk"))
-        render_chart_heading(
-            "高风险产品聚类分析",
-            "High-Risk Product Cluster Analysis",
-            "识别供应商产品组合中生产端与客户端同时偏高的 CC。",
-            "Identify CCs with high production and client risk in the supplier portfolio.",
-            "使用 K-means 对完整双端风险数据进行聚类。",
-            "Use K-means on CCs with complete two-sided risk data.",
-            "X 轴为 QC 不良率，Y 轴为 RPM 与 IV 组成的客户端风险指数。",
-            "X is QC defect rate; Y is the client-risk index from RPM and IV.",
-            source_label,
-            "zx_v2_supplier_cluster",
-        )
-        render_zx_high_risk_cluster(product_df, risk_settings, source_label, "zx_v2")
         if not supplier_df.empty:
             supplier_row = supplier_df.iloc[0]
             render_kpi_cards(
@@ -7593,6 +7936,21 @@ def render_zx_management_dashboard_v2(
                     {"label": t("客户端风险", "Client Risk"), "value": f"{supplier_row.get('client_score', 0):.1f}", "note": "RPM + Intern Voice", "level": "medium"},
                 ]
             )
+        render_chart_heading(
+            "供应商 Risk Score 聚类分析",
+            "Supplier Risk-Score Cluster Analysis",
+            "识别生产端与客户端风险同时偏高的供应商。",
+            "Identify suppliers with elevated production and client risk.",
+            "使用 K-means 对供应商生产端风险与客户端风险进行聚类。",
+            "Use K-means to cluster suppliers by production and client risk.",
+            "气泡面积由供应商综合风险分决定，圆越大风险越高。",
+            "Bubble area is driven by the supplier composite score; larger means riskier.",
+            source_label,
+            "zx_v2_supplier_cluster",
+        )
+        render_supplier_risk_cluster(supplier_df)
+        if not supplier_df.empty:
+            supplier_row = supplier_df.iloc[0]
             component_view = pd.DataFrame(
                 {
                     t("风险分项", "Risk Component"): [t("生产端", "Production"), "RPM", "Intern Voice", t("客户端合成", "Client Composite")],
@@ -7611,6 +7969,21 @@ def render_zx_management_dashboard_v2(
             fig.update_yaxes(range=[0, 110])
             fig.update_layout(showlegend=False)
             plot_chart(fig, 390)
+        render_chart_heading(
+            "供应商不良率趋势",
+            "Supplier Defect-Rate Trend",
+            "比较在线检验、FQC 开箱检与 DKL 的月度不良率。",
+            "Compare monthly defect rates for Online, FQC unboxing, and DKL.",
+            "在线检验来自 QC；FQC 与 DKL 来自简道云，DKL 按指定检验人员识别。",
+            "Online uses QC; FQC and DKL use Jiandaoyun, with DKL identified by the specified inspectors.",
+            "不良率 = 疵点数 / 检验量；FQC 不包含 DKL 人员，避免重复计数。",
+            "Defect rate = defects / inspected; FQC excludes DKL inspectors to prevent double counting.",
+            "ZX Online QC + Jiandaoyun ZX FQC",
+            "zx_v2_supplier_trend",
+        )
+        render_zx_supplier_defect_trend(finished_df, jdy_fqc)
+        if jdy_error:
+            st.caption(t("简道云实时读取失败，趋势已回退到最近本地快照。", "Live Jiandaoyun read failed; the trend uses the latest local snapshot."))
         return
 
     if active_page == "product":
@@ -7641,13 +8014,29 @@ def render_zx_management_dashboard_v2(
             "zx_v2_defect",
         )
         render_defect_pareto(finished_df, source_label, show_caption=False, focus_mode=True)
-        render_stage_trend(finished_df, source_label)
+        render_chart_heading(
+            "TU / ZX By CC 不良率趋势",
+            "TU / ZX Defect-Rate Trend by CC",
+            "跟踪指定 CC 的逐日不良率变化。",
+            "Track daily defect-rate movement for selected CCs.",
+            "默认载入综合风险 Top 20% 的 CC，也可搜索任意 CC。",
+            "Defaults to the top 20% of CCs by composite risk and supports searching any CC.",
+            "逐日不良率 = 当日疵点数 / 当日检验数。",
+            "Daily defect rate = daily defects / daily inspected quantity.",
+            source_label,
+            "zx_v2_cc_trend",
+        )
+        render_zx_cc_defect_rate_trend(finished_df, product_df)
         return
 
     if active_page == "settings":
         st.subheader(t("权重与数据设置", "Weights and Data Settings"))
+        st.markdown(f"### {t('数据地图', 'Data Map')}")
+        render_zx_v2_data_map(finished_df, voice_df, incoming_df, jdy_fqc)
+        if jdy_error:
+            st.caption(t("简道云实时读取失败，数据地图已使用最近本地快照。", "Live Jiandaoyun read failed; the data map uses the latest local snapshot."))
+        st.markdown(f"### {t('权重设置', 'Weight Settings')}")
         render_risk_settings_panel()
-        render_scope_data_map("ZX", finished_df, voice_df, incoming_df)
         return
 
     st.subheader(t("TU / ZX Community AI 总结", "TU / ZX Community AI Summary"))
@@ -7795,7 +8184,6 @@ def prepare_product_cluster_view(
     view["client_axis"] = view["client_priority_score"]
     view["production_plot"] = view["production_axis"].fillna(-0.35)
     view["client_plot"] = view["client_axis"].fillna(-8)
-    view["plot_size"] = 11
     view["data_status"] = np.select(
         [
             view["has_production"] & view["has_client"],
@@ -7828,6 +8216,7 @@ def prepare_product_cluster_view(
         ),
         axis=1,
     )
+    view["plot_size"] = view["priority_score"].fillna(0).clip(lower=0.1)
 
     clustered = view[view["has_production"] & view["has_client"]].copy()
     cluster_summary = pd.DataFrame()
@@ -8126,6 +8515,21 @@ with st.sidebar.expander(t("高级筛选", "Advanced Filters"), expanded=True):
     selected_processes: list[str] = []
 
     product_search = st.text_input(t("CC / 款式搜索", "CC / Product Search"), "")
+    focused_cc = str(st.session_state.get("focused_cc", "")).strip()
+    if focused_cc:
+        focus_col, clear_col = st.columns([0.72, 0.28], vertical_alignment="center")
+        focus_col.markdown(
+            f"<span class='zx-pareto-chip'>{t('聚焦 CC', 'Focused CC')} · {html.escape(focused_cc)}</span>",
+            unsafe_allow_html=True,
+        )
+        if clear_col.button(
+            t("全部", "All"),
+            key="clear_global_cc_focus",
+            icon=":material/close:",
+            use_container_width=True,
+        ):
+            st.session_state["focused_cc"] = ""
+            st.rerun()
 risk_settings = current_risk_settings()
 active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
 supplier_prod_w = effective_weight_pct(risk_settings, "supplier_weights", "production_score")
@@ -8146,6 +8550,9 @@ if product_search.strip():
         finished["product_code"].astype(str).str.lower().str.contains(needle, na=False)
         | finished["product_label"].astype(str).str.lower().str.contains(needle, na=False)
     ]
+focused_cc = str(st.session_state.get("focused_cc", "")).strip()
+if focused_cc:
+    finished = finished[finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(focused_cc)]
 
 voice = (
     voice_all[voice_all["factory_code"].isin(selected_factories)].copy()
@@ -8158,6 +8565,8 @@ if product_search.strip() and not voice.empty:
         voice["product_raw"].astype(str).str.lower().str.contains(needle, na=False)
         | voice["product_code"].astype(str).str.lower().str.contains(needle, na=False)
     ]
+if focused_cc and not voice.empty:
+    voice = voice[voice["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(focused_cc)]
 
 incoming = (
     incoming_all[
@@ -8918,6 +9327,7 @@ with tabs[2]:
                 size="plot_size",
                 text="cc_text",
                 size_max=15,
+                custom_data=["product_code"],
                 color_discrete_map=cluster_colors,
                 hover_data={
                     "factory_name": True,
@@ -8994,7 +9404,7 @@ with tabs[2]:
                 showarrow=False,
                 font=dict(size=13, color="#c01048"),
             )
-            plot_chart(fig, 570)
+            plot_chart(fig, 570, key="general_product_cluster_chart", cc_customdata_index=0)
             st.caption(
                 t(
                     f"{product_source}。展示 {coverage['total']}/{len(product_factory_summary)} 个CC；{coverage['clustered']}个双端数据齐全CC参与K-means，{coverage['production_only']}个仅有生产端数据、{coverage['client_only']}个仅有客户端数据仍保留在图中。",
