@@ -1143,7 +1143,7 @@ FACTORIES = {
         "community_name": "TU / Textile",
         "supplier": "中兴",
         "location": "ZX",
-        "finished": Path("ZX Database/ZX成品质量检验数据.xlsx"),
+        "finished": Path("ZX Database/05.7-06.6检验数据.xlsx"),
         "voice": Path("ZX Database/ZX YTD Compare hierarchy.csv"),
         "incoming": Path("ZX Database/ZX 2026年原辅料不合格记录.xlsx"),
         "intern_voice_file": Path("ZX Database/2026 ZX Intern Voice.xlsx"),
@@ -1246,7 +1246,7 @@ JIANDAOYUN_SOURCES = {
     },
 }
 JIANDAOYUN_CACHE_VERSION = 4
-DATA_SCOPE_CACHE_VERSION = 6
+DATA_SCOPE_CACHE_VERSION = 7
 
 LEVEL_COLORS = {
     "Low": "#168a5b",
