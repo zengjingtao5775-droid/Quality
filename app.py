@@ -197,7 +197,7 @@ def sync_language_to_query() -> None:
 
 st.set_page_config(
     page_title=t("迪卡侬NEA质量看板", "Decathlon NEA Quality Dashboard"),
-    page_icon="Q",
+    page_icon="assets/decathlon-logo.png",
     layout="wide",
     initial_sidebar_state="expanded",
 )
