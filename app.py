@@ -536,9 +536,6 @@ st.markdown(
         color: #ffffff;
         box-shadow: 0 10px 20px rgba(36, 52, 167, 0.24);
     }
-    .stTabs [data-baseweb="tab-list"] button:nth-of-type(n+5) {
-        display: none !important;
-    }
     .community-card-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
