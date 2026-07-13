@@ -3209,11 +3209,18 @@ def render_qwen_summary_panel(key: str, title: str, facts: dict) -> None:
     st.markdown(f"### {title}")
     api_key = get_qwen_api_key()
     model = get_secret_value(["QWEN_MODEL"], default="qwen-flash")
-    if not api_key:
-        st.info(t("尚未配置 DASHSCOPE_API_KEY。", "DASHSCOPE_API_KEY is not configured."))
-        return
     facts_json = json.dumps(facts, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-    if st.button(t("生成 AI 总结报告", "Generate AI Summary"), type="primary", key=f"{key}_generate"):
+    generate_clicked = st.button(
+        t("通义千问一键生成报告", "Generate Report with Qwen"),
+        type="primary",
+        icon=":material/auto_awesome:",
+        key=f"{key}_generate",
+        disabled=not bool(api_key),
+    )
+    if not api_key:
+        st.info(t("尚未配置 DASHSCOPE_API_KEY，配置后即可一键生成。", "Configure DASHSCOPE_API_KEY to enable one-click generation."))
+        return
+    if generate_clicked:
         try:
             with st.spinner(t("通义千问正在生成管理总结...", "Qwen is generating the management summary...")):
                 report = generate_qwen_quality_summary(title, facts_json, st.session_state.lang, model, hashlib.sha256(api_key.encode()).hexdigest()[:12], api_key)
@@ -7685,12 +7692,12 @@ tabs = st.tabs(
         t("02 供应商面板", "02 Supplier Panel"),
         t("03 产品面板", "03 Product Panel"),
         t("04 Panel管理", "04 Panel"),
-        t("05 AI总结报告", "05 AI Summary"),
+        t("05 AI分析总结", "05 AI Analysis Summary"),
     ]
 )
 
 with tabs[4]:
-    st.subheader(t("NEA 三个 Community AI 总结", "NEA Three-Community AI Summary"))
+    st.subheader(t("NEA 三个 Community AI 分析总结", "NEA Three-Community AI Analysis Summary"))
     community_facts = []
     for scope_code in ["ZX", "BME_CMW", "SE_TENT"]:
         codes = DASHBOARD_SCOPES[scope_code]["factories"]
