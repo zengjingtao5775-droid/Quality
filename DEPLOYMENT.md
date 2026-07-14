@@ -51,25 +51,25 @@ DIFY_BASE_URL = "https://api.dify.ai/v1"
 
 本 POC 使用仓库内的本地数据文件：
 
-- `ZX Database/`
-- `DS Database/`
-- `JS Database/`
-- `TF Database/`
+- `TU database/ZX Database/`
+- `TU database/GP database/`
+- `TU database/DS database/`
+- `BME Database/`
+- `SE Database/`
 
-ZX Intern Voice 当前使用 `ZX Database/2026 ZX Intern Voice.xlsx`，不再上传原始截图文件夹。
+ZX Intern Voice 当前使用 `TU database/ZX Database/2026 ZX Intern Voice.xlsx`，不再上传原始截图文件夹。
 
 这些文件必须跟随代码一起推送到 GitHub。
 
 ## 简道云 08 报表
 
-`08 简道云报表` 支持两种模式：
+TU 页面简道云数据支持三种模式：
 
-- `实时 API`：Streamlit Cloud 上推荐使用，需要在 Secrets 配置 `JIANDAOYUN_API_KEY`。
-- `本地 CSV`：只适合本地离线演示，读取 `POC_Raw_Data/04_Gloves/ZX_FQC/` 下的导出文件。
+- `部署快照`：默认读取 `TU database/ZX Database/ZX_FQC_normalized_snapshot.csv`，页面加载不访问 API。
+- `实时 API`：仅在用户点击“刷新简道云 API”后读取，需要在 Secrets 配置 `JIANDAOYUN_API_KEY`。
+- `本地原始 CSV`：开发环境可读取 `POC_Raw_Data/04_Gloves/ZX_FQC/` 下的导出文件。
 
-注意：`POC_Raw_Data/` 被 `.gitignore` 忽略，不会推送到 GitHub；线上如果不配置 `JIANDAOYUN_API_KEY`，08 报表不会有本地 CSV 兜底数据。
-
-推荐使用实时 API，而不是把简道云原始明细提交到 GitHub。这样 Streamlit Cloud 每 15 分钟自动刷新缓存，也不会在仓库中复制一份业务数据。
+`POC_Raw_Data/` 仍被 `.gitignore` 忽略；线上使用精简快照作为默认值，避免每次页面刷新都调用实时 API。
 
 ## 08 专业 AI 报告
 
