@@ -196,7 +196,7 @@ def localize_display_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 st.set_page_config(
-    page_title=t("迪卡侬NEA质量看板", "Decathlon NEA Quality Dashboard"),
+    page_title=t("NEA 质量管理平台", "NEA Quality Platform"),
     page_icon="assets/decathlon-logo.png",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1210,8 +1210,8 @@ DASHBOARD_SCOPES = {
     },
     "ZX": {
         "code": "TU",
-        "label_cn": "TU 看板1",
-        "label_en": "TU Dashboard 1",
+        "label_cn": "Textile Unit 看板",
+        "label_en": "Textile Unit Dashboard",
         "subtitle_cn": "Textile community",
         "subtitle_en": "Textile community",
         "factories": ["ZX"],
@@ -1249,6 +1249,20 @@ DASHBOARD_SCOPES = {
         "section_en": "Community",
     },
 }
+
+# Keep every dashboard implementation available while exposing only the page
+# required for the current presentation. Re-enabling a page only requires
+# changing its flag to True; no dashboard code or data source is removed.
+DASHBOARD_VISIBILITY = {
+    "GENERAL": False,
+    "ZX": True,
+    "ZX_V2": False,
+    "BME_CMW": False,
+    "SE_TENT": False,
+}
+DEFAULT_DASHBOARD_SCOPE = "ZX"
+ALL_FILTER_VALUE = "__all__"
+GLOBAL_CC_FILTER_STATE_KEY = "global_cc_filter"
 
 JIANDAOYUN_SOURCES = {
     "ZX_FQC": {
@@ -3470,7 +3484,7 @@ def build_tu_community_ai_fact_pack(
             {"fact_id": "KPI02", "scope": "TU: ZX + GP + DS", "metric": "End-of-line calculated RFT proxy", "value": finite_number(1 - end_defects / end_qty if end_qty else None), "inspected": finite_number(end_qty), "defect_points": finite_number(end_defects), "calculation_note": "1 - defect points / inspected quantity. Defect points may not equal failed pieces, so this is not a proven first-pass piece rate."},
             {"fact_id": "KPI03", "scope": "ZX only", "metric": "Jiandaoyun FQC first-pass RFT YTD", "value": finite_number(fqc_metrics["rft"]), "year": latest_year, "pass": int(fqc_metrics["pass_count"]), "fail": int(fqc_metrics["fail_count"]), "valid_records": int(fqc_metrics["valid_records"])},
             {"fact_id": "KPI04", "scope": "TU: ZX + GP + DS where available", "metric": "RPM R12M (returns per million sold)", "value": finite_number(rpm_r12m), "returns": finite_number(returned_now), "sold": finite_number(sold_now)},
-            {"fact_id": "KPI05", "scope": "ZX only", "metric": "Factory-attributable Intern Voice cases (Before)", "value": iv_current, "prior_year_value": iv_previous, "prior_year_available": previous_available},
+            {"fact_id": "KPI05", "scope": "ZX only", "metric": "Factory pre-sale Intern Voice cases (Before)", "value": iv_current, "prior_year_value": iv_previous, "prior_year_available": previous_available},
         ],
         "product_risks": product_facts,
         "defect_pareto": defect_facts,
@@ -3678,7 +3692,7 @@ def build_tu_guardrailed_report(facts_json: str, language: str) -> str:
             f"| End-of-line 计算RFT参考值 | {percentage(kpis.get('KPI02', {}).get('value'))}（{number(kpis.get('KPI02', {}).get('defect_points'))} 疵点 / {number(kpis.get('KPI02', {}).get('inspected'))} 检验量） | 计算口径为 1-疵点/检验量；疵点不等于失败件，不能作为真实首检件数RFT | [KPI02] |",
             f"| 简道云 FQC 首检 RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))}（{number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} 有效记录） | 未提供正式目标或同期数据，不能判断好坏或趋势 | [KPI03] |",
             f"| RPM R12M | {number(kpis.get('KPI04', {}).get('value'), 2)} / 百万件（{number(kpis.get('KPI04', {}).get('returns'))} 退货 / {number(kpis.get('KPI04', {}).get('sold'))} 销量） | 未提供正式目标或同期数据，仅陈述当前客户退货信号 | [KPI04] |",
-            f"| 工厂责任 IV（Before） | {number(kpis.get('KPI05', {}).get('value'))} | 去年同期数据{'已接入' if kpis.get('KPI05', {}).get('prior_year_available') else '未接入'}，只统计使用前发现的问题 | [KPI05] |",
+            f"| 工厂售前 IV（Before） | {number(kpis.get('KPI05', {}).get('value'))} | 去年同期数据{'已接入' if kpis.get('KPI05', {}).get('prior_year_available') else '未接入'}，只统计使用前发现的问题 | [KPI05] |",
         ]
         product_rows = []
         for index, item in enumerate(products, start=1):
@@ -3726,7 +3740,7 @@ QC 数据截至 {quality.get('latest_qc_date') or '-'}；有 QC 数据的产品 
         f"| End-of-line calculated RFT proxy | {percentage(kpis.get('KPI02', {}).get('value'))} ({number(kpis.get('KPI02', {}).get('defect_points'))} defect points / {number(kpis.get('KPI02', {}).get('inspected'))} inspected) | Calculated as 1 - defect points / inspected; defect points are not failed pieces | [KPI02] |",
         f"| Jiandaoyun FQC first-pass RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))} ({number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} valid records) | No approved target or comparable period supplied | [KPI03] |",
         f"| RPM R12M | {number(kpis.get('KPI04', {}).get('value'), 2)} per million ({number(kpis.get('KPI04', {}).get('returns'))} returns / {number(kpis.get('KPI04', {}).get('sold'))} sold) | Current customer-return signal only; no approved target or comparison supplied | [KPI04] |",
-        f"| Factory-attributable IV cases (Before) | {number(kpis.get('KPI05', {}).get('value'))} | Prior-year comparable data {'available' if kpis.get('KPI05', {}).get('prior_year_available') else 'not available'}; only issues found before use are counted | [KPI05] |",
+        f"| Factory pre-sale IV cases (Before) | {number(kpis.get('KPI05', {}).get('value'))} | Prior-year comparable data {'available' if kpis.get('KPI05', {}).get('prior_year_available') else 'not available'}; only issues found before use are counted | [KPI05] |",
     ]
     product_rows = []
     for index, item in enumerate(products, start=1):
@@ -5193,6 +5207,14 @@ def localize_plotly_figure(fig: go.Figure) -> go.Figure:
     return fig
 
 
+def _set_global_cc_focus(cc: str) -> None:
+    normalized_cc = re.sub(r"\.0$", "", str(cc or "").strip())
+    current_cc = str(st.session_state.get("focused_cc", "")).strip()
+    next_cc = "" if current_cc == normalized_cc else normalized_cc
+    st.session_state["focused_cc"] = next_cc
+    st.session_state[GLOBAL_CC_FILTER_STATE_KEY] = next_cc or ALL_FILTER_VALUE
+
+
 def _sync_cc_focus_from_chart(chart_key: str, customdata_index: int) -> None:
     event = st.session_state.get(chart_key, {})
     points = event.get("selection", {}).get("points", []) if isinstance(event, dict) else []
@@ -5205,8 +5227,7 @@ def _sync_cc_focus_from_chart(chart_key: str, customdata_index: int) -> None:
             and pending.get("cc")
             and now - float(pending.get("timestamp", 0)) <= 1.8
         ):
-            cc = str(pending["cc"])
-            st.session_state["focused_cc"] = "" if st.session_state.get("focused_cc") == cc else cc
+            _set_global_cc_focus(str(pending["cc"]))
         st.session_state.pop("_cc_focus_pending", None)
         return
     customdata = points[0].get("customdata", [])
@@ -5224,7 +5245,7 @@ def _sync_cc_focus_from_chart(chart_key: str, customdata_index: int) -> None:
         and now - float(pending.get("timestamp", 0)) <= 1.8
     )
     if is_double_click:
-        st.session_state["focused_cc"] = "" if st.session_state.get("focused_cc") == cc else cc
+        _set_global_cc_focus(cc)
         st.session_state.pop("_cc_focus_pending", None)
     else:
         st.session_state["_cc_focus_pending"] = {
@@ -5415,7 +5436,7 @@ def render_hero(
     source_count: int,
     scope_key: str = "GENERAL",
 ):
-    hero_title = t("迪卡侬NEA质量看板", "Decathlon NEA Quality Dashboard")
+    hero_title = t("NEA 质量管理平台", "NEA Quality Platform")
     if scope_key != "GENERAL":
         scope_title = scope_display(scope_key)
         if "看板" in scope_title or "dashboard" in scope_title.lower():
@@ -5426,7 +5447,7 @@ def render_hero(
     st.markdown(
         f"""
         <div class="hero">
-            <div class="hero-kicker">NEA QUALITY DASHBOARD</div>
+            <div class="hero-kicker">NEA QUALITY PLATFORM</div>
             <div class="hero-title">{hero_title}</div>
             <div class="hero-meta">
                 <span class="hero-chip">{t('供应商', 'Suppliers')}: {supplier_count}</span>
@@ -5957,7 +5978,7 @@ def render_zx_high_risk_cluster(
             620,
             key=f"{widget_key}_cluster_plot",
             cc_customdata_index=0,
-            enable_box_zoom=True,
+            enable_box_zoom=False,
         )
 
 
@@ -6286,7 +6307,7 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         state_key=f"zx_trend_cc_selection_{language_query_code()}",
         form_key=f"zx_trend_cc_form_{language_query_code()}",
         container_key="zx_cc_search",
-        title=t("By CC 不良率趋势", "Defect-rate trend by CC"),
+        title=t("CC 不良率趋势", "CC Defect-Rate Trend"),
         note=t("默认载入综合风险排名前 20% 的 CC；也可搜索任意 CC 做对比。", "Defaults to the top 20% of CCs by overall risk; search any CC to compare."),
         show_header=False,
     )
@@ -6329,7 +6350,7 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
     )
     fig.update_traces(line=dict(width=3), marker=dict(size=7, line=dict(width=1, color="#ffffff")))
     fig.update_yaxes(tickformat=".1%", rangemode="tozero")
-    fig.update_xaxes(type="date", tickformat="%Y-W%V", hoverformat=t("%Y-%m-%d 当周", "Week of %Y-%m-%d"))
+    fig.update_xaxes(type="date", tickformat="%Y-%m-%d", hoverformat=t("%Y-%m-%d 当周", "Week of %Y-%m-%d"))
     fig.update_layout(hovermode="x unified", transition=dict(duration=320, easing="cubic-in-out"))
     plot_chart(fig, 390, key="zx_cc_defect_rate_trend_chart", cc_customdata_index=0)
 
@@ -6346,7 +6367,7 @@ def render_zx_cc_defect_rate_trend(finished_df: pd.DataFrame, products: pd.DataF
         state_key=f"zx_v2_defect_trend_cc_selection_{language_query_code()}",
         form_key=f"zx_v2_defect_trend_cc_form_{language_query_code()}",
         container_key="zx_v2_cc_defect_search",
-        title=t("By CC 不良率趋势", "Defect-rate trend by CC"),
+        title=t("CC 不良率趋势", "CC Defect-Rate Trend"),
         note=t("默认 Top 20%，可搜索并多选。", "Defaults to the top 20%; searchable and multi-select."),
         show_header=False,
     )
@@ -7736,13 +7757,13 @@ def build_zx_kpi_cards(
             yoy_change = (iv_current - iv_previous) / iv_previous
             iv_trend_direction = "down" if yoy_change < 0 else "up" if yoy_change > 0 else "flat"
             yoy_note = t(
-                f"工厂责任（Before）· 同比下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"工厂责任（Before）· 同比上升 {yoy_change:.1%}" if yoy_change > 0 else "工厂责任（Before）· 同比持平",
-                f"Factory-attributable (Before) · YoY down {abs(yoy_change):.1%}" if yoy_change < 0 else f"Factory-attributable (Before) · YoY up {yoy_change:.1%}" if yoy_change > 0 else "Factory-attributable (Before) · YoY flat",
+                f"工厂售前（Before）· 同比下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"工厂售前（Before）· 同比上升 {yoy_change:.1%}" if yoy_change > 0 else "工厂售前（Before）· 同比持平",
+                f"Factory pre-sale (Before) · YoY down {abs(yoy_change):.1%}" if yoy_change < 0 else f"Factory pre-sale (Before) · YoY up {yoy_change:.1%}" if yoy_change > 0 else "Factory pre-sale (Before) · YoY flat",
             )
         else:
-            yoy_note = t("工厂责任（Before）· 去年同期为 0，无法计算同比", "Factory-attributable (Before) · prior-year period was 0; change is not calculable")
+            yoy_note = t("工厂售前（Before）· 去年同期为 0，无法计算同比", "Factory pre-sale (Before) · prior-year period was 0; change is not calculable")
     else:
-        yoy_note = t("工厂责任（Before）· 去年同期数据未接入", "Factory-attributable (Before) · prior-year comparable data not loaded")
+        yoy_note = t("工厂售前（Before）· 去年同期数据未接入", "Factory pre-sale (Before) · prior-year comparable data not loaded")
 
     return [
         {
@@ -7769,7 +7790,7 @@ def build_zx_kpi_cards(
             "level": "high" if pd.notna(rpm_r12m) and rpm_r12m >= 1_000 else "medium" if pd.notna(rpm_r12m) and rpm_r12m >= 500 else "low",
         },
         {
-            "label": t("工厂责任 IV", "Factory-attributable IV"),
+            "label": t("工厂售前 IV", "Factory Pre-sale IV"),
             "value": f"{iv_current:,}",
             "note": yoy_note,
             "trend_direction": iv_trend_direction,
@@ -7808,7 +7829,7 @@ def render_community_cockpit(
         with readme_col:
             render_readme_popover(
                 "README",
-                t("TU 看板1核心指标", "TU Dashboard 1 Core Metrics"),
+                t("Textile Unit 看板核心指标", "Textile Unit Dashboard Core Metrics"),
                 t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
                 t("FQC RFT = 简道云首次 PASS / 有效结果；FAIL 与重验合格均不计入首次 PASS。End of line RFT = 1 - Excel 疵点数 / 检验数；RPM = 退货数 / 销量 x 1,000,000；IV 同比仅在上年同期数据已接入时计算。", "FQC RFT = Jiandaoyun first-pass records / valid results; FAIL and pass-after-recheck are not first-pass records. End-of-line RFT = 1 - Excel defects / inspected; RPM = returns / sold x 1,000,000; IV YoY is calculated only when prior-year comparable data is loaded."),
@@ -7873,8 +7894,8 @@ def render_community_cockpit(
         render_zx_high_risk_cluster(product_df, risk_settings, zx_risk_source, "zx")
 
         render_chart_heading(
-            "产品风险 Top CC",
-            "Product Risk Top CC",
+            "Top CC 帕累托",
+            "Top CC Pareto",
             "把最需要优先复盘的 CC 排在前面。",
             "Rank the CCs that need review first.",
             "按产品风险分排序，仅保留综合风险排名前 20% 的 CC，并显示其实际风险贡献。",
@@ -7901,8 +7922,8 @@ def render_community_cockpit(
         render_defect_pareto(finished_df, zx_qc_source, show_caption=False, focus_mode=True)
 
         render_chart_heading(
-            "By CC 不良率趋势",
-            "Defect Rate Trend by CC",
+            "CC 不良率趋势",
+            "CC Defect-Rate Trend",
             "按周跟踪综合风险排名前 20% CC 的不良率变化，也支持搜索任意 CC 对比。",
             "Track weekly defect-rate movement for the top 20% of CCs by overall risk and compare any searched CC.",
             "默认载入 80/20 筛出的 Top 20% CC；用户可多选搜索，按周分别绘制。",
@@ -7989,8 +8010,8 @@ def render_community_cockpit(
     render_zx_high_risk_cluster(product_df, risk_settings, source_label, scope_key.lower())
 
     render_chart_heading(
-        "产品风险 Top CC",
-        "Product Risk Top CC",
+        "Top CC 帕累托",
+        "Top CC Pareto",
         "把最需要优先复盘的产品 / 款号排在前面。",
         "Rank the products/styles that need review first.",
         "按产品风险分排序，默认显示 Top 20% CC，也可切换查看全部 CC。",
@@ -8221,8 +8242,8 @@ def render_zx_v2_data_map(
     render_data_gap_matrix(gap_matrix)
     st.caption(
         t(
-            f"与 TU 看板1 使用同一数据地图口径；当前覆盖 {confidence['supplier_count']} 家 TU 供应商。",
-            f"Uses the same data-map definitions as TU Dashboard 1; the current scope covers {confidence['supplier_count']} TU suppliers.",
+            f"与 Textile Unit 看板使用同一数据地图口径；当前覆盖 {confidence['supplier_count']} 家 TU 供应商。",
+            f"Uses the same data-map definitions as the Textile Unit Dashboard; the current scope covers {confidence['supplier_count']} TU suppliers.",
         )
     )
     render_data_confidence_explanation(confidence)
@@ -8562,8 +8583,8 @@ def render_zx_management_dashboard_v2(
     if active_page == "product":
         st.subheader(t("产品风险", "Product Risk"))
         render_chart_heading(
-            "产品风险 Top CC",
-            "Product Risk Top CC",
+            "Top CC 帕累托",
+            "Top CC Pareto",
             "优先查看综合风险最高的 CC。",
             "Prioritize CCs with the highest combined risk.",
             "按产品风险分排序，默认显示 Top 20%，也可查看全部。",
@@ -8588,8 +8609,8 @@ def render_zx_management_dashboard_v2(
         )
         render_defect_pareto(finished_df, source_label, show_caption=False, focus_mode=True)
         render_chart_heading(
-            "TU By CC 不良率趋势",
-            "TU Defect-Rate Trend by CC",
+            "CC 不良率趋势",
+            "CC Defect-Rate Trend",
             "跟踪指定 CC 的逐日不良率变化。",
             "Track daily defect-rate movement for selected CCs.",
             "默认载入综合风险 Top 20% 的 CC，也可搜索任意 CC。",
@@ -8976,13 +8997,15 @@ def build_product_qc_provenance(finished: pd.DataFrame, product_codes: list[str]
 
 def get_active_scope_key() -> str:
     try:
-        value = st.query_params.get("scope", "GENERAL")
+        value = st.query_params.get("scope", DEFAULT_DASHBOARD_SCOPE)
     except Exception:
-        value = "GENERAL"
+        value = DEFAULT_DASHBOARD_SCOPE
     if isinstance(value, list):
-        value = value[0] if value else "GENERAL"
-    value = str(value or "GENERAL")
-    return value if value in DASHBOARD_SCOPES else "GENERAL"
+        value = value[0] if value else DEFAULT_DASHBOARD_SCOPE
+    value = str(value or DEFAULT_DASHBOARD_SCOPE)
+    if value not in DASHBOARD_SCOPES or not DASHBOARD_VISIBILITY.get(value, False):
+        return DEFAULT_DASHBOARD_SCOPE
+    return value
 
 
 def scope_display(scope_key: str) -> str:
@@ -9011,21 +9034,21 @@ def render_scope_nav(active_scope: str) -> None:
             f"</a></div>"
         )
 
+    visible_scope_keys = [
+        scope_key for scope_key in DASHBOARD_SCOPES if DASHBOARD_VISIBILITY.get(scope_key, False)
+    ]
+    visible_nav = "".join(nav_item(scope_key) for scope_key in visible_scope_keys)
     st.sidebar.markdown(
         f"""
         <div class="side-brand">
             <span class="side-logo">D</span>
             <span>
                 <div class="side-brand-title">DECATHLON</div>
-                <div class="side-brand-sub">NEA Quality Dashboard</div>
+                <div class="side-brand-sub">NEA Quality Platform</div>
             </span>
         </div>
-        {nav_item("GENERAL")}
-        <div class="side-section-title">{html.escape(t("Community / 工厂", "Community / Factory"))}</div>
-        {nav_item("ZX")}
-        {nav_item("ZX_V2")}
-        {nav_item("BME_CMW")}
-        {nav_item("SE_TENT")}
+        <div class="side-section-title">{html.escape(t("业务看板", "Business Dashboard"))}</div>
+        {visible_nav}
         <div class="side-current">
             {html.escape(t("当前页面", "Current Page"))}<br>
             <b>{html.escape(scope_display(active_scope))}</b><br>
@@ -9034,6 +9057,18 @@ def render_scope_nav(active_scope: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _reset_cc_and_model_filters(model_filter_key: str) -> None:
+    st.session_state[GLOBAL_CC_FILTER_STATE_KEY] = ALL_FILTER_VALUE
+    st.session_state["focused_cc"] = ""
+    st.session_state[model_filter_key] = ALL_FILTER_VALUE
+
+
+def _sync_cc_dropdown_focus(model_filter_key: str) -> None:
+    selected_cc = str(st.session_state.get(GLOBAL_CC_FILTER_STATE_KEY, ALL_FILTER_VALUE))
+    st.session_state["focused_cc"] = "" if selected_cc == ALL_FILTER_VALUE else selected_cc
+    st.session_state[model_filter_key] = ALL_FILTER_VALUE
 
 
 # ==========================================
@@ -9072,7 +9107,69 @@ if active_scope_key in {"ZX", "ZX_V2"}:
     default_start = max(min_date, dt.date(max_date.year - 1, 7, 1))
 else:
     default_start = max(min_date, max_date - dt.timedelta(days=180))
-with st.sidebar.expander(t("高级筛选", "Advanced Filters"), expanded=True):
+with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
+    supplier_filter_key = f"{active_scope_key}_supplier_filter_single"
+    model_filter_key = f"{active_scope_key}_model_filter"
+
+    supplier_options = sorted(finished_all["supplier"].dropna().astype(str).unique().tolist())
+    supplier_choices = [ALL_FILTER_VALUE, *supplier_options]
+    if st.session_state.get(supplier_filter_key) not in supplier_choices:
+        st.session_state[supplier_filter_key] = ALL_FILTER_VALUE
+    selected_supplier = st.selectbox(
+        t("供应商", "Supplier"),
+        supplier_choices,
+        key=supplier_filter_key,
+        format_func=lambda value: (
+            t("全部供应商", "All Suppliers") if value == ALL_FILTER_VALUE else english_display_text(value)
+        ),
+        on_change=_reset_cc_and_model_filters,
+        args=(model_filter_key,),
+    )
+    selected_suppliers = [] if selected_supplier == ALL_FILTER_VALUE else [selected_supplier]
+
+    cc_option_source = finished_all.copy()
+    if selected_suppliers:
+        cc_option_source = cc_option_source[cc_option_source["supplier"].astype(str).isin(selected_suppliers)]
+    cc_options = sorted(
+        value
+        for value in cc_option_source["product_code"].fillna("").astype(str).str.strip().unique().tolist()
+        if value and value.lower() not in {"nan", "none"}
+    )
+    cc_choices = [ALL_FILTER_VALUE, *cc_options]
+    if st.session_state.get(GLOBAL_CC_FILTER_STATE_KEY) not in cc_choices:
+        st.session_state[GLOBAL_CC_FILTER_STATE_KEY] = ALL_FILTER_VALUE
+        st.session_state["focused_cc"] = ""
+    selected_cc = st.selectbox(
+        "CC",
+        cc_choices,
+        key=GLOBAL_CC_FILTER_STATE_KEY,
+        format_func=lambda value: t("全部 CC", "All CCs") if value == ALL_FILTER_VALUE else value,
+        on_change=_sync_cc_dropdown_focus,
+        args=(model_filter_key,),
+    )
+
+    model_voice_source = voice_all.copy()
+    if selected_suppliers and not model_voice_source.empty and "supplier" in model_voice_source.columns:
+        model_voice_source = model_voice_source[model_voice_source["supplier"].astype(str).isin(selected_suppliers)]
+    if selected_cc != ALL_FILTER_VALUE and not model_voice_source.empty:
+        model_voice_source = model_voice_source[
+            model_voice_source["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(selected_cc)
+        ]
+    model_codes = sorted(
+        value
+        for value in model_voice_source.get("model_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique().tolist()
+        if value and value.lower() not in {"nan", "none"}
+    )
+    model_choices = [ALL_FILTER_VALUE, *model_codes]
+    if st.session_state.get(model_filter_key) not in model_choices:
+        st.session_state[model_filter_key] = ALL_FILTER_VALUE
+    selected_model = st.selectbox(
+        "Model",
+        model_choices,
+        key=model_filter_key,
+        format_func=lambda value: t("全部 Model", "All Models") if value == ALL_FILTER_VALUE else value,
+    )
+
     date_range = st.date_input(
         t("检验日期", "Inspection Date"),
         value=(default_start, max_date),
@@ -9090,19 +9187,8 @@ with st.sidebar.expander(t("高级筛选", "Advanced Filters"), expanded=True):
         stage_options,
         default=stage_options,
     )
-
-    supplier_options = sorted(finished_all["supplier"].dropna().astype(str).unique().tolist())
-    selected_suppliers = st.multiselect(
-        t("供应商", "Suppliers"),
-        supplier_options,
-        default=supplier_options,
-        format_func=english_display_text,
-        key=f"{active_scope_key}_supplier_filter",
-    ) if len(supplier_options) > 1 else supplier_options
-
     selected_processes: list[str] = []
-
-    product_search = st.text_input(t("CC / 款式搜索", "CC / Product Search"), "")
+    product_search = ""
     focused_cc = str(st.session_state.get("focused_cc", "")).strip()
     if focused_cc:
         focus_col, clear_col = st.columns([0.62, 0.38], vertical_alignment="center")
@@ -9117,12 +9203,15 @@ with st.sidebar.expander(t("高级筛选", "Advanced Filters"), expanded=True):
             use_container_width=True,
         ):
             st.session_state["focused_cc"] = ""
+            st.session_state[GLOBAL_CC_FILTER_STATE_KEY] = ALL_FILTER_VALUE
+            st.session_state[model_filter_key] = ALL_FILTER_VALUE
             st.rerun()
         st.caption(t("再次双击同一个 CC，或点击“取消”返回全部。", "Double-click the same CC again, or select Clear to return to all data."))
 risk_settings = current_risk_settings()
 active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
 supplier_prod_w = effective_weight_pct(risk_settings, "supplier_weights", "production_score")
 supplier_client_w = effective_weight_pct(risk_settings, "supplier_weights", "client_score")
+model_ccs: set[str] = set()
 
 finished = finished_all[
     (finished_all["factory_code"].isin(selected_factories))
@@ -9141,9 +9230,27 @@ if product_search.strip():
         finished["product_code"].astype(str).str.lower().str.contains(needle, na=False)
         | finished["product_label"].astype(str).str.lower().str.contains(needle, na=False)
     ]
-focused_cc = str(st.session_state.get("focused_cc", "")).strip()
-if focused_cc:
-    finished = finished[finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(focused_cc)]
+selected_cc_filter = "" if selected_cc == ALL_FILTER_VALUE else selected_cc
+if selected_cc_filter:
+    finished = finished[
+        finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(selected_cc_filter)
+    ]
+if selected_model != ALL_FILTER_VALUE and not voice_all.empty and "model_code" in voice_all.columns:
+    model_ccs = set(
+        voice_all.loc[
+            voice_all["model_code"].fillna("").astype(str).str.strip().eq(selected_model),
+            "product_code",
+        ]
+        .fillna("")
+        .astype(str)
+        .str.replace(r"\.0$", "", regex=True)
+    )
+    model_ccs.discard("")
+    if model_ccs:
+        finished = finished[
+            finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).isin(model_ccs)
+        ]
+focused_cc = selected_cc_filter
 
 voice = (
     voice_all[voice_all["factory_code"].isin(selected_factories)].copy()
@@ -9158,8 +9265,12 @@ if product_search.strip() and not voice.empty:
     ]
 if selected_suppliers and not voice.empty and "supplier" in voice.columns:
     voice = voice[voice["supplier"].astype(str).isin(selected_suppliers)]
-if focused_cc and not voice.empty:
-    voice = voice[voice["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(focused_cc)]
+if selected_cc_filter and not voice.empty:
+    voice = voice[
+        voice["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(selected_cc_filter)
+    ]
+if selected_model != ALL_FILTER_VALUE and not voice.empty and "model_code" in voice.columns:
+    voice = voice[voice["model_code"].fillna("").astype(str).str.strip().eq(selected_model)]
 
 incoming = (
     incoming_all[
@@ -9199,6 +9310,8 @@ pm_finished = finished_all[
     & (finished_all["date"].dt.date >= start_date)
     & (finished_all["date"].dt.date <= end_date)
 ].copy()
+if selected_suppliers:
+    pm_finished = pm_finished[pm_finished["supplier"].astype(str).isin(selected_suppliers)]
 if selected_stages:
     pm_finished = pm_finished[pm_finished["inspection_stage"].isin(selected_stages)]
 if selected_processes:
@@ -9208,6 +9321,14 @@ if product_search.strip():
     pm_finished = pm_finished[
         pm_finished["product_code"].astype(str).str.lower().str.contains(needle, na=False)
         | pm_finished["product_label"].astype(str).str.lower().str.contains(needle, na=False)
+    ]
+if selected_cc_filter:
+    pm_finished = pm_finished[
+        pm_finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(selected_cc_filter)
+    ]
+if selected_model != ALL_FILTER_VALUE and model_ccs:
+    pm_finished = pm_finished[
+        pm_finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).isin(model_ccs)
     ]
 pm_incoming = (
     incoming_all[
