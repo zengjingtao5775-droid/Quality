@@ -732,6 +732,15 @@ st.markdown(
         margin-top: 10px;
         line-height: 1.3;
     }
+    .kpi-trend {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-weight: 850;
+    }
+    .kpi-trend.up {color: #d92d20;}
+    .kpi-trend.down {color: #168a5b;}
+    .kpi-trend.flat {color: #667085;}
     .signal-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
@@ -1182,8 +1191,8 @@ DASHBOARD_SCOPES = {
     },
     "ZX": {
         "code": "TU",
-        "label_cn": "TU / ZX 看板1",
-        "label_en": "TU / ZX Dashboard 1",
+        "label_cn": "TU 看板1",
+        "label_en": "TU Dashboard 1",
         "subtitle_cn": "Textile community",
         "subtitle_en": "Textile community",
         "factories": ["ZX"],
@@ -1769,7 +1778,7 @@ def render_risk_settings_panel() -> dict:
     product_client = 100 - int(product_production)
     client_iv = 100 - int(client_rpm)
 
-    with st.expander(t("更多评分基准", "More scoring benchmarks"), expanded=False):
+    with st.popover(t("高级评分基准", "Advanced scoring benchmarks"), icon=":material/tune:"):
         b1, b2, b3 = st.columns(3)
         qc_benchmark_pct = b1.number_input(
             t("QC 风险基准（%）", "QC risk benchmark (%)"),
@@ -5166,6 +5175,16 @@ def _sync_cc_focus_from_chart(chart_key: str, customdata_index: int) -> None:
     event = st.session_state.get(chart_key, {})
     points = event.get("selection", {}).get("points", []) if isinstance(event, dict) else []
     if not points:
+        pending = st.session_state.get("_cc_focus_pending", {})
+        now = dt.datetime.now().timestamp()
+        if (
+            isinstance(pending, dict)
+            and pending.get("chart_key") == chart_key
+            and pending.get("cc")
+            and now - float(pending.get("timestamp", 0)) <= 1.8
+        ):
+            cc = str(pending["cc"])
+            st.session_state["focused_cc"] = "" if st.session_state.get("focused_cc") == cc else cc
         st.session_state.pop("_cc_focus_pending", None)
         return
     customdata = points[0].get("customdata", [])
@@ -5199,6 +5218,7 @@ def plot_chart(
     key: str | None = None,
     *,
     cc_customdata_index: int | None = None,
+    enable_box_zoom: bool = False,
 ):
     st.session_state["_plot_chart_counter"] = int(st.session_state.get("_plot_chart_counter", 0)) + 1
     prepared_fig = localize_plotly_figure(clean_plotly_hover(fig))
@@ -5223,23 +5243,31 @@ def plot_chart(
         )
     chart_key = key or f"plotly_chart_{st.session_state['_plot_chart_counter']}"
     chart_kwargs = {}
+    chart_config = {"displayModeBar": enable_box_zoom, "responsive": True}
+    if enable_box_zoom:
+        prepared_fig.update_layout(dragmode="zoom")
     if cc_customdata_index is not None:
         prepared_fig.update_layout(clickmode="event+select")
+        chart_config["doubleClick"] = False
         chart_kwargs = {
             "on_select": lambda: _sync_cc_focus_from_chart(chart_key, cc_customdata_index),
             "selection_mode": "points",
         }
     st.plotly_chart(
         chart_layout(prepared_fig, height),
-        config={"displayModeBar": False, "responsive": True},
+        config=chart_config,
         key=chart_key,
         **chart_kwargs,
     )
     if cc_customdata_index is not None:
         st.caption(
             t(
-                "双击 CC 自动聚焦；再次双击同一个 CC 返回全局。",
-                "Double-click a CC to focus; double-click the same CC again to return to the global view.",
+                "拖动画框可放大；双击 CC 自动聚焦，再次双击同一个 CC 返回全局。"
+                if enable_box_zoom
+                else "双击 CC 自动聚焦；再次双击同一个 CC 返回全局。",
+                "Drag a box to zoom; double-click a CC to focus, then double-click it again to return to the global view."
+                if enable_box_zoom
+                else "Double-click a CC to focus; double-click the same CC again to return to the global view.",
             )
         )
 
@@ -5441,11 +5469,18 @@ def render_kpi_cards(cards: list[dict[str, str]]):
         label = html.escape(english_display_text(card["label"]))
         value = html.escape(english_display_text(card["value"]))
         note = html.escape(english_display_text(card["note"]))
+        trend_direction = str(card.get("trend_direction", "")).strip()
+        trend_symbol = {"up": "↑", "down": "↓", "flat": "→"}.get(trend_direction, "")
+        trend_html = (
+            f'<span class="kpi-trend {trend_direction}">{trend_symbol} {note}</span>'
+            if trend_direction
+            else note
+        )
         html_parts.append(
             f"<div class=\"kpi-card {card.get('level', 'medium')}\">"
             f"<div class=\"kpi-label\">{label}</div>"
             f"<div class=\"kpi-value\">{value}</div>"
-            f"<div class=\"kpi-note\">{note}</div>"
+            f"<div class=\"kpi-note\">{trend_html}</div>"
             f"</div>"
         )
     html_parts.append("</div>")
@@ -5859,7 +5894,13 @@ def render_zx_high_risk_cluster(
         bgcolor="rgba(255,255,255,0.72)",
     )
     with st.container(key="zx_cluster_chart"):
-        plot_chart(fig, 620, key=f"{widget_key}_cluster_plot", cc_customdata_index=0)
+        plot_chart(
+            fig,
+            620,
+            key=f"{widget_key}_cluster_plot",
+            cc_customdata_index=0,
+            enable_box_zoom=True,
+        )
 
 
 def community_source_label(scope_key: str) -> str:
@@ -6195,14 +6236,15 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         st.info(t("请至少选择一个 CC。", "Select at least one CC."))
         return
     trend_source = finished_df[finished_df["product_code"].astype(str).isin(selected_ccs)].copy()
-    trend_source["trend_day"] = (
+    trend_source["trend_week"] = (
         pd.to_datetime(trend_source["date"], errors="coerce", utc=True)
         .dt.tz_convert(None)
-        .dt.normalize()
+        .dt.to_period("W")
+        .dt.start_time
     )
     trend = (
-        trend_source.dropna(subset=["trend_day"])
-        .groupby(["trend_day", "product_code"], as_index=False)
+        trend_source.dropna(subset=["trend_week"])
+        .groupby(["trend_week", "product_code"], as_index=False)
         .agg(qty_inspected=("qty_inspected", "sum"), defect_qty=("defect_qty", "sum"))
     )
     trend["defect_rate"] = safe_rate(trend["defect_qty"], trend["qty_inspected"])
@@ -6215,21 +6257,21 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
     )
     fig = px.line(
         trend,
-        x="trend_day",
+        x="trend_week",
         y="defect_rate",
         color="product_code",
         markers=True,
         custom_data=["product_code", "qty_inspected", "defect_qty"],
         hover_data={"qty_inspected": ":,.0f", "defect_qty": ":,.0f"},
         labels={
-            "trend_day": t("日期", "Day"),
+            "trend_week": t("周", "Week"),
             "defect_rate": t("不良率", "Defect Rate"),
             "product_code": "CC",
         },
     )
     fig.update_traces(line=dict(width=3), marker=dict(size=7, line=dict(width=1, color="#ffffff")))
     fig.update_yaxes(tickformat=".1%", rangemode="tozero")
-    fig.update_xaxes(type="date", tickformat="%b %d", hoverformat="%Y-%m-%d")
+    fig.update_xaxes(type="date", tickformat="%Y-W%V", hoverformat=t("%Y-%m-%d 当周", "Week of %Y-%m-%d"))
     fig.update_layout(hovermode="x unified", transition=dict(duration=320, easing="cubic-in-out"))
     plot_chart(fig, 390, key="zx_cc_defect_rate_trend_chart", cc_customdata_index=0)
 
@@ -6819,7 +6861,20 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         median_rate = worker_view["defect_rate_numeric"].median()
         worker_view["skill_level"] = np.where(worker_view["defect_rate_numeric"] > median_rate, medium_label, ordinary_label)
 
-    counts = worker_view["skill_level"].value_counts()
+    high_worker_names = (
+        worker_view[worker_view["skill_level"].eq(high_label)]
+        .sort_values(["defect_risk_axis", "defect_qty"], ascending=False)
+        .drop_duplicates("worker_team")
+        .head(5)["worker_team"]
+        .astype(str)
+        .tolist()
+    )
+    worker_view.loc[
+        worker_view["skill_level"].eq(high_label)
+        & ~worker_view["worker_team"].astype(str).isin(high_worker_names),
+        "skill_level",
+    ] = medium_label
+    counts = worker_view.groupby("skill_level")["worker_team"].nunique()
     skill_options = [ordinary_label, high_label, medium_label, skilled_label]
     metric_cols = st.columns(4)
     for col, label in zip(metric_cols, skill_options):
@@ -7579,9 +7634,11 @@ def build_zx_kpi_cards(
         else pd.Series(np.nan, index=iv_voice.index)
     )
     iv_previous = float(pd.to_numeric(iv_previous_source, errors="coerce").sum(min_count=1)) if not iv_voice.empty else np.nan
+    iv_trend_direction = ""
     if previous_available and pd.notna(iv_previous):
         if iv_previous > 0:
             yoy_change = (iv_current - iv_previous) / iv_previous
+            iv_trend_direction = "down" if yoy_change < 0 else "up" if yoy_change > 0 else "flat"
             yoy_note = t(
                 f"同比下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"同比上升 {yoy_change:.1%}" if yoy_change > 0 else "同比持平",
                 f"YoY down {abs(yoy_change):.1%}" if yoy_change < 0 else f"YoY up {yoy_change:.1%}" if yoy_change > 0 else "YoY flat",
@@ -7620,6 +7677,7 @@ def build_zx_kpi_cards(
             "label": t("IV 数量", "IV Cases"),
             "value": f"{iv_current:,}",
             "note": yoy_note,
+            "trend_direction": iv_trend_direction,
             "level": "high" if previous_available and pd.notna(iv_previous) and iv_current > iv_previous else "low",
         },
     ]
@@ -7655,7 +7713,7 @@ def render_community_cockpit(
         with readme_col:
             render_readme_popover(
                 "README",
-                t("TU / ZX 核心指标", "TU / ZX Core Metrics"),
+                t("TU 看板1核心指标", "TU Dashboard 1 Core Metrics"),
                 t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
                 t("FQC RFT = 简道云首次 PASS / 有效结果；FAIL 与重验合格均不计入首次 PASS。End of line RFT = 1 - Excel 疵点数 / 检验数；RPM = 退货数 / 销量 x 1,000,000；IV 同比仅在上年同期数据已接入时计算。", "FQC RFT = Jiandaoyun first-pass records / valid results; FAIL and pass-after-recheck are not first-pass records. End-of-line RFT = 1 - Excel defects / inspected; RPM = returns / sold x 1,000,000; IV YoY is calculated only when prior-year comparable data is loaded."),
@@ -7750,12 +7808,12 @@ def render_community_cockpit(
         render_chart_heading(
             "By CC 不良率趋势",
             "Defect Rate Trend by CC",
-            "按天跟踪综合风险排名前 20% CC 的不良率变化，也支持搜索任意 CC 对比。",
-            "Track daily defect-rate movement for the top 20% of CCs by overall risk and compare any searched CC.",
-            "默认载入 80/20 筛出的 Top 20% CC；用户可多选搜索，按天分别绘制。",
-            "Default to the top 20% CCs selected by the 80/20 focus; users can search multiple CCs and plot each day.",
-            "每个 CC 的日不良率 = 该 CC 当日疵点数 / 该 CC 当日检验数；hover 同时显示疵点数和检验数。",
-            "Daily defect rate per CC = daily defects / daily inspected quantity; hover also shows defects and inspected quantity.",
+            "按周跟踪综合风险排名前 20% CC 的不良率变化，也支持搜索任意 CC 对比。",
+            "Track weekly defect-rate movement for the top 20% of CCs by overall risk and compare any searched CC.",
+            "默认载入 80/20 筛出的 Top 20% CC；用户可多选搜索，按周分别绘制。",
+            "Default to the top 20% CCs selected by the 80/20 focus; users can search multiple CCs and plot each week.",
+            "每个 CC 的周不良率 = 该 CC 当周疵点数 / 该 CC 当周检验数；hover 同时显示疵点数和检验数。",
+            "Weekly defect rate per CC = weekly defects / weekly inspected quantity; hover also shows defects and inspected quantity.",
             zx_qc_source,
             "zx_trend",
         )
@@ -8059,36 +8117,20 @@ def render_zx_v2_data_map(
     jdy_fqc: pd.DataFrame,
 ) -> None:
     confidence = zx_data_confidence(finished_df, voice_df, jdy_fqc)
-    rows = []
-    for item in confidence["sources"]:
-        rows.append(
-            {
-                t("数据源", "Data Source"): item["source"],
-                t("状态", "Status"): t("已接入", "Loaded") if item["records"] else t("缺失", "Missing"),
-                t("记录数", "Records"): item["records"],
-                t("关键字段完整度", "Key-field Completeness"): item["completeness"],
-                t("权重", "Weight"): item["weight"],
-                t("得分贡献", "Score Contribution"): item["contribution"],
-                t("有效字段单元", "Valid Field Cells"): f"{item['valid_cells']:,} / {item['total_cells']:,}",
-            }
-        )
-    matrix = pd.DataFrame(rows)
-    st.dataframe(
-        matrix,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            t("关键字段完整度", "Key-field Completeness"): st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
-            t("权重", "Weight"): st.column_config.NumberColumn(format="percent"),
-            t("得分贡献", "Score Contribution"): st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
-        },
+    gap_matrix = build_data_gap_matrix(
+        finished_df,
+        voice_df,
+        incoming_df,
+        DASHBOARD_SCOPES["ZX_V2"]["factories"],
     )
+    render_data_gap_matrix(gap_matrix)
     st.caption(
         t(
-            f"数据置信度 = Product Check 关键字段完整度 x 70% + RPM/IV 完整度与供应商覆盖率 x 15% + 简道云 FQC/DKL 完整度 x 15%。当前覆盖 {confidence['supplier_count']} 家 TU 供应商。",
-            f"Data confidence = Product Check key-field completeness x 70% + RPM/IV completeness and supplier coverage x 15% + Jiandaoyun FQC/DKL completeness x 15%. The current scope covers {confidence['supplier_count']} TU suppliers.",
+            f"与 TU 看板1 使用同一数据地图口径；当前覆盖 {confidence['supplier_count']} 家 TU 供应商。",
+            f"Uses the same data-map definitions as TU Dashboard 1; the current scope covers {confidence['supplier_count']} TU suppliers.",
         )
     )
+    render_data_confidence_explanation(confidence)
     with st.expander(t("展开字段缺口", "Expand Field Gaps"), expanded=False):
         for item in confidence["sources"]:
             loaded = ", ".join(item["loaded_fields"]) or t("无", "None")
@@ -8472,7 +8514,9 @@ def render_zx_management_dashboard_v2(
         if jdy_error:
             st.caption(t("简道云实时读取失败，数据地图已使用最近本地快照。", "Live Jiandaoyun read failed; the data map uses the latest local snapshot."))
         st.markdown(f"### {t('风险权重', 'Risk Weights')}")
-        render_risk_settings_panel()
+        st.caption(t("默认显示当前方案；只有需要调整时再展开。", "The current profile stays compact; expand only when adjustments are needed."))
+        with st.expander(t("调整风险权重", "Adjust Risk Weights"), expanded=False):
+            render_risk_settings_panel()
         return
 
     st.subheader(t("TU Community AI 总结", "TU Community AI Summary"))
