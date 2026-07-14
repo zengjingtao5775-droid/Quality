@@ -7660,33 +7660,33 @@ def build_zx_kpi_cards(
         monthly_eol = monthly_eol.groupby("month_period", as_index=False).agg(
             qty=("qty_inspected", "sum"), defects=("defect_qty", "sum")
         )
-        monthly_eol["defect_rate"] = safe_rate(monthly_eol["defects"], monthly_eol["qty"])
+        monthly_eol["rft"] = 1 - safe_rate(monthly_eol["defects"], monthly_eol["qty"])
         latest_period = monthly_eol["month_period"].max()
         previous_period = latest_period - 1
         current_rows = monthly_eol[monthly_eol["month_period"].eq(latest_period)]
         previous_rows = monthly_eol[monthly_eol["month_period"].eq(previous_period)]
         if not current_rows.empty and not previous_rows.empty:
-            current_rate = float(current_rows.iloc[0]["defect_rate"])
-            previous_rate = float(previous_rows.iloc[0]["defect_rate"])
-            if previous_rate > 0:
-                rate_change = (current_rate - previous_rate) / previous_rate
-                eol_trend_direction = "down" if rate_change < 0 else "up" if rate_change > 0 else "flat"
+            current_rft = float(current_rows.iloc[0]["rft"])
+            previous_rft = float(previous_rows.iloc[0]["rft"])
+            if previous_rft > 0:
+                rft_change = (current_rft - previous_rft) / previous_rft
+                eol_trend_direction = "down" if rft_change < 0 else "up" if rft_change > 0 else "flat"
                 eol_trend_note = t(
-                    f"不良率环比下降 {abs(rate_change):.1%}" if rate_change < 0 else f"不良率环比上升 {rate_change:.1%}" if rate_change > 0 else "不良率环比持平",
-                    f"Defect rate MoM down {abs(rate_change):.1%}" if rate_change < 0 else f"Defect rate MoM up {rate_change:.1%}" if rate_change > 0 else "Defect rate MoM flat",
+                    f"RFT 环比下降 {abs(rft_change):.1%}" if rft_change < 0 else f"RFT 环比上升 {rft_change:.1%}" if rft_change > 0 else "RFT 环比持平",
+                    f"RFT MoM down {abs(rft_change):.1%}" if rft_change < 0 else f"RFT MoM up {rft_change:.1%}" if rft_change > 0 else "RFT MoM flat",
                 ) + t(
-                    f" · 本月 {current_rate:.2%} / 上月 {previous_rate:.2%}",
-                    f" · current {current_rate:.2%} / previous {previous_rate:.2%}",
+                    f" · 本月 {current_rft:.2%} / 上月 {previous_rft:.2%}",
+                    f" · current {current_rft:.2%} / previous {previous_rft:.2%}",
                 )
-            elif current_rate > 0:
+            elif current_rft > 0:
                 eol_trend_direction = "up"
                 eol_trend_note = t(
-                    f"不良率环比上升 · 本月 {current_rate:.2%} / 上月 0.00%",
-                    f"Defect rate MoM up · current {current_rate:.2%} / previous 0.00%",
+                    f"RFT 环比上升 · 本月 {current_rft:.2%} / 上月 0.00%",
+                    f"RFT MoM up · current {current_rft:.2%} / previous 0.00%",
                 )
             else:
                 eol_trend_direction = "flat"
-                eol_trend_note = t("不良率环比持平 · 本月与上月均为 0", "Defect rate MoM flat · current and previous months are both 0")
+                eol_trend_note = t("RFT 环比持平 · 本月与上月均为 0", "RFT MoM flat · current and previous months are both 0")
 
     if not isinstance(jdy_fqc, pd.DataFrame):
         jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
