@@ -740,6 +740,8 @@ st.markdown(
     }
     .kpi-trend.up {color: #d92d20;}
     .kpi-trend.down {color: #168a5b;}
+    .kpi-trend.bad {color: #d92d20;}
+    .kpi-trend.good {color: #168a5b;}
     .kpi-trend.flat {color: #667085;}
     .signal-grid {
         display: grid;
@@ -5490,9 +5492,10 @@ def render_kpi_cards(cards: list[dict[str, str]]):
         value = html.escape(english_display_text(card["value"]))
         note = html.escape(english_display_text(card["note"]))
         trend_direction = str(card.get("trend_direction", "")).strip()
+        trend_tone = str(card.get("trend_tone", trend_direction)).strip()
         trend_symbol = {"up": "↑", "down": "↓", "flat": "→"}.get(trend_direction, "")
         trend_html = (
-            f'<span class="kpi-trend {trend_direction}">{trend_symbol} {note}</span>'
+            f'<span class="kpi-trend {trend_tone}">{trend_symbol} {note}</span>'
             if trend_direction
             else note
         )
@@ -7753,6 +7756,7 @@ def build_zx_kpi_cards(
             "value": pct(eol_rft) if pd.notna(eol_rft) else "N/A",
             "note": eol_trend_note,
             "trend_direction": eol_trend_direction,
+            "trend_tone": "bad" if eol_trend_direction == "down" else "good" if eol_trend_direction == "up" else "flat",
             "level": "high" if pd.notna(eol_rft) and eol_rft < 0.96 else "medium" if pd.notna(eol_rft) and eol_rft < 0.98 else "low",
         },
         {
