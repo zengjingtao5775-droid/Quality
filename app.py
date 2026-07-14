@@ -7649,6 +7649,44 @@ def build_zx_kpi_cards(
     eol_qty = float(pd.to_numeric(end_qc.get("qty_inspected", 0), errors="coerce").fillna(0).sum())
     eol_defects = float(pd.to_numeric(end_qc.get("defect_qty", 0), errors="coerce").fillna(0).sum())
     eol_rft = 1 - eol_defects / eol_qty if eol_qty else np.nan
+    eol_trend_direction = ""
+    eol_trend_note = t(
+        f"Excel · 检验 {compact_num(eol_qty)} / 疵点 {compact_num(eol_defects)}",
+        f"Excel · inspected {compact_num(eol_qty)} / defects {compact_num(eol_defects)}",
+    )
+    if not end_qc.empty and end_qc.get("date", pd.Series(dtype="datetime64[ns]")).notna().any():
+        monthly_eol = end_qc.dropna(subset=["date"]).copy()
+        monthly_eol["month_period"] = pd.to_datetime(monthly_eol["date"], errors="coerce").dt.to_period("M")
+        monthly_eol = monthly_eol.groupby("month_period", as_index=False).agg(
+            qty=("qty_inspected", "sum"), defects=("defect_qty", "sum")
+        )
+        monthly_eol["defect_rate"] = safe_rate(monthly_eol["defects"], monthly_eol["qty"])
+        latest_period = monthly_eol["month_period"].max()
+        previous_period = latest_period - 1
+        current_rows = monthly_eol[monthly_eol["month_period"].eq(latest_period)]
+        previous_rows = monthly_eol[monthly_eol["month_period"].eq(previous_period)]
+        if not current_rows.empty and not previous_rows.empty:
+            current_rate = float(current_rows.iloc[0]["defect_rate"])
+            previous_rate = float(previous_rows.iloc[0]["defect_rate"])
+            if previous_rate > 0:
+                rate_change = (current_rate - previous_rate) / previous_rate
+                eol_trend_direction = "down" if rate_change < 0 else "up" if rate_change > 0 else "flat"
+                eol_trend_note = t(
+                    f"不良率环比下降 {abs(rate_change):.1%}" if rate_change < 0 else f"不良率环比上升 {rate_change:.1%}" if rate_change > 0 else "不良率环比持平",
+                    f"Defect rate MoM down {abs(rate_change):.1%}" if rate_change < 0 else f"Defect rate MoM up {rate_change:.1%}" if rate_change > 0 else "Defect rate MoM flat",
+                ) + t(
+                    f" · 本月 {current_rate:.2%} / 上月 {previous_rate:.2%}",
+                    f" · current {current_rate:.2%} / previous {previous_rate:.2%}",
+                )
+            elif current_rate > 0:
+                eol_trend_direction = "up"
+                eol_trend_note = t(
+                    f"不良率环比上升 · 本月 {current_rate:.2%} / 上月 0.00%",
+                    f"Defect rate MoM up · current {current_rate:.2%} / previous 0.00%",
+                )
+            else:
+                eol_trend_direction = "flat"
+                eol_trend_note = t("不良率环比持平 · 本月与上月均为 0", "Defect rate MoM flat · current and previous months are both 0")
 
     if not isinstance(jdy_fqc, pd.DataFrame):
         jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
@@ -7713,10 +7751,8 @@ def build_zx_kpi_cards(
         {
             "label": t("End of line RFT", "End-of-line RFT"),
             "value": pct(eol_rft) if pd.notna(eol_rft) else "N/A",
-            "note": t(
-                f"Excel · 检验 {compact_num(eol_qty)} / 疵点 {compact_num(eol_defects)}",
-                f"Excel · inspected {compact_num(eol_qty)} / defects {compact_num(eol_defects)}",
-            ),
+            "note": eol_trend_note,
+            "trend_direction": eol_trend_direction,
             "level": "high" if pd.notna(eol_rft) and eol_rft < 0.96 else "medium" if pd.notna(eol_rft) and eol_rft < 0.98 else "low",
         },
         {
