@@ -1086,6 +1086,23 @@ st.markdown(
         background: #3341c4;
         box-shadow: 0 0 0 4px rgba(51, 65, 196, 0.10);
     }
+    section[data-testid="stSidebar"] .zx-pareto-chip {
+        color: #172033 !important;
+        background: #ffffff !important;
+        border-color: #9aa8ef !important;
+        box-shadow: 0 5px 14px rgba(10, 25, 92, 0.22);
+    }
+    section[data-testid="stSidebar"] .st-key-clear_global_cc_focus button {
+        background: #ffffff !important;
+        border: 2px solid #9aa8ef !important;
+        color: #1f2f92 !important;
+        min-height: 42px;
+        font-weight: 850 !important;
+    }
+    section[data-testid="stSidebar"] .st-key-clear_global_cc_focus button * {
+        color: #1f2f92 !important;
+        fill: #1f2f92 !important;
+    }
     @keyframes zxChartEnter {
         from {opacity: 0; transform: translateY(8px);}
         to {opacity: 1; transform: translateY(0);}
@@ -1255,7 +1272,7 @@ JIANDAOYUN_SOURCES = {
     },
 }
 JIANDAOYUN_CACHE_VERSION = 5
-DATA_SCOPE_CACHE_VERSION = 13
+DATA_SCOPE_CACHE_VERSION = 14
 
 LEVEL_COLORS = {
     "Low": "#168a5b",
@@ -2610,6 +2627,7 @@ def load_customer_voice(
                 "model_code": raw_intern.get("MODEL", pd.Series("", index=raw_intern.index)).astype(str),
                 "product_name": raw_intern.get("款式颜色 Model Name", pd.Series("", index=raw_intern.index)).fillna("").astype(str),
                 "quality_issue": raw_intern.get("质量问题", pd.Series("", index=raw_intern.index)).fillna("").astype(str),
+                "responsibility_stage": raw_intern.get("Before/After", pd.Series("", index=raw_intern.index)).fillna("").astype(str),
                 "feedback_date": pd.to_datetime(raw_intern.get("反馈日期", pd.Series(pd.NaT, index=raw_intern.index)), errors="coerce"),
             }
         )
@@ -2638,6 +2656,8 @@ def load_customer_voice(
             intern["product_name"] = "Intern Voice"
         if "model_code" not in intern.columns:
             intern["model_code"] = ""
+        responsibility_stage = intern.get("responsibility_stage", pd.Series("", index=intern.index)).fillna("").astype(str).str.strip().str.casefold()
+        intern["is_factory_issue"] = responsibility_stage.eq("before")
         feedback_dates = pd.to_datetime(intern.get("feedback_date", pd.Series(pd.NaT, index=intern.index)), errors="coerce")
         valid_feedback_dates = feedback_dates.dropna()
         if not valid_feedback_dates.empty:
@@ -2645,13 +2665,13 @@ def load_customer_voice(
             previous_cutoff = reference_date - pd.DateOffset(years=1)
             current_mask = feedback_dates.dt.year.eq(reference_date.year) & feedback_dates.le(reference_date)
             previous_mask = feedback_dates.dt.year.eq(reference_date.year - 1) & feedback_dates.le(previous_cutoff)
-            previous_year_available = bool(feedback_dates.dt.year.eq(reference_date.year - 1).any())
+            previous_year_available = bool((feedback_dates.dt.year.eq(reference_date.year - 1) & intern["is_factory_issue"]).any())
         else:
             current_mask = pd.Series(True, index=intern.index)
             previous_mask = pd.Series(False, index=intern.index)
             previous_year_available = False
-        intern["iv_current_case"] = intern["case_id"].where(current_mask)
-        intern["iv_previous_case"] = intern["case_id"].where(previous_mask)
+        intern["iv_current_case"] = intern["case_id"].where(current_mask & intern["is_factory_issue"])
+        intern["iv_previous_case"] = intern["case_id"].where(previous_mask & intern["is_factory_issue"])
         intern_summary = (
             intern[intern["product_code"] != ""]
             .groupby("product_code", as_index=False)
@@ -3448,7 +3468,7 @@ def build_tu_community_ai_fact_pack(
             {"fact_id": "KPI02", "scope": "TU: ZX + GP + DS", "metric": "End-of-line calculated RFT proxy", "value": finite_number(1 - end_defects / end_qty if end_qty else None), "inspected": finite_number(end_qty), "defect_points": finite_number(end_defects), "calculation_note": "1 - defect points / inspected quantity. Defect points may not equal failed pieces, so this is not a proven first-pass piece rate."},
             {"fact_id": "KPI03", "scope": "ZX only", "metric": "Jiandaoyun FQC first-pass RFT YTD", "value": finite_number(fqc_metrics["rft"]), "year": latest_year, "pass": int(fqc_metrics["pass_count"]), "fail": int(fqc_metrics["fail_count"]), "valid_records": int(fqc_metrics["valid_records"])},
             {"fact_id": "KPI04", "scope": "TU: ZX + GP + DS where available", "metric": "RPM R12M (returns per million sold)", "value": finite_number(rpm_r12m), "returns": finite_number(returned_now), "sold": finite_number(sold_now)},
-            {"fact_id": "KPI05", "scope": "ZX only", "metric": "Intern Voice cases", "value": iv_current, "prior_year_value": iv_previous, "prior_year_available": previous_available},
+            {"fact_id": "KPI05", "scope": "ZX only", "metric": "Factory-attributable Intern Voice cases (Before)", "value": iv_current, "prior_year_value": iv_previous, "prior_year_available": previous_available},
         ],
         "product_risks": product_facts,
         "defect_pareto": defect_facts,
@@ -3656,7 +3676,7 @@ def build_tu_guardrailed_report(facts_json: str, language: str) -> str:
             f"| End-of-line 计算RFT参考值 | {percentage(kpis.get('KPI02', {}).get('value'))}（{number(kpis.get('KPI02', {}).get('defect_points'))} 疵点 / {number(kpis.get('KPI02', {}).get('inspected'))} 检验量） | 计算口径为 1-疵点/检验量；疵点不等于失败件，不能作为真实首检件数RFT | [KPI02] |",
             f"| 简道云 FQC 首检 RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))}（{number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} 有效记录） | 未提供正式目标或同期数据，不能判断好坏或趋势 | [KPI03] |",
             f"| RPM R12M | {number(kpis.get('KPI04', {}).get('value'), 2)} / 百万件（{number(kpis.get('KPI04', {}).get('returns'))} 退货 / {number(kpis.get('KPI04', {}).get('sold'))} 销量） | 未提供正式目标或同期数据，仅陈述当前客户退货信号 | [KPI04] |",
-            f"| IV 数量 | {number(kpis.get('KPI05', {}).get('value'))} | 去年同期数据{'已接入' if kpis.get('KPI05', {}).get('prior_year_available') else '未接入'}，不能在缺少对比时判断趋势 | [KPI05] |",
+            f"| 工厂责任 IV（Before） | {number(kpis.get('KPI05', {}).get('value'))} | 去年同期数据{'已接入' if kpis.get('KPI05', {}).get('prior_year_available') else '未接入'}，只统计使用前发现的问题 | [KPI05] |",
         ]
         product_rows = []
         for index, item in enumerate(products, start=1):
@@ -3704,7 +3724,7 @@ QC 数据截至 {quality.get('latest_qc_date') or '-'}；有 QC 数据的产品 
         f"| End-of-line calculated RFT proxy | {percentage(kpis.get('KPI02', {}).get('value'))} ({number(kpis.get('KPI02', {}).get('defect_points'))} defect points / {number(kpis.get('KPI02', {}).get('inspected'))} inspected) | Calculated as 1 - defect points / inspected; defect points are not failed pieces | [KPI02] |",
         f"| Jiandaoyun FQC first-pass RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))} ({number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} valid records) | No approved target or comparable period supplied | [KPI03] |",
         f"| RPM R12M | {number(kpis.get('KPI04', {}).get('value'), 2)} per million ({number(kpis.get('KPI04', {}).get('returns'))} returns / {number(kpis.get('KPI04', {}).get('sold'))} sold) | Current customer-return signal only; no approved target or comparison supplied | [KPI04] |",
-        f"| IV cases | {number(kpis.get('KPI05', {}).get('value'))} | Prior-year comparable data {'available' if kpis.get('KPI05', {}).get('prior_year_available') else 'not available'} | [KPI05] |",
+        f"| Factory-attributable IV cases (Before) | {number(kpis.get('KPI05', {}).get('value'))} | Prior-year comparable data {'available' if kpis.get('KPI05', {}).get('prior_year_available') else 'not available'}; only issues found before use are counted | [KPI05] |",
     ]
     product_rows = []
     for index, item in enumerate(products, start=1):
@@ -5707,6 +5727,28 @@ def render_zx_high_risk_cluster(
         view["production_axis"] * (production_weight / 100)
         + view["client_signal"] * (secondary_weight / 100)
     ).clip(0, 100)
+    view["production_risk_contribution"] = view["production_axis"] * (production_weight / 100)
+
+    def client_component_contributions(row: pd.Series) -> pd.Series:
+        weights = normalized_weights(
+            settings_for_factory(risk_settings, row.get("factory_code", "ZX")).get(
+                "client_weights", DEFAULT_RISK_SETTINGS["client_weights"]
+            )
+        )
+        rpm_value = pd.to_numeric(row.get("rpm_score", np.nan), errors="coerce")
+        iv_value = pd.to_numeric(row.get("intern_voice_score", np.nan), errors="coerce")
+        rpm_component = (0.0 if pd.isna(rpm_value) else float(rpm_value)) * weights.get("rpm_score", 0)
+        iv_component = (0.0 if pd.isna(iv_value) else float(iv_value)) * weights.get("intern_voice_score", 0)
+        return pd.Series(
+            {
+                "rpm_risk_contribution": rpm_component * (secondary_weight / 100),
+                "iv_risk_contribution": iv_component * (secondary_weight / 100),
+            }
+        )
+
+    client_components = view.apply(client_component_contributions, axis=1)
+    view[["rpm_risk_contribution", "iv_risk_contribution"]] = client_components
+    view["client_risk_contribution"] = view["client_signal"] * (secondary_weight / 100)
     view["has_cluster_signal"] = view[["production_axis", "client_signal"]].notna().any(axis=1)
     cluster_input = view.loc[view["has_cluster_signal"], ["production_axis", "client_signal"]].fillna(0).to_numpy(dtype=float)
 
@@ -5828,6 +5870,10 @@ def render_zx_high_risk_cluster(
             "qty_inspected",
             "defect_qty",
             "cluster_risk_level",
+            "production_risk_contribution",
+            "client_risk_contribution",
+            "rpm_risk_contribution",
+            "iv_risk_contribution",
         ],
         labels={
             "plot_x": t("生产端风险分（QC不良率）", "Production Risk Score (QC defect rate)"),
@@ -5841,13 +5887,22 @@ def render_zx_high_risk_cluster(
             "cluster_risk_formula": t("风险分计算", "Risk Calculation"),
         },
     )
+    risk_calculation_line = (
+        f"{t('Risk计算', 'Risk calculation')}  <b>%{{customdata[5]:.1f}}</b> = "
+        f"{t('生产端', 'Production')} %{{customdata[9]:.1f}} + {t('客户端', 'Client')} %{{customdata[10]:.1f}} "
+        f"(RPM %{{customdata[11]:.1f}} + IV %{{customdata[12]:.1f}})"
+        if has_client_signal
+        else f"{t('Risk计算', 'Risk calculation')}  <b>%{{customdata[5]:.1f}}</b> = "
+        f"{t('生产端', 'Production')} %{{customdata[9]:.1f}} + {t('检验量强度', 'Volume intensity')} %{{customdata[10]:.1f}}"
+    )
     hover_template = (
         f"<b>CC %{{customdata[0]}} · %{{customdata[8]}}</b><br>"
         f"<span style='color:#667085'>Model</span>  %{{customdata[1]}}<br>"
         f"━━━━━━━━━━━━━━━━━━━━<br>"
         f"RPM  <b>%{{customdata[2]:,.0f}}</b>　 IV  <b>%{{customdata[3]:,.0f}}</b><br>"
         f"{t('不良率', 'Defect rate')}  <b>%{{customdata[4]:.2%}}</b>　 Risk  <b>%{{customdata[5]:.1f}}</b><br>"
-        f"{t('检验数', 'Inspected')}  %{{customdata[6]:,.0f}}　 {t('疵点', 'Defects')}  %{{customdata[7]:,.0f}}"
+        f"{t('检验数', 'Inspected')}  %{{customdata[6]:,.0f}}　 {t('疵点', 'Defects')}  %{{customdata[7]:,.0f}}<br>"
+        f"{risk_calculation_line}"
         "<extra></extra>"
     )
     fig.update_traces(
@@ -7640,13 +7695,13 @@ def build_zx_kpi_cards(
             yoy_change = (iv_current - iv_previous) / iv_previous
             iv_trend_direction = "down" if yoy_change < 0 else "up" if yoy_change > 0 else "flat"
             yoy_note = t(
-                f"同比下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"同比上升 {yoy_change:.1%}" if yoy_change > 0 else "同比持平",
-                f"YoY down {abs(yoy_change):.1%}" if yoy_change < 0 else f"YoY up {yoy_change:.1%}" if yoy_change > 0 else "YoY flat",
+                f"工厂责任（Before）· 同比下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"工厂责任（Before）· 同比上升 {yoy_change:.1%}" if yoy_change > 0 else "工厂责任（Before）· 同比持平",
+                f"Factory-attributable (Before) · YoY down {abs(yoy_change):.1%}" if yoy_change < 0 else f"Factory-attributable (Before) · YoY up {yoy_change:.1%}" if yoy_change > 0 else "Factory-attributable (Before) · YoY flat",
             )
         else:
-            yoy_note = t("去年同期为 0，无法计算降比", "Prior-year period was 0; change is not calculable")
+            yoy_note = t("工厂责任（Before）· 去年同期为 0，无法计算同比", "Factory-attributable (Before) · prior-year period was 0; change is not calculable")
     else:
-        yoy_note = t("去年同期数据未接入", "Prior-year comparable data not loaded")
+        yoy_note = t("工厂责任（Before）· 去年同期数据未接入", "Factory-attributable (Before) · prior-year comparable data not loaded")
 
     return [
         {
@@ -7674,7 +7729,7 @@ def build_zx_kpi_cards(
             "level": "high" if pd.notna(rpm_r12m) and rpm_r12m >= 1_000 else "medium" if pd.notna(rpm_r12m) and rpm_r12m >= 500 else "low",
         },
         {
-            "label": t("IV 数量", "IV Cases"),
+            "label": t("工厂责任 IV", "Factory-attributable IV"),
             "value": f"{iv_current:,}",
             "note": yoy_note,
             "trend_direction": iv_trend_direction,
@@ -9010,19 +9065,20 @@ with st.sidebar.expander(t("高级筛选", "Advanced Filters"), expanded=True):
     product_search = st.text_input(t("CC / 款式搜索", "CC / Product Search"), "")
     focused_cc = str(st.session_state.get("focused_cc", "")).strip()
     if focused_cc:
-        focus_col, clear_col = st.columns([0.72, 0.28], vertical_alignment="center")
+        focus_col, clear_col = st.columns([0.62, 0.38], vertical_alignment="center")
         focus_col.markdown(
             f"<span class='zx-pareto-chip'>{t('聚焦 CC', 'Focused CC')} · {html.escape(focused_cc)}</span>",
             unsafe_allow_html=True,
         )
         if clear_col.button(
-            t("全部", "All"),
+            t("取消", "Clear"),
             key="clear_global_cc_focus",
             icon=":material/close:",
             use_container_width=True,
         ):
             st.session_state["focused_cc"] = ""
             st.rerun()
+        st.caption(t("再次双击同一个 CC，或点击“取消”返回全部。", "Double-click the same CC again, or select Clear to return to all data."))
 risk_settings = current_risk_settings()
 active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
 supplier_prod_w = effective_weight_pct(risk_settings, "supplier_weights", "production_score")
