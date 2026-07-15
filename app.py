@@ -225,6 +225,15 @@ st.markdown(
         width: auto !important;
         height: auto !important;
     }
+    div[data-testid="stPopover"] > button,
+    div[data-testid="stPopover"] button[data-testid^="stBaseButton"] {
+        width: 100% !important;
+        min-height: 42px !important;
+        height: 42px !important;
+        padding: 0.45rem 0.8rem !important;
+        font-size: 0.90rem !important;
+        line-height: 1.1 !important;
+    }
     div[data-testid="collapsedControl"],
     button[data-testid="stExpandSidebarButton"] {
         display: flex !important;
@@ -1141,10 +1150,13 @@ FACTORIES = {
         "community_name": "TU / Textile",
         "supplier": "中兴",
         "location": "ZX",
-        "finished": Path("TU database/ZX Database/05.7-06.6检验数据.xlsx"),
-        "voice": Path("TU database/ZX Database/ZX R12M Compare hierarchy.csv"),
-        "incoming": Path("TU database/ZX Database/2026年原辅料不合格记录.xlsx"),
-        "intern_voice_file": Path("TU database/ZX Database/2026 ZX Intern Voice.xlsx"),
+        "finished": Path("TU database/ZX Database/Factory data/05.7-06.6检验数据.xlsx"),
+        "voice": Path("TU database/ZX Database/Decathlon Customer data/Compare hierarchy (CC).xlsx"),
+        "customer_model": Path("TU database/ZX Database/Decathlon Customer data/Compare hierarchy (model).csv"),
+        "customer_return_location": Path("TU database/ZX Database/Decathlon Customer data/1 - Export - Detailed Table by Location [Defloc - Location].csv"),
+        "customer_return_defect": Path("TU database/ZX Database/Decathlon Customer data/2 - Export - Detailed Table by Defect [Defloc - Location].csv"),
+        "incoming": Path("TU database/ZX Database/Factory data/2026年原辅料不合格记录.xlsx"),
+        "intern_voice_file": Path("TU database/ZX Database/Decathlon Customer data/ZX intervoice.xlsx"),
         "intern_voice": Path("2026 Intern Voice"),
         "intern_voice_manifest": Path("TU database/ZX Database/ZX Intern Voice manifest.csv"),
     },
@@ -1276,7 +1288,7 @@ JIANDAOYUN_SOURCES = {
         "flat_pattern": "ZX_FQC_Jiandaoyun_flat_*.csv",
         "raw_pattern": "ZX_FQC_Jiandaoyun_raw_*.json",
         "fields_pattern": "ZX_FQC_Jiandaoyun_fields_*.json",
-        "snapshot": Path("TU database/ZX Database/ZX_FQC_normalized_snapshot.csv"),
+        "snapshot": Path("TU database/ZX Database/Decathlon PS data/ZX_FQC_normalized_snapshot.csv"),
         "source_name": "Jiandaoyun Gloves / ZX FQC",
     },
     "ZX_CP": {
@@ -1291,7 +1303,28 @@ JIANDAOYUN_SOURCES = {
     },
 }
 JIANDAOYUN_CACHE_VERSION = 5
-DATA_SCOPE_CACHE_VERSION = 14
+DATA_SCOPE_CACHE_VERSION = 15
+
+# User-confirmed Decathlon inspectors in the ZX FQC form. Matching is
+# normalized for spaces/case, and Chinese suffixes such as "/3rd" are allowed.
+ZX_DECATHLON_INSPECTOR_PATTERNS = (
+    "ericzeng",
+    "wuhao",
+    "daisyyu",
+    "韩永红",
+    "李秀玲",
+)
+
+
+def normalize_zx_inspector_name(value: object) -> str:
+    return re.sub(r"[\s._\-/]+", "", str(value or "").strip().casefold())
+
+
+def zx_inspector_owner(value: object) -> str:
+    normalized = normalize_zx_inspector_name(value)
+    if normalized and any(pattern in normalized for pattern in ZX_DECATHLON_INSPECTOR_PATTERNS):
+        return "Decathlon"
+    return "ZX Factory"
 
 LEVEL_COLORS = {
     "Low": "#168a5b",
@@ -2553,6 +2586,89 @@ def load_finished_qc(
     return result
 
 
+def load_zx_customer_cc_workbook(path: Path, factory_code: str, cfg: dict) -> pd.DataFrame:
+    """Normalize the seven-sheet ZX customer hierarchy export to the voice schema."""
+    metric_specs = {
+        "Sheet 1": {"nqc_now": "N0 NQC", "nqc_prev": "NQC N-X", "delta_nqc": "delta NQC N-X"},
+        "Sheet 2": {"reviews_now": "N0 Nb reviews", "reviews_prev": "Nb reviews N-X", "delta_reviews": "delta nb reviews N-X"},
+        "Sheet 3": {"returned_now": "N0 Qty returned", "returned_prev": "Qty returned N-X", "delta_returned": "delta qty returned N-X"},
+        "Sheet 4": {"sold_now": "N0 Qty sold (RPM)", "sold_prev": "Qty sold N-X", "delta_sold": "delta qty sold N-X"},
+        "Sheet 5": {"avg_score_prev": "Avg score N-X", "delta_avg_score": "Delta avg score N-X", "avg_score_now": "N0 Avg score"},
+        "Sheet 6": {"rpm_now": "N0 RPM", "rpm_prev": "RPM  N-X", "delta_rpm": "delta RPM N-X"},
+        "Sheet 7": {"products_below_42_now": "N0 Nb products<4.2", "products_below_42_prev": "Nb products 4.2 N-X"},
+    }
+
+    def normalized_column(frame: pd.DataFrame, expected: str) -> str | None:
+        needle = re.sub(r"\s+", " ", expected).strip().casefold()
+        for column in frame.columns:
+            candidate = re.sub(r"\s+", " ", str(column)).strip().casefold()
+            if candidate == needle:
+                return column
+        return None
+
+    combined: pd.DataFrame | None = None
+    with pd.ExcelFile(path, engine="openpyxl") as workbook:
+        for sheet_name, fields in metric_specs.items():
+            if sheet_name not in workbook.sheet_names:
+                continue
+            raw = pd.read_excel(workbook, sheet_name=sheet_name)
+            if raw.shape[1] < 3:
+                continue
+            products = raw.iloc[:, 2].fillna("").astype(str).str.strip()
+            sheet = pd.DataFrame({"product_raw": products})
+            sheet["product_code"] = products.str.extract(r"^(\d{6})")[0].fillna("")
+            sheet["product_name"] = products.str.replace(r"^\d+\s*", "", regex=True)
+            sheet = sheet[sheet["product_code"].ne("")].copy()
+            for output_field, source_field in fields.items():
+                column = normalized_column(raw, source_field)
+                values = raw[column] if column is not None else pd.Series(np.nan, index=raw.index)
+                sheet[output_field] = clean_numeric_series(values).loc[sheet.index]
+            if combined is None:
+                combined = sheet
+            else:
+                combined = combined.merge(
+                    sheet.drop(columns=["product_raw", "product_name"], errors="ignore"),
+                    on="product_code",
+                    how="outer",
+                )
+
+    if combined is None or combined.empty:
+        return pd.DataFrame()
+    combined = combined.drop_duplicates("product_code", keep="first")
+    defaults = {
+        "avg_score_prev": np.nan,
+        "avg_score_now": np.nan,
+        "delta_avg_score": np.nan,
+        "rpm_prev": np.nan,
+        "rpm_now": np.nan,
+        "delta_rpm": np.nan,
+        "reviews_prev": np.nan,
+        "reviews_now": np.nan,
+        "nqc_prev": np.nan,
+        "nqc_now": np.nan,
+        "returned_prev": np.nan,
+        "returned_now": np.nan,
+        "sold_prev": np.nan,
+        "sold_now": np.nan,
+    }
+    for column, default in defaults.items():
+        if column not in combined.columns:
+            combined[column] = default
+    combined["factory_code"] = factory_code
+    combined["factory_name"] = cfg["name"]
+    combined["supplier"] = cfg["supplier"]
+    combined["hierarchy_1"] = "Customer CC"
+    combined["hierarchy_2"] = "Compare Hierarchy"
+    combined["model_code"] = ""
+    combined["intern_voice_count"] = 0
+    combined["intern_voice_prev_count"] = np.nan
+    combined["intern_voice_prev_available"] = False
+    combined["voice_source"] = "YTD Compare"
+    combined["source_file"] = str(path.relative_to(ROOT))
+    combined["product_key"] = combined["product_code"].map(extract_product_key)
+    return combined
+
+
 @st.cache_data(show_spinner=False)
 def load_customer_voice(
     cache_version: int = DATA_SCOPE_CACHE_VERSION,
@@ -2569,6 +2685,12 @@ def load_customer_voice(
             continue
         path = ROOT / cfg["voice"]
         if not path.exists():
+            continue
+
+        if path.suffix.lower() in {".xlsx", ".xlsm"}:
+            workbook_voice = load_zx_customer_cc_workbook(path, factory_code, cfg)
+            if not workbook_voice.empty:
+                frames.append(workbook_voice)
             continue
 
         raw = pd.read_csv(path, encoding="utf-16", sep="\t")
@@ -2622,8 +2744,14 @@ def load_customer_voice(
                 sheet = pd.read_excel(workbook, sheet_name=sheet_name, header=None)
                 header_candidates = sheet.index[
                     sheet.apply(
-                        lambda row: row.astype(str).str.strip().eq("IV No.").any()
-                        and row.astype(str).str.strip().eq("CC").any(),
+                        lambda row: (
+                            row.astype(str).str.strip().eq("IV No.").any()
+                            and row.astype(str).str.strip().eq("CC").any()
+                        )
+                        or (
+                            row.astype(str).str.strip().eq("FEEDBACK No.").any()
+                            and row.astype(str).str.strip().eq("MODEL CODE").any()
+                        ),
                         axis=1,
                     )
                 ].tolist()
@@ -2639,15 +2767,26 @@ def load_customer_voice(
         raw_intern = pd.concat(intern_sheets, ignore_index=True) if intern_sheets else pd.DataFrame()
         raw_intern.columns = [str(col).strip() for col in raw_intern.columns]
         row_count = len(raw_intern)
+        # The current IV export uses English feedback/model headers, while the
+        # legacy workbook used IV No./CC and Chinese detail headers. Keep both
+        # schemas readable so a refreshed export does not silently disappear.
+        current_export = "FEEDBACK No." in raw_intern.columns
+        case_column = "FEEDBACK No." if current_export else "IV No."
+        product_column = "MODEL CODE" if current_export else "CC"
+        model_column = "MODEL CODE" if current_export else "MODEL"
+        name_column = "MODEL NAME" if current_export else "款式颜色 Model Name"
+        issue_column = "PROBLEM DESCRIPTION" if current_export else "质量问题"
+        stage_column = "Before or after Sales" if current_export else "Before/After"
+        date_column = "CREATED DATE" if current_export else "反馈日期"
         intern = pd.DataFrame(
             {
-                "iv_no": raw_intern.get("IV No.", pd.Series(range(row_count), index=raw_intern.index)).astype(str),
-                "product_code": raw_intern.get("CC", pd.Series("", index=raw_intern.index)).astype(str),
-                "model_code": raw_intern.get("MODEL", pd.Series("", index=raw_intern.index)).astype(str),
-                "product_name": raw_intern.get("款式颜色 Model Name", pd.Series("", index=raw_intern.index)).fillna("").astype(str),
-                "quality_issue": raw_intern.get("质量问题", pd.Series("", index=raw_intern.index)).fillna("").astype(str),
-                "responsibility_stage": raw_intern.get("Before/After", pd.Series("", index=raw_intern.index)).fillna("").astype(str),
-                "feedback_date": pd.to_datetime(raw_intern.get("反馈日期", pd.Series(pd.NaT, index=raw_intern.index)), errors="coerce"),
+                "iv_no": raw_intern.get(case_column, pd.Series(range(row_count), index=raw_intern.index)).astype(str),
+                "product_code": raw_intern.get(product_column, pd.Series("", index=raw_intern.index)).astype(str),
+                "model_code": raw_intern.get(model_column, pd.Series("", index=raw_intern.index)).astype(str),
+                "product_name": raw_intern.get(name_column, pd.Series("", index=raw_intern.index)).fillna("").astype(str),
+                "quality_issue": raw_intern.get(issue_column, pd.Series("", index=raw_intern.index)).fillna("").astype(str),
+                "responsibility_stage": raw_intern.get(stage_column, pd.Series("", index=raw_intern.index)).fillna("").astype(str),
+                "feedback_date": pd.to_datetime(raw_intern.get(date_column, pd.Series(pd.NaT, index=raw_intern.index)), errors="coerce"),
             }
         )
         fallback_case_id = pd.Series(intern.index.astype(str), index=intern.index)
@@ -2676,7 +2815,7 @@ def load_customer_voice(
         if "model_code" not in intern.columns:
             intern["model_code"] = ""
         responsibility_stage = intern.get("responsibility_stage", pd.Series("", index=intern.index)).fillna("").astype(str).str.strip().str.casefold()
-        intern["is_factory_issue"] = responsibility_stage.eq("before")
+        intern["is_factory_issue"] = responsibility_stage.str.startswith("before")
         feedback_dates = pd.to_datetime(intern.get("feedback_date", pd.Series(pd.NaT, index=intern.index)), errors="coerce")
         valid_feedback_dates = feedback_dates.dropna()
         if not valid_feedback_dates.empty:
@@ -3194,6 +3333,7 @@ def normalize_jdy_flat(raw: pd.DataFrame, meta: dict) -> tuple[pd.DataFrame, dic
     fqc["risk_level"] = fqc["defect_rate"].map(lambda value: risk_level(defect_risk_score(value, 4.0)))
     fqc["has_defect"] = fqc["defect_qty"] > 0
     fqc["is_fail"] = fqc["result"].astype(str).str.contains("FAIL", case=False, na=False)
+    fqc["inspector_owner"] = fqc["inspector"].map(zx_inspector_owner)
     meta["records"] = len(fqc)
     meta["columns"] = raw.shape[1]
     meta["period"] = source_date_range(fqc)
@@ -3225,6 +3365,7 @@ def load_jiandaoyun_zx_fqc(cache_version: int = JIANDAOYUN_CACHE_VERSION) -> tup
         for column in ["has_defect", "is_fail"]:
             if column in fqc.columns:
                 fqc[column] = fqc[column].astype(str).str.lower().isin(["true", "1", "yes"])
+        fqc["inspector_owner"] = fqc.get("inspector", pd.Series("", index=fqc.index)).map(zx_inspector_owner)
         meta.update(
             {
                 "mode": "deployed_snapshot",
@@ -3368,7 +3509,10 @@ def build_tu_community_ai_fact_pack(
         jdy_fqc = jdy_fqc[jdy_fqc["date"].dt.year.eq(latest_year)].copy()
     else:
         latest_year = None
-    fqc_metrics = jdy_fqc_rft_metrics(jdy_fqc)
+    if not jdy_fqc.empty and "inspector_owner" not in jdy_fqc.columns:
+        jdy_fqc["inspector_owner"] = jdy_fqc.get("inspector", pd.Series("", index=jdy_fqc.index)).map(zx_inspector_owner)
+    decathlon_fqc_metrics = jdy_fqc_rft_metrics(jdy_fqc[jdy_fqc.get("inspector_owner", pd.Series("", index=jdy_fqc.index)).eq("Decathlon")])
+    zx_factory_fqc_metrics = jdy_fqc_rft_metrics(jdy_fqc[jdy_fqc.get("inspector_owner", pd.Series("", index=jdy_fqc.index)).eq("ZX Factory")])
 
     ytd_voice = voice_df[
         voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("YTD Compare")
@@ -3387,6 +3531,17 @@ def build_tu_community_ai_fact_pack(
     ) if not iv_voice.empty else None
 
     product_facts = []
+    jdy_models_by_cc: dict[str, str] = {}
+    if not jdy_fqc.empty and {"cc", "model"}.issubset(jdy_fqc.columns):
+        jdy_model_source = jdy_fqc[["cc", "model"]].copy()
+        jdy_model_source["cc"] = jdy_model_source["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        jdy_model_source["model"] = jdy_model_source["model"].fillna("").astype(str).str.strip()
+        jdy_model_source = jdy_model_source[jdy_model_source["cc"].ne("") & jdy_model_source["model"].ne("")]
+        jdy_models_by_cc = (
+            jdy_model_source.groupby("cc")["model"]
+            .agg(lambda values: " / ".join(dict.fromkeys(values))[:120])
+            .to_dict()
+        )
     if not product_df.empty:
         ranked_products = product_df.sort_values("risk_score", ascending=False).head(10)
         for index, (_, row) in enumerate(ranked_products.iterrows(), start=1):
@@ -3396,7 +3551,7 @@ def build_tu_community_ai_fact_pack(
                     "supplier": clean_ai_fact_text(row.get("supplier")),
                     "supplier_code": clean_ai_fact_text(row.get("supplier_code")),
                     "cc": clean_ai_fact_text(row.get("product_code")),
-                    "model": clean_ai_fact_text(row.get("product_label")) or clean_ai_fact_text(row.get("voice_product_name")),
+                    "model": jdy_models_by_cc.get(str(row.get("product_code")), "") or clean_ai_fact_text(row.get("product_label")) or clean_ai_fact_text(row.get("voice_product_name")),
                     "risk_score": finite_number(row.get("risk_score")),
                     "risk_level": clean_ai_fact_text(row.get("risk_level")),
                     "inspected": finite_number(row.get("qty_inspected")),
@@ -3409,6 +3564,68 @@ def build_tu_community_ai_fact_pack(
                     "returns": finite_number(row.get("returned_now")),
                 }
             )
+
+    ps_action_facts: list[dict[str, object]] = []
+    aql_recommendations: list[dict[str, object]] = []
+    cp = st.session_state.get("zx_panel_jdy_live_cp", pd.DataFrame())
+    cp = cp.copy() if isinstance(cp, pd.DataFrame) else pd.DataFrame()
+    for index, product in enumerate(product_facts[:5], start=1):
+        cc = str(product.get("cc") or "").strip()
+        cc_fqc = jdy_fqc[
+            jdy_fqc.get("cc", pd.Series("", index=jdy_fqc.index))
+            .fillna("")
+            .astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+            .eq(cc)
+        ].copy() if cc and not jdy_fqc.empty else pd.DataFrame()
+        pass_count = fail_count = valid_records = 0
+        if not cc_fqc.empty:
+            metrics = jdy_fqc_rft_metrics(cc_fqc)
+            pass_count = int(metrics["pass_count"])
+            fail_count = int(metrics["fail_count"])
+            valid_records = int(metrics["valid_records"])
+        latest_date = (
+            clean_ai_fact_text(cc_fqc["date"].max().date())
+            if not cc_fqc.empty and cc_fqc.get("date", pd.Series(dtype="datetime64[ns]")).notna().any()
+            else None
+        )
+        sampling = float(pd.to_numeric(cc_fqc.get("sampling_size", 0), errors="coerce").fillna(0).sum()) if not cc_fqc.empty else 0
+        fqc_defects = float(pd.to_numeric(cc_fqc.get("defect_qty", 0), errors="coerce").fillna(0).sum()) if not cc_fqc.empty else 0
+        ps_action_facts.append(
+            {
+                "fact_id": f"PSA{index:02d}",
+                "cc": cc,
+                "model": product.get("model"),
+                "fqc_records": int(len(cc_fqc)),
+                "fqc_valid_records": valid_records,
+                "fqc_first_pass": pass_count,
+                "fqc_fail": fail_count,
+                "fqc_sampled": finite_number(sampling),
+                "fqc_defects": finite_number(fqc_defects),
+                "latest_fqc_date": latest_date,
+                "cp_linkage": "CP source has process/control-point fields but no CC/model key; CP completion cannot be attributed to this CC.",
+            }
+        )
+        risk_level_value = str(product.get("risk_level") or "Medium")
+        if fail_count > 0 or risk_level_value in {"Critical", "High"}:
+            aql_tier = "Tightened review; candidate AQL 1.0"
+            rationale = "High/critical product priority or at least one linked FQC first-pass failure."
+        elif risk_level_value == "Medium":
+            aql_tier = "Normal review; candidate AQL 1.5"
+            rationale = "Medium product priority without linked FQC first-pass failure evidence."
+        else:
+            aql_tier = "Normal/reduced-review candidate; AQL 2.5 only after stable evidence"
+            rationale = "Lower product priority; reduced inspection requires a stable accepted history."
+        aql_recommendations.append(
+            {
+                "fact_id": f"AQL{index:02d}",
+                "cc": cc,
+                "model": product.get("model"),
+                "recommendation": aql_tier,
+                "rationale": rationale,
+                "governance_note": "Recommendation only. Final sample size requires approved ISO 2859-1/GB 2828 inspection level, lot size, code letter, Ac/Re table and quality-manager approval.",
+            }
+        )
 
     defect_facts = []
     if not finished_df.empty:
@@ -3485,11 +3702,21 @@ def build_tu_community_ai_fact_pack(
         "management_kpis": [
             {"fact_id": "KPI01", "scope": "TU: ZX + GP + DS", "metric": "Overall QC defect rate", "value": finite_number(defects / qty if qty else None), "inspected": finite_number(qty), "defects": finite_number(defects)},
             {"fact_id": "KPI02", "scope": "TU: ZX + GP + DS", "metric": "End-of-line calculated RFT proxy", "value": finite_number(1 - end_defects / end_qty if end_qty else None), "inspected": finite_number(end_qty), "defect_points": finite_number(end_defects), "calculation_note": "1 - defect points / inspected quantity. Defect points may not equal failed pieces, so this is not a proven first-pass piece rate."},
-            {"fact_id": "KPI03", "scope": "ZX only", "metric": "Jiandaoyun FQC first-pass RFT YTD", "value": finite_number(fqc_metrics["rft"]), "year": latest_year, "pass": int(fqc_metrics["pass_count"]), "fail": int(fqc_metrics["fail_count"]), "valid_records": int(fqc_metrics["valid_records"])},
+            {"fact_id": "KPI03", "scope": "ZX only / Decathlon inspectors", "metric": "Decathlon inspection first-pass RFT YTD", "value": finite_number(decathlon_fqc_metrics["rft"]), "year": latest_year, "pass": int(decathlon_fqc_metrics["pass_count"]), "fail": int(decathlon_fqc_metrics["fail_count"]), "valid_records": int(decathlon_fqc_metrics["valid_records"])},
+            {"fact_id": "KPI03B", "scope": "ZX only / ZX factory inspectors", "metric": "ZX factory self-inspection first-pass RFT YTD", "value": finite_number(zx_factory_fqc_metrics["rft"]), "year": latest_year, "pass": int(zx_factory_fqc_metrics["pass_count"]), "fail": int(zx_factory_fqc_metrics["fail_count"]), "valid_records": int(zx_factory_fqc_metrics["valid_records"])},
             {"fact_id": "KPI04", "scope": "TU: ZX + GP + DS where available", "metric": "RPM R12M (returns per million sold)", "value": finite_number(rpm_r12m), "returns": finite_number(returned_now), "sold": finite_number(sold_now)},
             {"fact_id": "KPI05", "scope": "ZX only", "metric": "Factory pre-sale Intern Voice cases (Before)", "value": iv_current, "prior_year_value": iv_previous, "prior_year_available": previous_available},
         ],
         "product_risks": product_facts,
+        "ps_actions": ps_action_facts,
+        "cp_context": {
+            "fact_id": "CP01",
+            "records": int(len(cp)),
+            "processes": int(cp.get("process", pd.Series(dtype=object)).replace("", np.nan).nunique()) if not cp.empty else 0,
+            "control_points": int(cp.get("control_point", pd.Series(dtype=object)).replace("", np.nan).nunique()) if not cp.empty else 0,
+            "cc_model_link_available": False,
+        },
+        "aql_recommendations": aql_recommendations,
         "defect_pareto": defect_facts,
         "process_risks": process_facts,
         "incoming_material_risks": material_facts,
@@ -3524,55 +3751,27 @@ def build_qwen_quality_prompt(report_scope: str, language: str, prompt_profile: 
     if language == "中文":
         output_structure = """
 # TU Community 质量管理评审
-## 1. 管理决策
-- 只能选择一个管理模式：监控 / 验证 / 遏制。说明这是管理建议，并用事实解释。
-- 最多列出两条管理结论。
+## 1. 高风险 CC 与 Model
+最多列出三个优先 CC；表格必须包含 CC、Model、生产端证据、RPM/IV 客户端证据、风险分及证据编号。说明风险分只用于排序。
 
-## 2. KPI 证据表
-列：指标 | 当前结果（必须带分母） | 管理解读 | 证据编号。
+## 2. PS 已做行动（CP 与 FQC）
+逐个优先 CC 列出已匹配的 FQC 记录、首次 PASS/FAIL、抽样量、最新日期。CP 没有 CC/Model 键时必须明确写“无法归因到该 CC”，不能把控制计划当成已完成整改。
 
-## 3. 优先 CC
-列：优先级 | 供应商 / CNUF / CC / Model | 生产端证据 | 客户端证据 | 当前优先原因 | 待验证事项 | 证据编号。
-最多选择三个 CC，不能仅因为出现在 Top 排名中就列入。
-
-## 4. 疵点与工序集中度
-说明 Pareto 是否集中、主要疵点/工序是什么，并明确区分已知事实与待验证假设。
-
-## 5. 行动计划
-列：时限（24h / 7d / 30d） | 责任角色 | 具体行动 | 必须提交的证据或交付物 | KPI | 关闭标准 | 证据编号。
-
-## 6. 数据局限
-说明缺少的对比周期、覆盖缺口及其对结论可信度的影响 [DQ01]。
-
-## 7. 一句话决策
-以一句明确的监控 / 验证 / 遏制决策结束，不重复第一部分。
+## 3. 动态 AQL 建议与原因
+逐个优先 CC 给出建议抽检等级、证据理由和治理条件。明确这是动态建议；正式样本量必须由批量、检验水平、样本代码、Ac/Re 表和质量经理批准共同确定。最后列出数据缺口和下一步。
 """.strip()
         language_rule = "Every heading, table header, and sentence must be written in Simplified Chinese. Keep CC, Model, FQC, RFT, RPM, IV and evidence IDs unchanged."
     else:
         output_structure = """
 # TU Community Quality Management Review
-## 1. Management decision
-- Choose exactly one management mode: Monitor / Verify / Contain. State that it is a management recommendation and explain it with evidence.
-- Give no more than two management conclusions.
+## 1. High-Risk CCs and Models
+List no more than three priority CCs. Include CC, model, production evidence, RPM/IV customer evidence, risk score and evidence IDs. State that the score is ranking-only.
 
-## 2. KPI evidence table
-Columns: Metric | Current result with denominator | Management interpretation | Evidence ID.
+## 2. PS Actions Completed (CP and FQC)
+For each priority CC, show matched FQC records, first PASS/FAIL, sampled quantity and latest date. If CP has no CC/model key, explicitly say it cannot be attributed to the CC; never present a control plan as a completed corrective action.
 
-## 3. Priority CCs
-Columns: Priority | Supplier / CNUF / CC / model | Production evidence | Customer evidence | Why now | Verification needed | Evidence IDs.
-Choose at most three CCs and never select one merely because it appears in a Top list.
-
-## 4. Defect and process concentration
-State whether the Pareto is concentrated, name the leading defect/process evidence, and separate known facts from hypotheses.
-
-## 5. Action plan
-Columns: Timing (24h / 7d / 30d) | Owner role | Concrete action | Required evidence or deliverable | KPI | Closure criterion | Evidence IDs.
-
-## 6. Data limitations
-Explain missing comparison periods, coverage gaps, and how they affect confidence [DQ01].
-
-## 7. One-line management decision
-End with one direct Monitor / Verify / Contain decision without repeating section 1.
+## 3. Dynamic AQL Recommendation and Why
+For each priority CC, give the proposed inspection tier, evidence rationale and governance conditions. State that this is a dynamic recommendation; final sample size requires lot size, inspection level, sample code, Ac/Re table and quality-manager approval. End with data gaps and next steps.
 """.strip()
         language_rule = "Every heading, table header, and sentence must be written in English."
 
@@ -3599,9 +3798,9 @@ NON-NEGOTIABLE RULES
 17. {language_rule}
 18. The fact pack contains no approved acceptance target [MDL01]. KPI interpretations must be descriptive: state the value, denominator, and missing comparison/target. Never label a value high, low, good, bad, acceptable, concerning, above target, or below target.
 19. For [KPI02], use the exact label "End-of-line calculated RFT proxy" (Chinese: "End-of-line 计算RFT参考值"). Its defect points may not equal failed pieces. Never call the complement a failure, reject, or rework rate.
-20. Choose exactly one management mode in section 1. Do not list Monitor, Verify, and Contain as three separate conclusions.
-21. The action plan may only prescribe evidence collection, traceability, verification, temporary containment pending verification, and post-action measurement. Do not prescribe a technical fix such as machine adjustment, needle change, training, material change, or inspection-frequency increase unless supported by facts.
-22. When no approved target exists, the KPI cell must say "target to be confirmed by the responsible manager" and the closure criterion must require an approved target plus measured post-action evidence. Never create a numeric target.
+20. Keep exactly the three required sections. Do not add a generic management-review template before them.
+21. PS actions must distinguish observed FQC execution evidence from CP design coverage. If CP has no CC/model key, it cannot be attributed to a CC or called completed corrective action.
+22. Dynamic AQL is a recommendation tier, not an approved sampling plan. Final sample size requires the approved standard, lot size, inspection level, sample code, Ac/Re table, and quality-manager approval.
 23. Before returning the report, silently audit every sentence against rules 1-22 and rewrite any unsupported comparison, target, cause, technical fix, or judgment.
 24. CNUF is the supplier code. Keep it separate from supplier name, CC, Model, and Item Code.
 25. Jiandaoyun FQC and IV currently apply to ZX only. RPM applies to ZX, GP, and DS where each supplier's R12M source is available. Missing customer data means "data not available", not zero customer risk.
@@ -3632,13 +3831,12 @@ Delete or rewrite every statement that does any of the following:
 7. Makes an improvement/deterioration claim without a supplied comparison period.
 
 Required corrections:
-- Choose exactly one management mode: Monitor / Verify / Contain.
-- KPI interpretation must be descriptive when no target exists: give the value and denominator, then state that status cannot be classified without an approved target or comparison.
+- Preserve exactly three sections: high-risk CC/model; PS actions from CP/FQC; dynamic AQL recommendation and rationale.
+- CP without a CC/model key cannot be attributed to a priority CC or described as a completed action.
 - Verification questions must ask for missing evidence without naming a suspected cause.
-- Action rows may only collect evidence, establish traceability, verify facts, apply temporary containment pending verification, or measure results after an approved action.
-- When no target exists, write that the target must be confirmed by the responsible manager; never create a number.
+- Dynamic AQL must remain a recommendation; final sample size requires an approved standard, lot size, inspection level, sample code, Ac/Re table and quality-manager approval.
 - Preserve fact IDs and attach them to every factual paragraph and table row.
-- Preserve the seven-section structure and keep the report readable in under five minutes.
+- Keep the report readable in under five minutes.
 - {output_rule}
 """.strip()
 
@@ -3650,6 +3848,91 @@ def build_tu_guardrailed_report(facts_json: str, language: str) -> str:
     defects = facts.get("defect_pareto", [])[:3]
     processes = facts.get("process_risks", [])[:3]
     quality = facts.get("data_quality", {})
+    actions_by_cc = {str(item.get("cc")): item for item in facts.get("ps_actions", [])}
+    aql_by_cc = {str(item.get("cc")): item for item in facts.get("aql_recommendations", [])}
+    cp_context = facts.get("cp_context", {})
+
+    def simple_num(value: object, digits: int = 0) -> str:
+        return "-" if value is None else f"{float(value):,.{digits}f}"
+
+    if language == "中文":
+        risk_rows = []
+        action_rows = []
+        aql_rows = []
+        for index, item in enumerate(products, start=1):
+            cc = str(item.get("cc") or "-")
+            risk_rows.append(
+                f"| {index} | {cc} | {item.get('model') or '-'} | 检验 {simple_num(item.get('inspected'))} / 疵点 {simple_num(item.get('defects'))} / 不良率 {simple_num((item.get('defect_rate') or 0) * 100, 2)}% | RPM {simple_num(item.get('rpm'))} / IV {simple_num(item.get('iv_cases'))} | {simple_num(item.get('risk_score'), 1)}（仅排序） | [{item.get('fact_id')}] |"
+            )
+            action = actions_by_cc.get(cc, {})
+            action_rows.append(
+                f"| {cc} / {item.get('model') or '-'} | {simple_num(action.get('fqc_records'))} 条；首次 PASS {simple_num(action.get('fqc_first_pass'))} / FAIL {simple_num(action.get('fqc_fail'))}；抽样 {simple_num(action.get('fqc_sampled'))}；最新 {action.get('latest_fqc_date') or '-'} | CP 当前 {simple_num(cp_context.get('records'))} 条、{simple_num(cp_context.get('control_points'))} 个管控点，但无 CC/Model 键，不能归因到此 CC | [{action.get('fact_id') or 'DQ01'}] [CP01] |"
+            )
+            aql = aql_by_cc.get(cc, {})
+            aql_rows.append(
+                f"| {cc} / {item.get('model') or '-'} | {aql.get('recommendation') or '数据不足，维持正常检验并补齐证据'} | {aql.get('rationale') or '缺少可链接 FQC 证据'} | 正式样本量须由批准的抽样标准、批量、检验水平、样本代码、Ac/Re 表和质量经理批准确定 | [{aql.get('fact_id') or 'DQ01'}] |"
+            )
+        return f"""# TU Community AI 总结报告
+## 1. 高风险 CC 与 Model
+| 优先级 | CC | Model | 生产端证据 | 客户端证据 | 风险分 | 证据 |
+|---:|---|---|---|---|---:|---|
+{chr(10).join(risk_rows) or '| - | 暂无可排序 CC | - | - | - | - | [DQ01] |'}
+
+风险分只用于当前数据范围内的优先顺序，不是缺陷概率或正式接受标准。[MDL01]
+
+## 2. PS 已做行动（CP 与 FQC）
+| CC / Model | 已执行 FQC 证据 | CP 证据 | 证据 |
+|---|---|---|---|
+{chr(10).join(action_rows) or '| - | 暂无可链接 FQC 记录 | CP 无 CC/Model 键 | [DQ01] [CP01] |'}
+
+这里把 FQC 检验记录视为已执行验证证据；CP 是控制计划覆盖，不能在没有 CC/Model 键时表述为该 CC 已完成整改。
+
+## 3. 动态 AQL 建议与原因
+| CC / Model | 动态建议 | 原因 | 生效条件 | 证据 |
+|---|---|---|---|---|
+{chr(10).join(aql_rows) or '| - | 暂不调整 | 缺少链接证据 | 补齐批量与批准的抽样规则 | [DQ01] |'}
+
+**结论：** 可以根据生产风险、RPM/IV 与 FQC 首检结果动态建议抽检强度，但不能只凭风险分自动生成正式样本量。当前 QC 截至 {quality.get('latest_qc_date') or '-'}；跨源键和 CP→CC 映射仍是主要数据缺口。[DQ01]
+"""
+
+    risk_rows = []
+    action_rows = []
+    aql_rows = []
+    for index, item in enumerate(products, start=1):
+        cc = str(item.get("cc") or "-")
+        risk_rows.append(
+            f"| {index} | {cc} | {item.get('model') or '-'} | {simple_num(item.get('inspected'))} inspected / {simple_num(item.get('defects'))} defects / {simple_num((item.get('defect_rate') or 0) * 100, 2)}% | RPM {simple_num(item.get('rpm'))} / IV {simple_num(item.get('iv_cases'))} | {simple_num(item.get('risk_score'), 1)} (ranking only) | [{item.get('fact_id')}] |"
+        )
+        action = actions_by_cc.get(cc, {})
+        action_rows.append(
+            f"| {cc} / {item.get('model') or '-'} | {simple_num(action.get('fqc_records'))} records; first PASS {simple_num(action.get('fqc_first_pass'))} / FAIL {simple_num(action.get('fqc_fail'))}; sampled {simple_num(action.get('fqc_sampled'))}; latest {action.get('latest_fqc_date') or '-'} | CP has {simple_num(cp_context.get('records'))} records and {simple_num(cp_context.get('control_points'))} control points, but no CC/model key, so it cannot be attributed to this CC | [{action.get('fact_id') or 'DQ01'}] [CP01] |"
+        )
+        aql = aql_by_cc.get(cc, {})
+        aql_rows.append(
+            f"| {cc} / {item.get('model') or '-'} | {aql.get('recommendation') or 'Keep normal inspection and collect evidence'} | {aql.get('rationale') or 'No linked FQC evidence'} | Final sample size requires an approved sampling standard, lot size, inspection level, sample code, Ac/Re table and quality-manager approval | [{aql.get('fact_id') or 'DQ01'}] |"
+        )
+    return f"""# TU Community AI Summary Report
+## 1. High-Risk CCs and Models
+| Priority | CC | Model | Production Evidence | Customer Evidence | Risk Score | Evidence |
+|---:|---|---|---|---|---:|---|
+{chr(10).join(risk_rows) or '| - | No rankable CC | - | - | - | - | [DQ01] |'}
+
+The risk score sets priority within the current data scope; it is not a defect probability or an approved acceptance standard. [MDL01]
+
+## 2. PS Actions Completed (CP and FQC)
+| CC / Model | Executed FQC Evidence | CP Evidence | Evidence |
+|---|---|---|---|
+{chr(10).join(action_rows) or '| - | No linked FQC records | CP has no CC/model key | [DQ01] [CP01] |'}
+
+FQC records are executed verification evidence. CP describes control-plan coverage and cannot be presented as completed CC corrective action without a CC/model key.
+
+## 3. Dynamic AQL Recommendation and Why
+| CC / Model | Dynamic Recommendation | Why | Activation Condition | Evidence |
+|---|---|---|---|---|
+{chr(10).join(aql_rows) or '| - | No change | Linked evidence is missing | Complete lot-size and approved sampling rules | [DQ01] |'}
+
+**Conclusion:** production risk, RPM/IV, and FQC first-pass results can drive a dynamic inspection-tier recommendation, but the risk score alone cannot create an approved sample size. Current QC ends on {quality.get('latest_qc_date') or '-'}; cross-source keys and CP-to-CC linkage remain the main data gaps. [DQ01]
+"""
 
     def number(value: object, digits: int = 0) -> str:
         if value is None:
@@ -3693,7 +3976,7 @@ def build_tu_guardrailed_report(facts_json: str, language: str) -> str:
         kpi_rows = [
             f"| 整体 QC 不良率 | {percentage(kpis.get('KPI01', {}).get('value'))}（{number(kpis.get('KPI01', {}).get('defects'))} 疵点 / {number(kpis.get('KPI01', {}).get('inspected'))} 检验量） | 未提供正式目标或对比周期，仅陈述当前值 | [KPI01] |",
             f"| End-of-line 计算RFT参考值 | {percentage(kpis.get('KPI02', {}).get('value'))}（{number(kpis.get('KPI02', {}).get('defect_points'))} 疵点 / {number(kpis.get('KPI02', {}).get('inspected'))} 检验量） | 计算口径为 1-疵点/检验量；疵点不等于失败件，不能作为真实首检件数RFT | [KPI02] |",
-            f"| 简道云 FQC 首检 RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))}（{number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} 有效记录） | 未提供正式目标或同期数据，不能判断好坏或趋势 | [KPI03] |",
+            f"| 迪卡侬验货首检 RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))}（{number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} 有效记录） | 仅含指定迪卡侬检验员；未提供正式目标或同期数据 | [KPI03] |",
             f"| RPM R12M | {number(kpis.get('KPI04', {}).get('value'), 2)} / 百万件（{number(kpis.get('KPI04', {}).get('returns'))} 退货 / {number(kpis.get('KPI04', {}).get('sold'))} 销量） | 未提供正式目标或同期数据，仅陈述当前客户退货信号 | [KPI04] |",
             f"| 工厂售前 IV（Before） | {number(kpis.get('KPI05', {}).get('value'))} | 去年同期数据{'已接入' if kpis.get('KPI05', {}).get('prior_year_available') else '未接入'}，只统计使用前发现的问题 | [KPI05] |",
         ]
@@ -3741,7 +4024,7 @@ QC 数据截至 {quality.get('latest_qc_date') or '-'}；有 QC 数据的产品 
     kpi_rows = [
         f"| Overall QC defect rate | {percentage(kpis.get('KPI01', {}).get('value'))} ({number(kpis.get('KPI01', {}).get('defects'))} defects / {number(kpis.get('KPI01', {}).get('inspected'))} inspected) | Current value only; no approved target or comparison period supplied | [KPI01] |",
         f"| End-of-line calculated RFT proxy | {percentage(kpis.get('KPI02', {}).get('value'))} ({number(kpis.get('KPI02', {}).get('defect_points'))} defect points / {number(kpis.get('KPI02', {}).get('inspected'))} inspected) | Calculated as 1 - defect points / inspected; defect points are not failed pieces | [KPI02] |",
-        f"| Jiandaoyun FQC first-pass RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))} ({number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} valid records) | No approved target or comparable period supplied | [KPI03] |",
+        f"| Decathlon inspection first-pass RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))} ({number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} valid records) | Named Decathlon inspectors only; no approved target or comparable period supplied | [KPI03] |",
         f"| RPM R12M | {number(kpis.get('KPI04', {}).get('value'), 2)} per million ({number(kpis.get('KPI04', {}).get('returns'))} returns / {number(kpis.get('KPI04', {}).get('sold'))} sold) | Current customer-return signal only; no approved target or comparison supplied | [KPI04] |",
         f"| Factory pre-sale IV cases (Before) | {number(kpis.get('KPI05', {}).get('value'))} | Prior-year comparable data {'available' if kpis.get('KPI05', {}).get('prior_year_available') else 'not available'}; only issues found before use are counted | [KPI05] |",
     ]
@@ -3790,10 +4073,10 @@ QC data ends on {quality.get('latest_qc_date') or '-'}; {number(quality.get('pro
 def tu_report_passes_guardrails(content: str, language: str) -> bool:
     if language == "中文":
         forbidden = r"高于|低于|偏高|偏低|较高|较低|显著|严重|理想|阈值|系统性|可能.{0,12}(导致|源于|引发|存在)|设备|工艺参数|操作员|材料问题|包装|物流|运输|使用场景|设计问题|追责|≥|≤"
-        required = ["管理模式：", "KPI 证据表", "优先 CC", "行动计划", "数据局限", "一句话决策"]
+        required = ["高风险 CC", "PS 已做行动", "动态 AQL"]
     else:
         forbidden = r"above target|below target|too high|too low|concerning|ideal|systemic|may be caused|machine setting|operator|material issue|packaging|logistics|transport damage|user misuse|≥|≤"
-        required = ["Management mode:", "KPI evidence table", "Priority CCs", "Action plan", "Data limitations", "One-line management decision"]
+        required = ["High-Risk CC", "PS Actions", "Dynamic AQL"]
     return not re.search(forbidden, content, flags=re.IGNORECASE) and all(section in content for section in required)
 
 
@@ -3856,12 +4139,20 @@ def render_qwen_summary_panel(
     if show_title:
         st.markdown(f"### {title}")
     api_key = get_qwen_api_key()
-    model = get_secret_value(["QWEN_MODEL"], default="qwen-flash")
+    configured_model = get_secret_value(["QWEN_MODEL"], default="qwen-flash")
+    model_options = list(dict.fromkeys([configured_model, "qwen-flash", "qwen-turbo", "qwen-plus", "qwen-max"]))
+    model = st.selectbox(
+        t("AI 模型", "AI Model"),
+        model_options,
+        index=0,
+        key=f"{key}_model",
+        help=t("Flash 速度最快；Plus / Max 更适合复杂管理总结，但响应更慢、成本更高。", "Flash is fastest; Plus / Max are better for complex management summaries but are slower and costlier."),
+    )
     prompt_version = TU_COMMUNITY_AI_PROMPT_VERSION if prompt_profile == "tu_community" else "general-v1"
     active_language = report_language or st.session_state.lang
     facts_json = json.dumps(facts, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     report_fingerprint = hashlib.sha256(
-        f"{prompt_profile}|{prompt_version}|{active_language}|{facts_json}".encode()
+        f"{prompt_profile}|{prompt_version}|{active_language}|{model}|{facts_json}".encode()
     ).hexdigest()
     generate_clicked = st.button(
         t("通义千问一键生成报告", "Generate Report with Qwen"),
@@ -5460,6 +5751,7 @@ def render_readme_popover(
     logic: str,
     source: str,
 ) -> None:
+    raw_source = source
     title = english_display_text(title)
     purpose = english_display_text(purpose)
     method = english_display_text(method)
@@ -5474,7 +5766,7 @@ def render_readme_popover(
         ROOT / "BME Database",
         ROOT / "SE Database",
     ]
-    for raw_part in re.split(r"\s+\+\s+", source):
+    for raw_part in re.split(r"\s+\+\s+", raw_source):
         part = raw_part.strip()
         if not part:
             continue
@@ -5482,15 +5774,15 @@ def render_readme_popover(
         candidates = [direct_path] if direct_path.exists() else [directory / part for directory in source_directories]
         source_path = next((candidate for candidate in candidates if candidate.is_file()), None)
         if source_path is None:
-            source_parts.append(part)
+            source_parts.append(english_display_text(part))
             continue
         relative_path = source_path.relative_to(ROOT).as_posix()
         source_url = (
             "https://github.com/zengjingtao5775-droid/Quality/blob/main/"
             + urllib.parse.quote(relative_path, safe="/")
         )
-        source_parts.append(f"[{part}]({source_url})")
-    source_markdown = " + ".join(source_parts) if source_parts else source
+        source_parts.append(f"[{english_display_text(part)}]({source_url})")
+    source_markdown = "\n".join(f"- {part}" for part in source_parts) if source_parts else f"- {source}"
     with st.popover(label, use_container_width=True):
         st.markdown(f"### {title}")
         st.markdown(f"**1. {t('计算逻辑', 'Calculation Logic')}**  \n{logic}")
@@ -5646,6 +5938,9 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
 
     fqc_view = jdy_fqc.copy() if isinstance(jdy_fqc, pd.DataFrame) else pd.DataFrame()
     if not fqc_view.empty:
+        if "inspector_owner" not in fqc_view.columns:
+            fqc_view["inspector_owner"] = fqc_view.get("inspector", pd.Series("", index=fqc_view.index)).map(zx_inspector_owner)
+        fqc_view = fqc_view[fqc_view["inspector_owner"].eq("Decathlon")].copy()
         fqc_view["date"] = pd.to_datetime(fqc_view.get("date", pd.NaT), errors="coerce", utc=True).dt.tz_convert(None)
         source_dates = pd.to_datetime(source.get("date", pd.NaT), errors="coerce").dropna()
         if not source_dates.empty:
@@ -5662,7 +5957,33 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
     factory_inspection_share = effective_factory_inspected_qty / order_reference_qty if order_reference_qty else np.nan
     fqc_sampling_share = fqc_sampled_qty / order_reference_qty if order_reference_qty else np.nan
 
-    st.markdown(f"### {t('检验比例对比', 'Inspection-Rate Comparison')}")
+    title_col, readme_col = st.columns([0.84, 0.16], vertical_alignment="center")
+    with title_col:
+        st.markdown(f"### {t('检验比例对比', 'Inspection-Rate Comparison')}")
+    with readme_col:
+        with st.popover(t("指标说明", "README"), use_container_width=True):
+            st.markdown(
+                t(
+                    """
+**工厂检验占比** = Σ有效检验量 ÷ Σ订单参考量。
+
+**有效检验量**：先按生产通知单汇总 Online / End 检验数，再对每张通知单取 `min(累计检验数, 订单数量)`。因此同一订单重复检验不会把覆盖量重复累计，结果不会超过 100%。
+
+**迪卡侬 FQC 抽检率** = 指定迪卡侬检验员的 FQC 抽样数 ÷ 同一范围订单参考量。
+
+订单参考量来自工厂 Excel 的生产通知单数量；它是当前可用的出货代理分母，不等同于独立核验的实际出货量。
+""",
+                    """
+**Factory inspection share** = sum of effectively inspected quantity / sum of order-reference quantity.
+
+**Effective inspection**: aggregate Online / End inspections by production notice, then use `min(accumulated inspected, order quantity)` for each notice. Re-inspections therefore do not duplicate coverage and the result cannot exceed 100%.
+
+**Decathlon FQC sampling rate** = FQC sample quantity by named Decathlon inspectors / the same order-reference quantity.
+
+The denominator comes from production-notice quantity in the factory Excel. It is the available shipment proxy, not independently verified actual shipment quantity.
+""",
+                )
+            )
     render_kpi_cards(
         [
             {
@@ -5729,6 +6050,7 @@ def build_data_gap_matrix(
     jdy_cfg = JIANDAOYUN_SOURCES.get("ZX_FQC", {})
     jdy_dir = ROOT / jdy_cfg.get("directory", Path(""))
     has_jdy_local = jdy_dir.exists() and latest_matching_file(jdy_dir, jdy_cfg.get("flat_pattern", "")) is not None
+    has_jdy_local = has_jdy_local or (ROOT / jdy_cfg.get("snapshot", Path(""))).exists()
     has_jdy_api = bool(get_jdy_api_key())
     allowed_codes = set(factory_codes) if factory_codes else set(FACTORIES)
     for code, cfg in FACTORIES.items():
@@ -5789,7 +6111,7 @@ def render_scope_data_map(
     finished_df: pd.DataFrame,
     voice_df: pd.DataFrame,
     incoming_df: pd.DataFrame,
-) -> None:
+) -> pd.DataFrame:
     scope_codes = DASHBOARD_SCOPES.get(scope_key, {}).get("factories", [])
     gap_matrix = build_data_gap_matrix(finished_df, voice_df, incoming_df, scope_codes)
     if scope_key == "ZX":
@@ -5797,8 +6119,32 @@ def render_scope_data_map(
             columns=[t("Machine / Torque", "Machine / Torque"), "Rework"],
             errors="ignore",
         )
+        jdy_cfg = JIANDAOYUN_SOURCES.get("ZX_FQC", {})
+        access_row = {column: "-" for column in gap_matrix.columns}
+        access_row[t("Community", "Community")] = t("接入方式", "Access Method")
+        access_row[t("Supplier", "Supplier")] = t("当前方式", "Current")
+        for column in [
+            t("QC / FQC / PQC", "QC / FQC / PQC"),
+            t("RPM / YTD", "RPM / YTD"),
+            "Intern Voice",
+            t("IQC / Material", "IQC / Material"),
+            t("Worker / Team", "Worker / Team"),
+        ]:
+            if column in access_row:
+                access_row[column] = t("手动 Excel", "Manual Excel")
+        jdy_column = t("简道云 API", "Jiandaoyun API")
+        if jdy_column in access_row:
+            # The snapshot is an implementation fallback, not a separate
+            # business access method. The source is Jiandaoyun API.
+            access_row[jdy_column] = t("API", "API")
+        gap_matrix = pd.concat([gap_matrix, pd.DataFrame([access_row])], ignore_index=True)
+    jdy_fqc = pd.DataFrame()
     with st.expander(t("数据地图", "Data Map"), expanded=False):
         render_data_gap_matrix(gap_matrix)
+        if scope_key == "ZX":
+            st.divider()
+            jdy_fqc, _, _ = render_tu_jdy_refresh_control("zx_panel", include_cp=True)
+    return jdy_fqc
 
 
 def render_zx_high_risk_cluster(
@@ -5829,9 +6175,20 @@ def render_zx_high_risk_cluster(
     view["production_axis"] = view["production_score"].fillna(fallback_production).fillna(0).clip(0, 100)
     has_client_signal = view[["client_score", "rpm_score", "intern_voice_score"]].notna().any(axis=1).any()
     if has_client_signal:
-        view["client_signal"] = view["client_score"].fillna(
-            view["rpm_score"].fillna(0) * 0.5 + view["intern_voice_score"].fillna(0) * 0.5
-        ).fillna(0).clip(0, 100)
+        # Cluster-specific neutral weighting. Until outcome validation shows
+        # otherwise, normalized RPM and IV signals carry equal weight.
+        rpm_available = view["rpm_score"].notna().astype(float)
+        iv_available = view["intern_voice_score"].notna().astype(float)
+        available_weight = rpm_available * 0.5 + iv_available * 0.5
+        view["client_signal"] = (
+            (
+                view["rpm_score"].fillna(0) * 0.5
+                + view["intern_voice_score"].fillna(0) * 0.5
+            )
+            .div(available_weight.replace(0, np.nan))
+            .fillna(0)
+            .clip(0, 100)
+        )
         y_axis_label = t("客户端风险分（RPM + IV）", "Client Risk Score (RPM + IV)")
         high_corner_label = t("右上：生产端 + 客户端双高", "Upper-right: high production + client risk")
     else:
@@ -5852,13 +6209,16 @@ def render_zx_high_risk_cluster(
 
     def client_component_contributions(row: pd.Series) -> pd.Series:
         factory_settings = settings_for_factory(risk_settings, row.get("factory_code", "ZX"))
-        weights = normalized_weights(
-            factory_settings.get(
-                "client_weights", DEFAULT_RISK_SETTINGS["client_weights"]
-            )
-        )
         rpm_value = pd.to_numeric(row.get("rpm_score", np.nan), errors="coerce")
         iv_value = pd.to_numeric(row.get("intern_voice_score", np.nan), errors="coerce")
+        if pd.notna(rpm_value) and pd.notna(iv_value):
+            weights = {"rpm_score": 0.5, "intern_voice_score": 0.5}
+        elif pd.notna(rpm_value):
+            weights = {"rpm_score": 1.0, "intern_voice_score": 0.0}
+        elif pd.notna(iv_value):
+            weights = {"rpm_score": 0.0, "intern_voice_score": 1.0}
+        else:
+            weights = {"rpm_score": 0.0, "intern_voice_score": 0.0}
         rpm_component = (0.0 if pd.isna(rpm_value) else float(rpm_value)) * weights.get("rpm_score", 0)
         iv_component = (0.0 if pd.isna(iv_value) else float(iv_value)) * weights.get("intern_voice_score", 0)
         return pd.Series(
@@ -5921,7 +6281,22 @@ def render_zx_high_risk_cluster(
     view["bubble_size"] = view["cluster_score"].fillna(0).clip(lower=0.1)
     view["product_label_display"] = view["product_label"].map(localize_product_label)
     model_code = view.get("model_code", pd.Series("", index=view.index)).fillna("").astype(str).str.strip()
+    model_code = model_code.replace({"-": "", "nan": "", "None": ""})
     model_name = view.get("voice_product_name", pd.Series("", index=view.index)).fillna("").astype(str).str.strip()
+    jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+    jdy_model_map: dict[str, str] = {}
+    if not jdy_fqc.empty and {"cc", "model"}.issubset(jdy_fqc.columns):
+        jdy_models = jdy_fqc[["cc", "model"]].copy()
+        jdy_models["cc"] = jdy_models["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        jdy_models["model"] = jdy_models["model"].fillna("").astype(str).str.strip()
+        jdy_models = jdy_models[jdy_models["cc"].ne("") & jdy_models["model"].ne("")]
+        jdy_model_map = (
+            jdy_models.groupby("cc")["model"]
+            .agg(lambda values: " / ".join(dict.fromkeys(values))[:120])
+            .to_dict()
+        )
+    jdy_model = view["product_code"].fillna("").astype(str).map(jdy_model_map).fillna("")
+    model_code = model_code.where(model_code.ne(""), jdy_model)
     model_fallback = model_name.where(model_name.ne(""), view["product_label_display"].astype(str))
     view["model_display"] = np.where(
         model_code.ne("") & model_fallback.ne(""),
@@ -5935,17 +6310,73 @@ def render_zx_high_risk_cluster(
     view["cluster_risk_formula"] = view.apply(
         lambda row: (
             t(
-                f"综合风险={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x 70% + 客户端{num(row.get('client_signal'), 1)} x 30%；生产端来自QC不良率{pct(row.get('defect_rate'))}，客户端来自RPM风险{num(row.get('rpm_score'), 1)}和IV风险{num(row.get('intern_voice_score'), 1)}。",
-                f"Combined risk={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x 70% + client {num(row.get('client_signal'), 1)} x 30%; production uses QC defect rate {pct(row.get('defect_rate'))}, client uses RPM risk {num(row.get('rpm_score'), 1)} and IV risk {num(row.get('intern_voice_score'), 1)}.",
+                f"综合风险={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x {production_weight}% + 客户端{num(row.get('client_signal'), 1)} x {secondary_weight}%；生产端来自QC不良率{pct(row.get('defect_rate'))}，客户端来自RPM风险{num(row.get('rpm_score'), 1)}和IV风险{num(row.get('intern_voice_score'), 1)}。",
+                f"Combined risk={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x {production_weight}% + client {num(row.get('client_signal'), 1)} x {secondary_weight}%; production uses QC defect rate {pct(row.get('defect_rate'))}, client uses RPM risk {num(row.get('rpm_score'), 1)} and IV risk {num(row.get('intern_voice_score'), 1)}.",
             )
             if has_client_signal
             else t(
-                f"聚类分={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x 70% + 检验量强度{num(row.get('client_signal'), 1)} x 30%；生产端来自QC不良率{pct(row.get('defect_rate'))}。",
-                f"Cluster score={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x 70% + inspection-volume strength {num(row.get('client_signal'), 1)} x 30%; production uses QC defect rate {pct(row.get('defect_rate'))}.",
+                f"聚类分={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x {production_weight}% + 检验量强度{num(row.get('client_signal'), 1)} x {secondary_weight}%；生产端来自QC不良率{pct(row.get('defect_rate'))}。",
+                f"Cluster score={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x {production_weight}% + inspection-volume strength {num(row.get('client_signal'), 1)} x {secondary_weight}%; production uses QC defect rate {pct(row.get('defect_rate'))}.",
             )
         ),
         axis=1,
     )
+
+    with st.expander(t("公式示例｜随便选一个 CC 看懂计算", "Formula Example | Select a CC"), expanded=False):
+        example_options = view.sort_values("cluster_score", ascending=False)["product_code"].astype(str).tolist()
+        default_example = example_options.index("335330") if "335330" in example_options else 0
+        example_cc = st.selectbox(
+            "CC",
+            example_options,
+            index=default_example,
+            key=f"{widget_key}_cluster_formula_example",
+        )
+        example = view[view["product_code"].astype(str).eq(example_cc)].iloc[0]
+        benchmark_pct = float(
+            settings_for_factory(risk_settings, example.get("factory_code", "ZX")).get("qc_benchmark_pct", 4.0)
+        )
+        pseudo_defects = benchmark_pct / 100 * SAMPLE_PSEUDO_COUNT
+        shrunk_rate = shrunk_defect_rate(
+            example.get("defect_qty", 0), example.get("qty_inspected", 0), benchmark_pct
+        )
+        rpm_value = float(example.get("rpm_now")) if pd.notna(example.get("rpm_now")) else 0.0
+        iv_value = float(example.get("intern_voice_count")) if pd.notna(example.get("intern_voice_count")) else 0.0
+        st.markdown(
+            t(
+                f"""
+**CC {example_cc} · Model {example.get('model_display', '-')}**
+
+1. 生产端先做小样本收缩：`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {SAMPLE_PSEUDO_COUNT} 先验样本) = {shrunk_rate:.2%}`，再按 {benchmark_pct:.1f}% 对应 50 分、{benchmark_pct + 8:.1f}% 对应 100 分的分段规则，得到 **生产端 {example.get('production_axis', 0):.1f} 分**。
+2. RPM：`min({rpm_value:,.0f} ÷ {example.get('rpm_cap', 1500):,.0f} × 100, 100) = {example.get('rpm_score', 0):.1f}`；IV：`min({iv_value:,.0f} ÷ {example.get('iv_cap', 30):,.0f} × 100, 100) = {example.get('intern_voice_score', 0):.1f}`。
+3. 客户端：`RPM {example.get('rpm_score', 0):.1f} × {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} × {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`。
+4. 综合分：`生产端 {example.get('production_axis', 0):.1f} × {production_weight}% + 客户端 {example.get('client_signal', 0):.1f} × {secondary_weight}% = {example.get('cluster_score', 0):.1f}`。
+
+**为什么这样处理？**
+
+- `min(..., 100)` 只给标准化后的风险分封顶，原始 RPM / IV 仍保留在悬浮信息中。这样一个极端值不会无限拉大坐标或压扁其他 CC，所有信号都能在 0–100 的同一量尺上比较。
+- 客户端内部在两类数据都存在时暂用 **RPM 50% + IV 50%**；如果某个 CC 只有其中一个信号，已有信号自动承担 100%，不会把缺失数据当成 0 分。两者先分别标准化，所以 50/50 是“两个风险信号同等重要”，不是原始数量直接相加。当前没有经过结果验证的证据证明某一个应该占 70%，因此 50/50 是更中性的默认值；未来可用历史 action 是否有效、退货是否下降来校准。
+- **小样本收缩**是把观察结果与统一基准混合：检验量小时更靠近基准，检验量大时更接近真实不良率。它避免“只检 1 件坏 1 件”被当成与“检 10,000 件坏 1,000 件”同等可靠的 100% 风险证据。
+
+**为什么是“{example.get('cluster_risk_level', '-')}”？** K-means 按生产端与客户端两个坐标分成 3 组，再把平均综合分最高的一组命名为高风险、最低的一组命名为低风险。因此这是当前数据范围内的**相对聚类等级**，不是“综合分达到固定阈值就高风险”。
+""",
+                f"""
+**CC {example_cc} · Model {example.get('model_display', '-')}**
+
+1. Production uses small-sample shrinkage: `({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} prior defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {SAMPLE_PSEUDO_COUNT} prior samples) = {shrunk_rate:.2%}`. The piecewise scale maps {benchmark_pct:.1f}% to 50 and {benchmark_pct + 8:.1f}% to 100, giving **production {example.get('production_axis', 0):.1f}**.
+2. RPM: `min({rpm_value:,.0f} / {example.get('rpm_cap', 1500):,.0f} x 100, 100) = {example.get('rpm_score', 0):.1f}`; IV: `min({iv_value:,.0f} / {example.get('iv_cap', 30):,.0f} x 100, 100) = {example.get('intern_voice_score', 0):.1f}`.
+3. Client: `RPM {example.get('rpm_score', 0):.1f} x {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} x {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`.
+4. Combined: `production {example.get('production_axis', 0):.1f} x {production_weight}% + client {example.get('client_signal', 0):.1f} x {secondary_weight}% = {example.get('cluster_score', 0):.1f}`.
+
+**Why these treatments?**
+
+- `min(..., 100)` caps only the normalized risk score; raw RPM / IV remain available in the hover. One extreme value therefore cannot stretch the scale indefinitely or flatten every other CC, and all signals remain comparable on 0-100.
+- When both sources exist, the client axis uses **RPM 50% + IV 50%**. If a CC has only one signal, the available signal automatically carries 100%; missing data is not treated as a zero score. Each signal is normalized first, so equal weighting means equal importance of the two risk signals, not adding raw counts. There is no outcome-validated evidence yet that either should carry 70%, making 50/50 the neutral default; it can later be calibrated against action effectiveness and subsequent returns.
+- **Small-sample shrinkage** blends the observed rate with a common benchmark. Small samples move more toward the benchmark; large samples stay close to the observed rate. This prevents 1 defect in 1 inspection from being treated as equally reliable as 1,000 defects in 10,000 inspections.
+
+**Why “{example.get('cluster_risk_level', '-')}”?** K-means forms three groups from the production and client axes. The group with the highest average combined score is named high risk, and the lowest is named low risk. This is a **relative cluster label**, not a fixed score threshold.
+""",
+            )
+        )
 
     risk_filter_options = [t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
     with st.container(key="zx_cluster_control"):
@@ -6815,6 +7246,41 @@ def render_zx_process_risk_by_cc(
     products: pd.DataFrame,
     risk_settings: dict,
 ) -> None:
+    with st.expander(t("工序风险计算说明", "Process-Risk Calculation"), expanded=False):
+        benchmark_pct = float(settings_for_factory(risk_settings, "ZX").get("process_benchmark_pct", 5.0))
+        example_source = finished_df[finished_df.get("qty_inspected", pd.Series(0, index=finished_df.index)).gt(0)].copy()
+        example_view = compute_zx_cc_process_summary(example_source, risk_settings).head(1)
+        st.markdown(
+            t(
+                f"""
+**公式**
+
+1. 原始工序不良率 = 该 CC × 工序的疵点数 ÷ 检验数。
+2. 收缩后不良率 = `(疵点数 + {benchmark_pct:.1f}% × {SAMPLE_PSEUDO_COUNT}) ÷ (检验数 + {SAMPLE_PSEUDO_COUNT})`。这一步给小样本加入统一先验，避免少量检验因 1 个疵点直接冲到极高风险。
+3. 风险分：收缩后不良率达到 {benchmark_pct:.1f}% 时为 50 分；超过后按区间继续上升，在 {benchmark_pct + 8:.1f}% 时达到 100 分；最终限制在 0–100。
+4. 页面风险等级使用固定阈值：低 `<35`，中 `35–54.9`，高 `55–74.9`，严重 `≥75`。
+""",
+                f"""
+**Formula**
+
+1. Raw process defect rate = defects / inspected quantity for each CC x process.
+2. Shrunk rate = `(defects + {benchmark_pct:.1f}% x {SAMPLE_PSEUDO_COUNT}) / (inspected + {SAMPLE_PSEUDO_COUNT})`. The common prior prevents a tiny sample with one defect from jumping directly to extreme risk.
+3. Risk score: {benchmark_pct:.1f}% maps to 50; the score rises through the next interval and reaches 100 at {benchmark_pct + 8:.1f}%; the final value is capped at 0-100.
+4. Fixed page levels: Low `<35`, Medium `35-54.9`, High `55-74.9`, Critical `>=75`.
+""",
+            )
+        )
+        if not example_view.empty:
+            example = example_view.iloc[0]
+            shrunk = shrunk_defect_rate(
+                example.get("defect_qty", 0), example.get("qty_inspected", 0), benchmark_pct
+            )
+            st.info(
+                t(
+                    f"示例：CC {example.get('product_code')} / {example.get('process')}：{example.get('defect_qty', 0):,.0f} 疵点 ÷ {example.get('qty_inspected', 0):,.0f} 检验；收缩后不良率 {shrunk:.2%}，工序风险分 {example.get('risk_score', 0):.1f}（{risk_level_text(example.get('risk_level'))}）。",
+                    f"Example: CC {example.get('product_code')} / {example.get('process')}: {example.get('defect_qty', 0):,.0f} defects / {example.get('qty_inspected', 0):,.0f} inspected; shrunk rate {shrunk:.2%}, process risk {example.get('risk_score', 0):.1f} ({risk_level_text(example.get('risk_level'))}).",
+                )
+            )
     options = sorted(
         value
         for value in finished_df.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique()
@@ -6834,11 +7300,77 @@ def render_zx_process_risk_by_cc(
         st.info(t("请至少选择一个 CC。", "Select at least one CC."))
         return
     filtered = finished_df[finished_df["product_code"].astype(str).isin(selected_ccs)].copy()
-    process_view = compute_zx_cc_process_summary(filtered, risk_settings).head(14)
+    process_view = compute_zx_cc_process_summary(filtered, risk_settings)
     if process_view.empty:
         st.info(t("当前筛选下没有可计算的工序风险。", "No process risk can be calculated for the current selection."))
         return
-    plot_view = process_view.sort_values("risk_score", ascending=True)
+    view_mode = st.segmented_control(
+        t("工序分析视角", "Process Analysis View"),
+        options=[t("疵点帕累托", "Defect Pareto"), t("风险分", "Risk Score")],
+        default=t("疵点帕累托", "Defect Pareto"),
+        key=f"zx_process_view_{language_query_code()}",
+    )
+    st.caption(
+        t(
+            "帕累托回答“疵点主要集中在哪里”，适合安排改善资源；风险分回答“相对不良率哪里异常”，能发现数量不大但表现异常的工序。日常改善先看帕累托，风险预警再看风险分。",
+            "Pareto answers where defects concentrate and is best for allocating improvement resources. Risk score detects abnormally high relative rates, including lower-volume processes. Use Pareto first for daily improvement and risk score as the warning view.",
+        )
+    )
+    if view_mode == t("疵点帕累托", "Defect Pareto"):
+        pareto_view = process_view.sort_values("defect_qty", ascending=False).head(12).copy()
+        pareto_total = float(process_view["defect_qty"].sum())
+        pareto_view["defect_share"] = pareto_view["defect_qty"] / pareto_total if pareto_total else 0
+        pareto_view["cumulative_share"] = pareto_view["defect_share"].cumsum()
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=pareto_view["cc_process_view"],
+                y=pareto_view["defect_qty"],
+                name=t("疵点数", "Defects"),
+                marker_color="#3559c7",
+                customdata=np.column_stack(
+                    [
+                        pareto_view["product_code"],
+                        pareto_view["process"],
+                        pareto_view["defect_rate"],
+                        pareto_view["qty_inspected"],
+                        pareto_view["risk_score"],
+                        pareto_view["top_defect"].fillna("-"),
+                    ]
+                ),
+                hovertemplate=(
+                    "<b>CC %{customdata[0]} / %{customdata[1]}</b><br>"
+                    + t("疵点数", "Defects") + " %{y:,.0f}<br>"
+                    + t("原始不良率", "Raw defect rate") + " %{customdata[2]:.2%}<br>"
+                    + t("检验数", "Inspected") + " %{customdata[3]:,.0f}<br>"
+                    + t("风险分", "Risk score") + " %{customdata[4]:.1f}<br>"
+                    + t("主要疵点", "Top defect") + " %{customdata[5]}<extra></extra>"
+                ),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=pareto_view["cc_process_view"],
+                y=pareto_view["cumulative_share"],
+                name=t("累计占比", "Cumulative Share"),
+                mode="lines+markers",
+                line=dict(color="#ef4444", width=3),
+                marker=dict(size=7),
+                yaxis="y2",
+                hovertemplate=t("累计 %{y:.1%}", "Cumulative %{y:.1%}") + "<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            yaxis=dict(title=t("疵点数", "Defects")),
+            yaxis2=dict(title=t("累计占比", "Cumulative Share"), overlaying="y", side="right", tickformat=".0%", range=[0, 1.05]),
+            xaxis=dict(title="CC / " + t("工序", "Process"), tickangle=-28),
+            legend=dict(orientation="h", y=1.12, x=0),
+        )
+        fig.add_hline(y=0.8, line_dash="dot", line_color="#f59e0b", yref="y2")
+        plot_chart(fig, 460)
+        return
+
+    plot_view = process_view.head(14).sort_values("risk_score", ascending=True)
     fig = px.bar(
         plot_view,
         x="risk_score",
@@ -7587,17 +8119,20 @@ def render_tu_jiandaoyun_snapshot() -> None:
         )
 
     jdy_view = jdy_fqc.copy()
+    if "inspector_owner" not in jdy_view.columns:
+        jdy_view["inspector_owner"] = jdy_view.get("inspector", pd.Series("", index=jdy_view.index)).map(zx_inspector_owner)
     pass_mask, fail_mask, valid_result_mask = jdy_first_pass_masks(jdy_view)
     jdy_view["_is_fail"] = fail_mask
     jdy_view["_is_pass"] = pass_mask
     jdy_view["_valid_result"] = valid_result_mask
 
     rft_metrics = jdy_fqc_rft_metrics(jdy_view)
+    decathlon_metrics = jdy_fqc_rft_metrics(jdy_view[jdy_view["inspector_owner"].eq("Decathlon")])
+    zx_factory_metrics = jdy_fqc_rft_metrics(jdy_view[jdy_view["inspector_owner"].eq("ZX Factory")])
     records = int(rft_metrics["records"])
-    valid_records = int(rft_metrics["valid_records"])
-    pass_count = int(rft_metrics["pass_count"])
     fail_count = int(rft_metrics["fail_count"])
-    rft = float(rft_metrics["rft"]) if pd.notna(rft_metrics["rft"]) else 0
+    decathlon_rft = float(decathlon_metrics["rft"]) if pd.notna(decathlon_metrics["rft"]) else np.nan
+    zx_factory_rft = float(zx_factory_metrics["rft"]) if pd.notna(zx_factory_metrics["rft"]) else np.nan
     sampling_series = pd.to_numeric(jdy_view["sampling_size"] if "sampling_size" in jdy_view.columns else pd.Series(0, index=jdy_view.index), errors="coerce").fillna(0)
     defect_series = pd.to_numeric(jdy_view["defect_qty"] if "defect_qty" in jdy_view.columns else pd.Series(0, index=jdy_view.index), errors="coerce").fillna(0)
     sampling = float(sampling_series.sum())
@@ -7608,10 +8143,16 @@ def render_tu_jiandaoyun_snapshot() -> None:
     render_kpi_cards(
         [
             {
-                "label": "FQC RFT",
-                "value": pct(rft),
-                "note": t(f"PASS {pass_count:,} / 有效结果 {valid_records:,}", f"PASS {pass_count:,} / valid results {valid_records:,}"),
-                "level": "high" if rft < 0.92 else "medium" if rft < 0.97 else "low",
+                "label": t("迪卡侬验货合格率", "Decathlon Inspection RFT"),
+                "value": pct(decathlon_rft),
+                "note": t(f"PASS {int(decathlon_metrics['pass_count']):,} / 有效 {int(decathlon_metrics['valid_records']):,}", f"PASS {int(decathlon_metrics['pass_count']):,} / valid {int(decathlon_metrics['valid_records']):,}"),
+                "level": "high" if pd.notna(decathlon_rft) and decathlon_rft < 0.92 else "medium" if pd.notna(decathlon_rft) and decathlon_rft < 0.97 else "low",
+            },
+            {
+                "label": t("中兴工厂自检合格率", "ZX Factory Self-Inspection RFT"),
+                "value": pct(zx_factory_rft),
+                "note": t(f"PASS {int(zx_factory_metrics['pass_count']):,} / 有效 {int(zx_factory_metrics['valid_records']):,}", f"PASS {int(zx_factory_metrics['pass_count']):,} / valid {int(zx_factory_metrics['valid_records']):,}"),
+                "level": "high" if pd.notna(zx_factory_rft) and zx_factory_rft < 0.92 else "medium" if pd.notna(zx_factory_rft) and zx_factory_rft < 0.97 else "low",
             },
             {
                 "label": t("Fail 记录", "Fail Records"),
@@ -7641,32 +8182,30 @@ def render_tu_jiandaoyun_snapshot() -> None:
         jdy_monthly_source["month"] = pd.to_datetime(jdy_monthly_source["date"], errors="coerce").dt.to_period("M").astype(str)
         monthly = (
             jdy_monthly_source[jdy_monthly_source["month"].ne("NaT")]
-            .groupby("month", as_index=False)
+            .groupby(["month", "inspector_owner"], as_index=False)
             .agg(records=("record_id", "count"), pass_count=("_is_pass", "sum"), fail_count=("_is_fail", "sum"), valid_results=("_valid_result", "sum"))
         )
         if not monthly.empty:
             monthly["rft"] = safe_rate(monthly["pass_count"], monthly["valid_results"])
+            monthly["owner_label"] = monthly["inspector_owner"].replace(
+                {"Decathlon": t("迪卡侬验货", "Decathlon Inspection"), "ZX Factory": t("中兴工厂自检", "ZX Factory Self-Inspection")}
+            )
             fig = go.Figure()
-            fig.add_bar(
-                x=monthly["month"],
-                y=monthly["records"],
-                name=t("记录数", "Records"),
-                marker_color="#93c5fd",
-                opacity=0.55,
-                yaxis="y2",
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=monthly["month"],
-                    y=monthly["rft"],
-                    name="FQC RFT",
-                    mode="lines+markers",
-                    line=dict(color="#168a5b", width=3),
+            owner_colors = {"Decathlon": "#0b6dcc", "ZX Factory": "#f59e0b"}
+            for owner, owner_view in monthly.groupby("inspector_owner"):
+                fig.add_trace(
+                    go.Scatter(
+                        x=owner_view["month"],
+                        y=owner_view["rft"],
+                        name=str(owner_view["owner_label"].iloc[0]),
+                        mode="lines+markers",
+                        line=dict(color=owner_colors.get(owner, "#64748b"), width=3),
+                        customdata=owner_view[["records", "pass_count", "fail_count"]],
+                        hovertemplate="%{x}<br>RFT %{y:.2%}<br>Records %{customdata[0]:,.0f}<br>PASS %{customdata[1]:,.0f}<br>FAIL %{customdata[2]:,.0f}<extra></extra>",
+                    )
                 )
-            )
             fig.update_layout(
                 yaxis=dict(title="FQC RFT", tickformat=".0%", range=[0, 1.02]),
-                yaxis2=dict(title=t("记录数", "Records"), overlaying="y", side="right", showgrid=False),
                 xaxis=dict(title=t("月份", "Month")),
                 legend_title_text="",
             )
@@ -7679,7 +8218,7 @@ def render_tu_jiandaoyun_snapshot() -> None:
             inspector_source = jdy_view.copy()
             inspector_source["inspector_clean"] = inspector_source["inspector"].fillna("").astype(str).str.strip().replace("", t("未记录", "Unknown"))
             inspector = (
-                inspector_source.groupby("inspector_clean", as_index=False)
+                inspector_source.groupby(["inspector_clean", "inspector_owner"], as_index=False)
                 .agg(
                     records=("record_id", "count"),
                     pass_count=("_is_pass", "sum"),
@@ -7718,6 +8257,7 @@ def render_tu_jiandaoyun_snapshot() -> None:
         table = inspector.sort_values(["rft", "records"], ascending=[True, False]).rename(
             columns={
                 "inspector_clean": t("检验员", "Inspector"),
+                "inspector_owner": t("人员归属", "Owner"),
                 "records": t("记录数", "Records"),
                 "pass_count": "PASS",
                 "fail_count": "FAIL",
@@ -7726,8 +8266,15 @@ def render_tu_jiandaoyun_snapshot() -> None:
                 "latest_date": t("最新日期", "Latest Date"),
             }
         )
+        owner_column = t("人员归属", "Owner")
+        table[owner_column] = table[owner_column].replace(
+            {
+                "Decathlon": t("迪卡侬", "Decathlon"),
+                "ZX Factory": t("中兴工厂", "ZX Factory"),
+            }
+        )
         dataframe_with_format(
-            table[[t("检验员", "Inspector"), t("记录数", "Records"), "PASS", "FAIL", "RFT", t("抽样疵点率", "Sample Defect Rate"), t("最新日期", "Latest Date")]],
+            table[[t("检验员", "Inspector"), t("人员归属", "Owner"), t("记录数", "Records"), "PASS", "FAIL", "RFT", t("抽样疵点率", "Sample Defect Rate"), t("最新日期", "Latest Date")]],
             column_config={
                 "RFT": st.column_config.ProgressColumn("RFT", format="%.2f%%", min_value=0, max_value=1),
                 t("抽样疵点率", "Sample Defect Rate"): st.column_config.ProgressColumn(t("抽样疵点率", "Sample Defect Rate"), format="%.2f%%", min_value=0, max_value=0.1),
@@ -7843,20 +8390,35 @@ def build_zx_kpi_cards(
 
     if not isinstance(jdy_fqc, pd.DataFrame):
         jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
-    fqc_metrics = jdy_fqc_rft_metrics(jdy_fqc)
-    fqc_rft = float(fqc_metrics["rft"]) if pd.notna(fqc_metrics["rft"]) else np.nan
-    if pd.notna(fqc_rft):
-        fqc_value = pct(fqc_rft)
-        fqc_note = t(
-            f"简道云 ZX · PASS {int(fqc_metrics['pass_count']):,} / 有效 {int(fqc_metrics['valid_records']):,}",
-            f"Jiandaoyun ZX · PASS {int(fqc_metrics['pass_count']):,} / valid {int(fqc_metrics['valid_records']):,}",
-        )
-    elif jdy_fqc.empty:
-        fqc_value = t("待刷新", "Refresh")
-        fqc_note = t("点击“刷新简道云 API”获取 ZX FQC RFT", "Use Refresh Jiandaoyun API to load ZX FQC RFT")
-    else:
-        fqc_value = t("无有效结果", "No valid result")
-        fqc_note = t("简道云记录缺少可识别的 PASS / FAIL", "Jiandaoyun records do not contain recognizable PASS / FAIL results")
+    if not jdy_fqc.empty and "inspector_owner" not in jdy_fqc.columns:
+        jdy_fqc = jdy_fqc.copy()
+        jdy_fqc["inspector_owner"] = jdy_fqc.get("inspector", pd.Series("", index=jdy_fqc.index)).map(zx_inspector_owner)
+
+    def fqc_owner_card(owner: str, label_cn: str, label_en: str) -> dict[str, str]:
+        owner_view = jdy_fqc[jdy_fqc.get("inspector_owner", pd.Series("", index=jdy_fqc.index)).eq(owner)].copy()
+        metrics = jdy_fqc_rft_metrics(owner_view)
+        owner_rft = float(metrics["rft"]) if pd.notna(metrics["rft"]) else np.nan
+        if pd.notna(owner_rft):
+            value = pct(owner_rft)
+            note = t(
+                f"PASS {int(metrics['pass_count']):,} / 有效 {int(metrics['valid_records']):,}",
+                f"PASS {int(metrics['pass_count']):,} / valid {int(metrics['valid_records']):,}",
+            )
+        elif jdy_fqc.empty:
+            value = t("待刷新", "Refresh")
+            note = t("点击刷新简道云 API", "Refresh Jiandaoyun API")
+        else:
+            value = t("无有效结果", "No valid result")
+            note = t("当前归属没有 PASS / FAIL", "No PASS / FAIL for this owner")
+        return {
+            "label": t(label_cn, label_en),
+            "value": value,
+            "note": note,
+            "level": "high" if pd.notna(owner_rft) and owner_rft < 0.92 else "medium" if pd.notna(owner_rft) and owner_rft < 0.97 else "low",
+        }
+
+    decathlon_fqc_card = fqc_owner_card("Decathlon", "迪卡侬验货合格率", "Decathlon Inspection RFT")
+    zx_factory_fqc_card = fqc_owner_card("ZX Factory", "中兴工厂自检合格率", "ZX Factory Self-Inspection RFT")
 
     ytd_voice = (
         voice_df[voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("YTD Compare")].copy()
@@ -7895,12 +8457,8 @@ def build_zx_kpi_cards(
         yoy_note = t("工厂售前（Before）· 去年同期数据未接入", "Factory pre-sale (Before) · prior-year comparable data not loaded")
 
     return [
-        {
-            "label": "FQC RFT",
-            "value": fqc_value,
-            "note": fqc_note,
-            "level": "high" if pd.notna(fqc_rft) and fqc_rft < 0.92 else "medium" if pd.notna(fqc_rft) and fqc_rft < 0.97 else "low",
-        },
+        decathlon_fqc_card,
+        zx_factory_fqc_card,
         {
             "label": t("End of line RFT", "End-of-line RFT"),
             "value": pct(eol_rft) if pd.notna(eol_rft) else "N/A",
@@ -7928,6 +8486,184 @@ def build_zx_kpi_cards(
     ]
 
 
+@st.cache_data(show_spinner=False)
+def load_zx_customer_return_anatomy(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> tuple[pd.DataFrame, pd.DataFrame]:
+    _ = cache_version
+    cfg = FACTORIES["ZX"]
+
+    def load_one(path_key: str, label_column: str, output_label: str) -> pd.DataFrame:
+        path = ROOT / cfg[path_key]
+        if not path.exists():
+            return pd.DataFrame()
+        raw = pd.read_csv(path, encoding="utf-16", sep="\t")
+        raw.columns = [str(column).strip() for column in raw.columns]
+        source_label = next((column for column in raw.columns if column.casefold() == label_column.casefold()), raw.columns[0])
+        view = pd.DataFrame(
+            {
+                "label": raw[source_label].fillna("").astype(str).str.strip(),
+                "returned": clean_numeric_series(raw.get("N0 Qty returned", pd.Series(0, index=raw.index))).fillna(0),
+                "share": clean_numeric_series(raw.get("% N0 Qty returned", pd.Series(np.nan, index=raw.index))),
+                "lead_days": clean_numeric_series(raw.get("N0 Return leadtime", pd.Series(np.nan, index=raw.index))),
+            }
+        )
+        view["share"] = view["share"].where(view["share"].abs() <= 1, view["share"] / 100)
+        view = view[view["label"].ne("") & ~view["label"].str.casefold().eq("grand total")].copy()
+        view["dimension"] = output_label
+        return view.sort_values("returned", ascending=False)
+
+    location = load_one("customer_return_location", "Location Name", "Location")
+    defect = load_one("customer_return_defect", "Defect Name", "Defect")
+    return location, defect
+
+
+def render_zx_customer_360(voice_df: pd.DataFrame, finished_df: pd.DataFrame) -> None:
+    customer = voice_df[
+        voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("YTD Compare")
+    ].copy() if not voice_df.empty else pd.DataFrame()
+    if customer.empty:
+        st.info(t("当前没有可用的Customer CC数据。", "No Customer CC data is available."))
+        return
+
+    customer["rpm_now"] = pd.to_numeric(customer.get("rpm_now"), errors="coerce")
+    for column in ["returned_now", "sold_now", "nqc_now", "avg_score_now", "reviews_now", "delta_rpm"]:
+        customer[column] = pd.to_numeric(customer.get(column), errors="coerce")
+    factory_ccs = set(finished_df.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip())
+    factory_ccs.discard("")
+    customer_ccs = set(customer["product_code"].fillna("").astype(str).str.strip())
+    matched_ccs = factory_ccs & customer_ccs
+    coverage = len(matched_ccs) / len(factory_ccs) if factory_ccs else np.nan
+    total_returns = float(customer["returned_now"].fillna(0).sum())
+    total_sold = float(customer["sold_now"].fillna(0).sum())
+    total_nqc = float(customer["nqc_now"].fillna(0).sum())
+    rpm_total = total_returns / total_sold * 1_000_000 if total_sold else np.nan
+
+    render_kpi_cards(
+        [
+            {"label": t("客户CC覆盖", "Customer CC Coverage"), "value": pct(coverage), "note": t(f"匹配 {len(matched_ccs)} / 工厂 {len(factory_ccs)} CC", f"Matched {len(matched_ccs)} / {len(factory_ccs)} factory CCs"), "level": "medium" if pd.notna(coverage) and coverage < 0.8 else "low"},
+            {"label": "RPM", "value": num(rpm_total, 0) if pd.notna(rpm_total) else "N/A", "note": t(f"退货 {total_returns:,.0f} / 销量 {total_sold:,.0f}", f"Returns {total_returns:,.0f} / sold {total_sold:,.0f}"), "level": "medium"},
+            {"label": t("客户退货量", "Customer Returns"), "value": compact_num(total_returns), "note": t("Customer N0范围", "Customer N0 scope"), "level": "medium"},
+            {"label": "NQC", "value": compact_num(total_nqc), "note": t("单位/币种待业务确认", "Unit/currency to be confirmed"), "level": "medium"},
+        ]
+    )
+
+    factory_summary = (
+        finished_df.groupby("product_code", as_index=False)
+        .agg(factory_inspected=("qty_inspected", "sum"), factory_defects=("defect_qty", "sum"))
+    )
+    factory_summary["factory_defect_rate"] = safe_rate(
+        factory_summary["factory_defects"], factory_summary["factory_inspected"]
+    )
+    ranked = customer[customer["rpm_now"].gt(0) & customer["sold_now"].gt(0)].copy()
+    ranked["product_code"] = ranked["product_code"].fillna("").astype(str).str.strip()
+    factory_summary["product_code"] = factory_summary["product_code"].fillna("").astype(str).str.strip()
+    ranked = ranked.merge(factory_summary, on="product_code", how="inner")
+    ranked["cc_label"] = ranked["product_code"].astype(str) + " · " + ranked["product_name"].fillna("").astype(str).str.slice(0, 24)
+    ranked["bubble_returns"] = ranked["returned_now"].fillna(0).clip(lower=1)
+    factory_total_qty = float(ranked["factory_inspected"].sum())
+    factory_total_defects = float(ranked["factory_defects"].sum())
+    factory_rate_benchmark = factory_total_defects / factory_total_qty if factory_total_qty else np.nan
+    effective_factory_benchmark = max(float(factory_rate_benchmark), 0.0001) if pd.notna(factory_rate_benchmark) else 0.01
+    effective_rpm_benchmark = max(float(rpm_total), 1.0) if pd.notna(rpm_total) else 1500.0
+    ranked["factory_risk_index"] = (
+        ranked["factory_defect_rate"].fillna(0).div(effective_factory_benchmark).clip(upper=2) / 2 * 100
+    )
+    ranked["customer_risk_index"] = (
+        ranked["rpm_now"].fillna(0).div(effective_rpm_benchmark).clip(upper=2) / 2 * 100
+    )
+    ranked["attention_score"] = (
+        ranked["factory_risk_index"] * 0.5 + ranked["customer_risk_index"] * 0.5
+    ).clip(0, 100)
+    ranked = ranked.sort_values(["attention_score", "returned_now"], ascending=False).head(6).copy()
+    ranked["label_text"] = ""
+    label_index = ranked["attention_score"].nlargest(min(4, len(ranked))).index
+    ranked.loc[label_index, "label_text"] = ranked.loc[label_index, "product_code"].astype(str)
+    ranked["attention_level"] = np.select(
+        [
+            ranked["factory_defect_rate"].ge(effective_factory_benchmark) & ranked["rpm_now"].ge(effective_rpm_benchmark),
+            ranked["factory_defect_rate"].ge(effective_factory_benchmark),
+            ranked["rpm_now"].ge(effective_rpm_benchmark),
+        ],
+        [t("生产端 + 客户端双高", "High on Both"), t("生产端重点", "Production Priority"), t("客户端重点", "Customer Priority")],
+        default=t("观察", "Watch"),
+    )
+    left, right = st.columns([1.15, 1])
+    with left:
+        st.markdown(f"**{t('客户 360｜工厂不良率 × 客户 RPM', 'Customer 360 | Factory Defect Rate x Customer RPM')}**")
+        if ranked.empty:
+            st.info(t("当前没有同时匹配工厂检验与客户 RPM 的 CC。", "No CC currently matches both factory inspection and customer RPM data."))
+        else:
+            fig = px.scatter(
+                ranked,
+                x="factory_defect_rate",
+                y="rpm_now",
+                size="bubble_returns",
+                color="attention_level",
+                color_discrete_map={
+                    t("生产端 + 客户端双高", "High on Both"): "#c01048",
+                    t("生产端重点", "Production Priority"): "#f97316",
+                    t("客户端重点", "Customer Priority"): "#7c3aed",
+                    t("观察", "Watch"): "#2f6f8f",
+                },
+                text="label_text",
+                custom_data=["product_code", "product_name", "returned_now", "sold_now", "delta_rpm", "nqc_now", "attention_score", "factory_inspected", "factory_defects", "attention_level"],
+                labels={"rpm_now": "RPM", "factory_defect_rate": t("工厂不良率", "Factory Defect Rate"), "attention_level": t("联合状态", "Joint Status")},
+                size_max=38,
+            )
+            fig.update_xaxes(showgrid=True, tickformat=".1%")
+            fig.update_yaxes(type="log", showgrid=True, tickformat=".2s")
+            fig.update_traces(
+                textposition="top center",
+                marker=dict(opacity=0.88, line=dict(color="white", width=1.4)),
+                hovertemplate=(
+                    "<b>CC %{customdata[0]}</b><br>%{customdata[1]}<br>"
+                    + t("工厂不良率", "Factory defect rate") + " %{x:.2%}<br>"
+                    + t("工厂疵点 / 检验", "Factory defects / inspected") + " %{customdata[8]:,.0f} / %{customdata[7]:,.0f}<br>"
+                    "RPM <b>%{y:,.0f}</b><br>"
+                    + t("销量", "Sold") + " %{customdata[3]:,.0f}<br>"
+                    + t("退货", "Returns") + " %{customdata[2]:,.0f}<br>"
+                    + t("联合关注分", "Joint attention score") + " %{customdata[6]:.1f}<extra></extra>"
+                ),
+            )
+            fig.add_vline(
+                x=effective_factory_benchmark,
+                line_dash="dash",
+                line_color="#667085",
+                annotation_text=t(f"工厂均值 {effective_factory_benchmark:.2%}", f"Factory avg {effective_factory_benchmark:.2%}"),
+            )
+            if pd.notna(rpm_total):
+                fig.add_hline(
+                    y=rpm_total,
+                    line_dash="dash",
+                    line_color="#667085",
+                    annotation_text=t(f"总体 RPM {rpm_total:,.0f}", f"Overall RPM {rpm_total:,.0f}"),
+                )
+            fig.update_layout(legend=dict(title=t("联合状态", "Joint Status"), orientation="h", y=1.12, x=0))
+            plot_chart(fig, 420)
+            st.caption(t("仅展示联合关注分最高的 6 个 CC。横轴连接工厂检验不良率，纵轴连接客户 RPM，圆圈大小代表退货量；虚线分别是当前匹配范围的工厂平均不良率与总体 RPM。联合关注分 = 标准化工厂风险 50% + 标准化客户 RPM 风险 50%。", "Shows only the six CCs with the highest joint attention score. The x-axis links factory inspection defect rate, the y-axis customer RPM, and bubble size returned quantity. Dashed lines show the factory average defect rate and overall RPM for the matched scope. Joint score = normalized factory risk 50% + normalized customer RPM risk 50%."))
+
+    location, defect = load_zx_customer_return_anatomy(DATA_SCOPE_CACHE_VERSION)
+    with right:
+        st.markdown(f"**{t('消费者退货解剖｜缺陷与部位', 'Return Anatomy | Defect and Location')}**")
+        anatomy = pd.concat([location.head(5), defect.head(5)], ignore_index=True)
+        if anatomy.empty:
+            st.info(t("当前没有退货部位或缺陷数据。", "No return-location or defect data is available."))
+        else:
+            anatomy["dimension_label"] = anatomy["dimension"].map({"Location": t("部位", "Location"), "Defect": t("缺陷", "Defect")})
+            fig = px.bar(
+                anatomy.sort_values("returned", ascending=True),
+                x="returned",
+                y="label",
+                color="dimension_label",
+                orientation="h",
+                text="returned",
+                hover_data={"share": ":.2%", "lead_days": ":.0f"},
+                labels={"returned": t("退货量", "Returned Qty"), "label": t("缺陷 / 部位", "Defect / Location"), "dimension_label": t("维度", "Dimension")},
+            )
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            plot_chart(fig, 420)
+            st.caption(t("当前Defloc文件没有CC或Model字段，因此此图是中兴总体视角，暂不跟随CC筛选。", "The current Defloc files have no CC or Model key, so this is an overall ZX view and does not follow the CC filter."))
+
+
 def render_community_cockpit(
     scope_key: str,
     finished_df: pd.DataFrame,
@@ -7949,11 +8685,9 @@ def render_community_cockpit(
     high_processes = int(process_df[process_df["risk_level"].isin(["High", "Critical"])].shape[0]) if not process_df.empty else 0
     alert_df = build_community_alerts(product_df, process_df, incoming_df, voice_df, scope_key)
 
-    render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
+    jdy_fqc = render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
 
-    jdy_fqc = pd.DataFrame()
     if scope_key == "ZX":
-        jdy_fqc, _, _ = render_tu_jdy_refresh_control("zx_panel", include_cp=True)
         _, readme_col = st.columns([0.84, 0.16])
         with readme_col:
             render_readme_popover(
@@ -7961,8 +8695,8 @@ def render_community_cockpit(
                 t("Textile Unit 看板核心指标", "Textile Unit Dashboard Core Metrics"),
                 t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
-                t("FQC RFT = 简道云首次 PASS / 有效结果；FAIL 与重验合格均不计入首次 PASS。End of line RFT = 1 - Excel 疵点数 / 检验数；RPM = 退货数 / 销量 x 1,000,000；IV 同比仅在上年同期数据已接入时计算。", "FQC RFT = Jiandaoyun first-pass records / valid results; FAIL and pass-after-recheck are not first-pass records. End-of-line RFT = 1 - Excel defects / inspected; RPM = returns / sold x 1,000,000; IV YoY is calculated only when prior-year comparable data is loaded."),
-                "Jiandaoyun ZX FQC + ZX finished QC Excel + ZX R12M RPM + ZX Intern Voice",
+                t("迪卡侬验货合格率仅包含 Wuhao、EricZeng、Daisy yu、李秀玲、韩永红；其他检验员计入中兴工厂自检合格率。两者均按首次 PASS / 有效结果计算，FAIL 与重验合格不计入首次 PASS。End of line RFT = 1 - Excel 疵点数 / 检验数；RPM = 退货数 / 销量 x 1,000,000。", "Decathlon inspection RFT includes only Wuhao, EricZeng, Daisy yu, Li Xiuling and Han Yonghong; all other inspectors are assigned to ZX factory self-inspection. Both use first PASS / valid result; FAIL and pass-after-recheck are not first pass. End-of-line RFT = 1 - Excel defects / inspected; RPM = returns / sold x 1,000,000."),
+                "Decathlon PS data/ZX_FQC_normalized_snapshot.csv + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/Compare hierarchy (CC).xlsx + Decathlon Customer data/ZX intervoice.xlsx",
             )
         render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc))
         render_inspection_volume_comparison(finished_df, jdy_fqc)
@@ -8000,14 +8734,8 @@ def render_community_cockpit(
         )
 
     if scope_key == "ZX":
-        zx_qc_source = t(
-            "TU database/ZX Database/05.7-06.6检验数据.xlsx",
-            "ZX finished quality inspection Excel",
-        )
-        zx_client_source = t(
-            "TU database/ZX Database/ZX R12M Compare hierarchy.csv + 2026 ZX Intern Voice.xlsx",
-            "ZX R12M RPM data + ZX Intern Voice data",
-        )
+        zx_qc_source = "TU database/ZX Database/Factory data/05.7-06.6检验数据.xlsx"
+        zx_client_source = "TU database/ZX Database/Decathlon Customer data/Compare hierarchy (CC).xlsx + TU database/ZX Database/Decathlon Customer data/ZX intervoice.xlsx"
         zx_risk_source = f"{zx_qc_source} + {zx_client_source}"
         render_chart_heading(
             "高风险产品聚类分析",
@@ -8070,6 +8798,7 @@ def render_community_cockpit(
                 "process": t("工序", "Process"),
                 "worker": t("工人", "Worker"),
                 "material": t("原辅料", "Material"),
+                "customer": t("客户 360", "Customer 360"),
                 "ai": t("AI 总结报告", "AI Summary Report"),
             }
             selected_analysis = st.segmented_control(
@@ -8089,12 +8818,15 @@ def render_community_cockpit(
             elif selected_analysis == "material":
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
+            elif selected_analysis == "customer":
+                st.markdown(f"**{t('客户 360与退货解剖', 'Customer 360 and Return Anatomy')}**")
+                render_zx_customer_360(voice_df, finished_df)
             elif selected_analysis == "ai":
                 st.markdown(f"**{t('TU Community AI 总结报告', 'TU Community AI Summary Report')}**")
                 report_language = st.segmented_control(
                     t("报告语言", "Report Language"),
-                    ["English", "中文"],
-                    default="English",
+                    ["中文", "English"],
+                    default="中文",
                     key="zx_dashboard1_ai_report_language",
                 )
                 tu_codes = ("ZX", "TU_GP", "TU_DS")
@@ -8247,15 +8979,6 @@ def render_community_cockpit(
                 render_worker_focus(worker_df, source_label)
             elif selected_analysis == "coverage":
                 render_se_data_summary(finished_df, process_df, source_label)
-
-
-ZX_DKL_INSPECTOR_PATTERNS = (
-    "eric zeng",
-    "wuhao",
-    "daisy",
-    "韩永红",
-    "李秀玲",
-)
 
 
 def field_completeness(frame: pd.DataFrame, columns: list[str]) -> tuple[float, int, int]:
@@ -8491,12 +9214,11 @@ def render_supplier_risk_cluster(supplier_df: pd.DataFrame) -> None:
 
 
 def normalize_inspector_for_match(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
+    return normalize_zx_inspector_name(value)
 
 
 def is_zx_dkl_inspector(value: object) -> bool:
-    normalized = normalize_inspector_for_match(value)
-    return any(pattern in normalized for pattern in ZX_DKL_INSPECTOR_PATTERNS)
+    return zx_inspector_owner(value) == "Decathlon"
 
 
 def render_zx_supplier_defect_trend(finished_df: pd.DataFrame, jdy_fqc: pd.DataFrame) -> None:
@@ -9208,6 +9930,11 @@ active_scope_key = get_active_scope_key()
 scope_factory_codes = tuple(DASHBOARD_SCOPES[active_scope_key]["factories"])
 with st.spinner(t("正在读取供应商质量数据...", "Loading supplier quality data...")):
     finished_all, voice_all, incoming_all = load_all_data(DATA_SCOPE_CACHE_VERSION, scope_factory_codes)
+    sidebar_jdy_fqc = (
+        load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)[0]
+        if "ZX" in scope_factory_codes
+        else pd.DataFrame()
+    )
 
 if finished_all.empty:
     st.error(t("未能读取本地成品检验数据，请检查各 Database 文件夹。", "No finished QC data was loaded."))
@@ -9285,11 +10012,22 @@ with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
         model_voice_source = model_voice_source[
             model_voice_source["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(selected_cc)
         ]
-    model_codes = sorted(
+    model_values = set(
         value
         for value in model_voice_source.get("model_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique().tolist()
         if value and value.lower() not in {"nan", "none"}
     )
+    jdy_model_source = sidebar_jdy_fqc.copy()
+    if not jdy_model_source.empty and {"cc", "model"}.issubset(jdy_model_source.columns):
+        jdy_model_source["cc"] = jdy_model_source["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        if selected_cc != ALL_FILTER_VALUE:
+            jdy_model_source = jdy_model_source[jdy_model_source["cc"].eq(selected_cc)]
+        model_values.update(
+            value
+            for value in jdy_model_source["model"].fillna("").astype(str).str.strip().unique().tolist()
+            if value and value.lower() not in {"nan", "none"}
+        )
+    model_codes = sorted(model_values)
     model_choices = [ALL_FILTER_VALUE, *model_codes]
     if st.session_state.get(model_filter_key) not in model_choices:
         st.session_state[model_filter_key] = ALL_FILTER_VALUE
@@ -9364,8 +10102,9 @@ if selected_cc_filter:
     finished = finished[
         finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(selected_cc_filter)
     ]
-if selected_model != ALL_FILTER_VALUE and not voice_all.empty and "model_code" in voice_all.columns:
-    model_ccs = set(
+if selected_model != ALL_FILTER_VALUE:
+    if not voice_all.empty and "model_code" in voice_all.columns:
+        model_ccs.update(
         voice_all.loc[
             voice_all["model_code"].fillna("").astype(str).str.strip().eq(selected_model),
             "product_code",
@@ -9373,7 +10112,17 @@ if selected_model != ALL_FILTER_VALUE and not voice_all.empty and "model_code" i
         .fillna("")
         .astype(str)
         .str.replace(r"\.0$", "", regex=True)
-    )
+        )
+    if not sidebar_jdy_fqc.empty and {"cc", "model"}.issubset(sidebar_jdy_fqc.columns):
+        model_ccs.update(
+            sidebar_jdy_fqc.loc[
+                sidebar_jdy_fqc["model"].fillna("").astype(str).str.strip().eq(selected_model),
+                "cc",
+            ]
+            .fillna("")
+            .astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+        )
     model_ccs.discard("")
     if model_ccs:
         finished = finished[
@@ -9398,8 +10147,13 @@ if selected_cc_filter and not voice.empty:
     voice = voice[
         voice["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(selected_cc_filter)
     ]
-if selected_model != ALL_FILTER_VALUE and not voice.empty and "model_code" in voice.columns:
-    voice = voice[voice["model_code"].fillna("").astype(str).str.strip().eq(selected_model)]
+if selected_model != ALL_FILTER_VALUE and not voice.empty:
+    if model_ccs:
+        voice = voice[
+            voice["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).isin(model_ccs)
+        ]
+    elif "model_code" in voice.columns:
+        voice = voice[voice["model_code"].fillna("").astype(str).str.strip().eq(selected_model)]
 
 incoming = (
     incoming_all[
