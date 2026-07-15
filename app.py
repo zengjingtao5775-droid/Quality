@@ -1212,8 +1212,8 @@ DASHBOARD_SCOPES = {
         "code": "TU",
         "label_cn": "Textile Unit 看板",
         "label_en": "Textile Unit Dashboard",
-        "subtitle_cn": "Textile community",
-        "subtitle_en": "Textile community",
+        "subtitle_cn": "49425 · 中兴",
+        "subtitle_en": "49425 · Zhongxing",
         "factories": ["ZX"],
         "section_cn": "Community",
         "section_en": "Community",
@@ -5302,17 +5302,6 @@ def plot_chart(
         key=chart_key,
         **chart_kwargs,
     )
-    if cc_customdata_index is not None:
-        st.caption(
-            t(
-                "拖动画框可放大；双击 CC 自动聚焦，再次双击同一个 CC 返回全局。"
-                if enable_box_zoom
-                else "双击 CC 自动聚焦；再次双击同一个 CC 返回全局。",
-                "Drag a box to zoom; double-click a CC to focus, then double-click it again to return to the global view."
-                if enable_box_zoom
-                else "Double-click a CC to focus; double-click the same CC again to return to the global view.",
-            )
-        )
 
 
 def dataframe_with_format(df: pd.DataFrame, column_config: dict | None = None, height: int = 360):
@@ -5444,10 +5433,11 @@ def render_hero(
         else:
             hero_title = t(f"{scope_title} 看板", f"{scope_title} Dashboard")
     hero_title = html.escape(english_display_text(hero_title))
+    hero_kicker = html.escape(t("NEA 质量管理平台", "NEA QUALITY PLATFORM"))
     st.markdown(
         f"""
         <div class="hero">
-            <div class="hero-kicker">NEA QUALITY PLATFORM</div>
+            <div class="hero-kicker">{hero_kicker}</div>
             <div class="hero-title">{hero_title}</div>
             <div class="hero-meta">
                 <span class="hero-chip">{t('供应商', 'Suppliers')}: {supplier_count}</span>
@@ -5590,6 +5580,75 @@ def inspection_coverage_metrics(finished_df: pd.DataFrame) -> tuple[float, float
     production_qty = float(denominator_rows["qty_ordered"].sum())
     coverage = inspected_qty / production_qty if production_qty else np.nan
     return min(coverage, 1.0) if pd.notna(coverage) else np.nan, inspected_qty, production_qty
+
+
+def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.DataFrame) -> None:
+    if finished_df.empty:
+        return
+    source = finished_df.copy()
+    source["qty_ordered"] = pd.to_numeric(source.get("qty_ordered", 0), errors="coerce").fillna(0)
+    source["qty_inspected"] = pd.to_numeric(source.get("qty_inspected", 0), errors="coerce").fillna(0)
+    source["work_order_key"] = source.get("work_order", pd.Series("", index=source.index)).fillna("").astype(str).str.strip()
+
+    order_rows = source[source["qty_ordered"] > 0].copy()
+    keyed_orders = order_rows[order_rows["work_order_key"].ne("")]
+    unkeyed_orders = order_rows[order_rows["work_order_key"].eq("")]
+    order_reference_qty = float(keyed_orders.groupby("work_order_key")["qty_ordered"].max().sum())
+    if not unkeyed_orders.empty:
+        order_reference_qty += float(
+            unkeyed_orders.drop_duplicates(["product_code", "qty_ordered"])["qty_ordered"].sum()
+        )
+    factory_inspected_qty = float(source["qty_inspected"].sum())
+
+    fqc_view = jdy_fqc.copy() if isinstance(jdy_fqc, pd.DataFrame) else pd.DataFrame()
+    if not fqc_view.empty:
+        fqc_view["date"] = pd.to_datetime(fqc_view.get("date", pd.NaT), errors="coerce", utc=True).dt.tz_convert(None)
+        source_dates = pd.to_datetime(source.get("date", pd.NaT), errors="coerce").dropna()
+        if not source_dates.empty:
+            fqc_view = fqc_view[
+                fqc_view["date"].between(source_dates.min().normalize(), source_dates.max().normalize() + pd.Timedelta(days=1))
+            ]
+        selected_ccs = set(source.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip())
+        selected_ccs.discard("")
+        if selected_ccs and "cc" in fqc_view.columns:
+            fqc_view = fqc_view[fqc_view["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).isin(selected_ccs)]
+    fqc_sampled_qty = float(
+        pd.to_numeric(fqc_view.get("sampling_size", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+    )
+    fqc_sampling_share = fqc_sampled_qty / order_reference_qty if order_reference_qty else np.nan
+
+    st.markdown(f"### {t('数量与抽检对比', 'Volume and FQC Sampling Comparison')}")
+    render_kpi_cards(
+        [
+            {
+                "label": t("工厂订单 / 出货参考量", "Factory Order / Shipment Reference"),
+                "value": f"{order_reference_qty:,.0f}",
+                "note": t("按生产通知单去重；来源字段为订单数量", "Deduplicated by production notice; source field is order quantity"),
+                "level": "low",
+            },
+            {
+                "label": t("工厂累计检验量", "Factory Cumulative Inspected"),
+                "value": f"{factory_inspected_qty:,.0f}",
+                "note": t("Online / End 检验累计，可能重复覆盖同一件", "Cumulative Online / End checks may cover the same item more than once"),
+                "level": "medium",
+            },
+            {
+                "label": t("迪卡侬 FQC 抽检量", "Decathlon FQC Sampled"),
+                "value": f"{fqc_sampled_qty:,.0f}",
+                "note": t(
+                    f"占订单 / 出货参考量 {pct(fqc_sampling_share)}",
+                    f"{pct(fqc_sampling_share)} of order / shipment reference",
+                ),
+                "level": "low",
+            },
+        ]
+    )
+    st.caption(
+        t(
+            "当前源没有独立的实际出货数量字段，因此使用按生产通知单去重后的订单数量作为出货参考量；获得正式出货字段后可直接替换。",
+            "The current source has no independent actual-shipment field, so deduplicated order quantity is used as the shipment reference and can be replaced when an official shipment field is available.",
+        )
+    )
 
 
 def render_community_risk_cards(finished_df: pd.DataFrame, supplier_df: pd.DataFrame) -> None:
@@ -5752,6 +5811,8 @@ def render_zx_high_risk_cluster(
         + view["client_signal"] * (secondary_weight / 100)
     ).clip(0, 100)
     view["production_risk_contribution"] = view["production_axis"] * (production_weight / 100)
+    view["production_weight_pct"] = float(production_weight)
+    view["secondary_weight_pct"] = float(secondary_weight)
 
     def client_component_contributions(row: pd.Series) -> pd.Series:
         weights = normalized_weights(
@@ -5767,11 +5828,20 @@ def render_zx_high_risk_cluster(
             {
                 "rpm_risk_contribution": rpm_component * (secondary_weight / 100),
                 "iv_risk_contribution": iv_component * (secondary_weight / 100),
+                "rpm_client_weight_pct": weights.get("rpm_score", 0) * 100,
+                "iv_client_weight_pct": weights.get("intern_voice_score", 0) * 100,
             }
         )
 
     client_components = view.apply(client_component_contributions, axis=1)
-    view[["rpm_risk_contribution", "iv_risk_contribution"]] = client_components
+    view[
+        [
+            "rpm_risk_contribution",
+            "iv_risk_contribution",
+            "rpm_client_weight_pct",
+            "iv_client_weight_pct",
+        ]
+    ] = client_components
     view["client_risk_contribution"] = view["client_signal"] * (secondary_weight / 100)
     view["has_cluster_signal"] = view[["production_axis", "client_signal"]].notna().any(axis=1)
     cluster_input = view.loc[view["has_cluster_signal"], ["production_axis", "client_signal"]].fillna(0).to_numpy(dtype=float)
@@ -5898,6 +5968,13 @@ def render_zx_high_risk_cluster(
             "client_risk_contribution",
             "rpm_risk_contribution",
             "iv_risk_contribution",
+            "production_axis",
+            "rpm_score",
+            "intern_voice_score",
+            "production_weight_pct",
+            "secondary_weight_pct",
+            "rpm_client_weight_pct",
+            "iv_client_weight_pct",
         ],
         labels={
             "plot_x": t("生产端风险分（QC不良率）", "Production Risk Score (QC defect rate)"),
@@ -5911,13 +5988,24 @@ def render_zx_high_risk_cluster(
             "cluster_risk_formula": t("风险分计算", "Risk Calculation"),
         },
     )
-    risk_calculation_line = (
+    risk_calculation_line_1 = (
         f"{t('Risk计算', 'Risk calculation')}  <b>%{{customdata[5]:.1f}}</b> = "
         f"{t('生产端', 'Production')} %{{customdata[9]:.1f}} + {t('客户端', 'Client')} %{{customdata[10]:.1f}} "
         f"(RPM %{{customdata[11]:.1f}} + IV %{{customdata[12]:.1f}})"
         if has_client_signal
         else f"{t('Risk计算', 'Risk calculation')}  <b>%{{customdata[5]:.1f}}</b> = "
         f"{t('生产端', 'Production')} %{{customdata[9]:.1f}} + {t('检验量强度', 'Volume intensity')} %{{customdata[10]:.1f}}"
+    )
+    risk_calculation_line_2 = (
+        f"Risk %{{customdata[5]:.1f}} = {t('生产端', 'Production')} %{{customdata[9]:.1f}} "
+        f"({t('不良率', 'defect rate')} %{{customdata[4]:.2%}} → {t('风险分', 'score')} %{{customdata[13]:.1f}} × %{{customdata[16]:.0f}}%) + "
+        f"{t('客户端', 'Client')} %{{customdata[10]:.1f}} "
+        f"[RPM %{{customdata[11]:.1f}} (RPM %{{customdata[2]:,.0f}} → {t('风险分', 'score')} %{{customdata[14]:.1f}} × %{{customdata[18]:.0f}}% × %{{customdata[17]:.0f}}%) + "
+        f"IV %{{customdata[12]:.1f}} (IV %{{customdata[3]:,.0f}} → {t('风险分', 'score')} %{{customdata[15]:.1f}} × %{{customdata[19]:.0f}}% × %{{customdata[17]:.0f}}%)]"
+        if has_client_signal
+        else f"Risk %{{customdata[5]:.1f}} = {t('生产端', 'Production')} %{{customdata[9]:.1f}} "
+        f"({t('不良率', 'defect rate')} %{{customdata[4]:.2%}} → {t('风险分', 'score')} %{{customdata[13]:.1f}} × %{{customdata[16]:.0f}}%) + "
+        f"{t('检验量强度', 'Volume intensity')} %{{customdata[10]:.1f}}"
     )
     hover_template = (
         f"<b>CC %{{customdata[0]}} · %{{customdata[8]}}</b><br>"
@@ -5926,7 +6014,8 @@ def render_zx_high_risk_cluster(
         f"RPM  <b>%{{customdata[2]:,.0f}}</b>　 IV  <b>%{{customdata[3]:,.0f}}</b><br>"
         f"{t('不良率', 'Defect rate')}  <b>%{{customdata[4]:.2%}}</b>　 Risk  <b>%{{customdata[5]:.1f}}</b><br>"
         f"{t('检验数', 'Inspected')}  %{{customdata[6]:,.0f}}　 {t('疵点', 'Defects')}  %{{customdata[7]:,.0f}}<br>"
-        f"{risk_calculation_line}"
+        f"{risk_calculation_line_1}<br>"
+        f"{risk_calculation_line_2}"
         "<extra></extra>"
     )
     fig.update_traces(
@@ -7836,6 +7925,7 @@ def render_community_cockpit(
                 "Jiandaoyun ZX FQC + ZX finished QC Excel + ZX R12M RPM + ZX Intern Voice",
             )
         render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc))
+        render_inspection_volume_comparison(finished_df, jdy_fqc)
     else:
         render_kpi_cards(
             [
@@ -9044,7 +9134,7 @@ def render_scope_nav(active_scope: str) -> None:
             <span class="side-logo">D</span>
             <span>
                 <div class="side-brand-title">DECATHLON</div>
-                <div class="side-brand-sub">NEA Quality Platform</div>
+                <div class="side-brand-sub">{html.escape(t('NEA 质量管理平台', 'NEA Quality Platform'))}</div>
             </span>
         </div>
         <div class="side-section-title">{html.escape(t("业务看板", "Business Dashboard"))}</div>
@@ -9206,7 +9296,6 @@ with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
             st.session_state[GLOBAL_CC_FILTER_STATE_KEY] = ALL_FILTER_VALUE
             st.session_state[model_filter_key] = ALL_FILTER_VALUE
             st.rerun()
-        st.caption(t("再次双击同一个 CC，或点击“取消”返回全部。", "Double-click the same CC again, or select Clear to return to all data."))
 risk_settings = current_risk_settings()
 active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
 supplier_prod_w = effective_weight_pct(risk_settings, "supplier_weights", "production_score")
