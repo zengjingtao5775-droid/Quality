@@ -228,11 +228,18 @@ st.markdown(
     div[data-testid="stPopover"] > button,
     div[data-testid="stPopover"] button[data-testid^="stBaseButton"] {
         width: 100% !important;
-        min-height: 42px !important;
-        height: 42px !important;
-        padding: 0.45rem 0.8rem !important;
-        font-size: 0.90rem !important;
+        max-width: 96px !important;
+        min-height: 36px !important;
+        height: 36px !important;
+        margin-left: auto !important;
+        padding: 0.35rem 0.62rem !important;
+        font-size: 0.82rem !important;
+        font-weight: 760 !important;
         line-height: 1.1 !important;
+        border-radius: 10px !important;
+        border-color: rgba(148, 163, 184, 0.42) !important;
+        background: rgba(255, 255, 255, 0.78) !important;
+        box-shadow: 0 6px 18px rgba(36, 52, 167, 0.07) !important;
     }
     div[data-testid="collapsedControl"],
     button[data-testid="stExpandSidebarButton"] {
@@ -562,28 +569,29 @@ st.markdown(
     .gap-matrix-wrap {
         background: rgba(255,255,255,0.94);
         border: 1px solid #dce4fb;
-        border-radius: 8px;
-        padding: 14px 14px 8px;
-        box-shadow: 0 14px 30px rgba(36, 52, 167, 0.08);
+        border-radius: 14px;
+        padding: 12px 12px 7px;
+        box-shadow: 0 14px 34px rgba(36, 52, 167, 0.07);
         overflow-x: auto;
+        backdrop-filter: blur(16px) saturate(130%);
     }
     .gap-matrix-table {
         width: 100%;
         border-collapse: separate;
         border-spacing: 0;
-        min-width: 860px;
+        min-width: 780px;
     }
     .gap-matrix-table th {
         background: #f8faff;
         color: #526070;
-        font-size: 0.82rem;
+        font-size: 0.77rem;
         font-weight: 860;
         text-align: left;
-        padding: 12px 13px;
+        padding: 11px 10px;
         border-bottom: 1px solid #e2e8f0;
     }
     .gap-matrix-table td {
-        padding: 12px 13px;
+        padding: 11px 10px;
         border-bottom: 1px solid #eef2f7;
         color: #172033;
         font-size: 0.9rem;
@@ -595,7 +603,7 @@ st.markdown(
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 72px;
+        min-width: 64px;
         padding: 5px 10px;
         border-radius: 999px;
         font-size: 0.78rem;
@@ -628,8 +636,8 @@ st.markdown(
         background:
             linear-gradient(120deg, rgba(255,255,255,0.98) 0%, rgba(249,250,255,0.96) 42%, rgba(229,235,255,0.94) 100%);
         color: #172033;
-        border-radius: 8px;
-        padding: 24px 28px;
+        border-radius: 20px;
+        padding: 27px 30px;
         margin-bottom: 14px;
         box-shadow: 0 20px 46px rgba(36, 52, 167, 0.13);
         border: 1px solid rgba(205, 214, 250, 0.95);
@@ -704,11 +712,12 @@ st.markdown(
         min-height: 118px;
         background: rgba(255, 255, 255, 0.96);
         border: 1px solid #e2e7fb;
-        border-radius: 8px;
+        border-radius: 16px;
         padding: 16px 17px;
         box-shadow: 0 14px 30px rgba(36, 52, 167, 0.08);
         position: relative;
         overflow: hidden;
+        transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
     }
     .kpi-card::before {
         content: "";
@@ -723,6 +732,14 @@ st.markdown(
     .kpi-card.medium::before {background: #5363e6;}
     .kpi-card.high::before {background: #3341c4;}
     .kpi-card.critical::before {background: #1f2f92;}
+    .kpi-grid.coverage-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 8px;
+    }
+    .coverage-grid .kpi-card {
+        min-height: 126px;
+        background: linear-gradient(145deg, rgba(255,255,255,0.98), rgba(246,248,255,0.94));
+    }
     .kpi-label {
         color: #667085;
         font-size: 0.86rem;
@@ -1124,9 +1141,104 @@ st.markdown(
     .st-key-zx_cluster_chart .stPlotlyChart {
         animation: zxChartEnter 0.42s ease-out both;
     }
+    div[data-testid="stExpander"] details {
+        border: 1px solid rgba(203, 213, 245, 0.94) !important;
+        border-radius: 16px !important;
+        background: rgba(255, 255, 255, 0.68) !important;
+        box-shadow: 0 12px 32px rgba(36, 52, 167, 0.06) !important;
+        backdrop-filter: blur(18px) saturate(135%);
+        overflow: hidden;
+    }
+    div[data-testid="stExpander"] summary {
+        min-height: 48px;
+        font-weight: 780;
+        border-bottom: 1px solid transparent !important;
+    }
+    div[data-testid="stExpander"] details[open] > summary {
+        border-bottom-color: rgba(203, 213, 225, 0.72) !important;
+    }
+    div[data-testid="stExpander"] summary:focus,
+    div[data-testid="stExpander"] summary:focus-visible {
+        outline: none !important;
+        box-shadow: inset 3px 0 0 #5363e6 !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stExpander"] details {
+        border: 1px solid rgba(255, 255, 255, 0.16) !important;
+        background: rgba(18, 31, 132, 0.36) !important;
+        box-shadow: none !important;
+        backdrop-filter: none !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stExpander"] summary,
+    section[data-testid="stSidebar"] div[data-testid="stExpander"] details[open] > summary {
+        background: rgba(255, 255, 255, 0.96) !important;
+        border-bottom-color: rgba(255, 255, 255, 0.18) !important;
+        box-shadow: none !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+        background: rgba(18, 31, 132, 0.22) !important;
+    }
+    .st-key-zx_panel_jdy_refresh_strip {
+        margin-top: 14px;
+        padding: 11px 12px;
+        border: 1px solid rgba(199, 210, 254, 0.92);
+        border-radius: 14px;
+        background: linear-gradient(135deg, rgba(248,250,255,0.96), rgba(238,242,255,0.86));
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+    }
+    .st-key-zx_panel_jdy_refresh_button button {
+        min-height: 40px !important;
+        border-radius: 10px !important;
+        border: 1px solid #aebaff !important;
+        background: rgba(255, 255, 255, 0.94) !important;
+        color: #2434a7 !important;
+        font-weight: 820 !important;
+        box-shadow: 0 7px 18px rgba(36, 52, 167, 0.10) !important;
+    }
+    .st-key-zx_panel_jdy_refresh_button button * {
+        color: #2434a7 !important;
+        fill: #2434a7 !important;
+    }
+    .st-key-zx_panel_jdy_refresh_button button:hover {
+        border-color: #5363e6 !important;
+        background: #eef2ff !important;
+        box-shadow: 0 10px 24px rgba(36, 52, 167, 0.16) !important;
+    }
+    .jdy-status-line {
+        display: flex;
+        align-items: center;
+        min-height: 40px;
+        color: #667085;
+        font-size: 0.82rem;
+        font-weight: 620;
+    }
+    .jdy-status-line::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        margin-right: 9px;
+        border-radius: 50%;
+        background: #168a5b;
+        box-shadow: 0 0 0 4px rgba(22, 138, 91, 0.10);
+        flex: 0 0 auto;
+    }
+    @media (hover: hover) {
+        .kpi-card:hover {
+            transform: translateY(-2px);
+            border-color: #cbd5ff;
+            box-shadow: 0 18px 38px rgba(36, 52, 167, 0.12);
+        }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+            scroll-behavior: auto !important;
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
     @media (max-width: 720px) {
-        .kpi-grid, .signal-grid {grid-template-columns: 1fr;}
+        .kpi-grid, .kpi-grid.coverage-grid, .signal-grid {grid-template-columns: 1fr;}
         .hero-title {font-size: 1.8rem;}
+        .hero {padding: 22px 20px; border-radius: 16px;}
     }
     </style>
     """,
@@ -5066,11 +5178,15 @@ def compute_worker_clusters(finished: pd.DataFrame) -> pd.DataFrame:
                 worker["cluster_score"] >= worker["cluster_score"].quantile(0.72),
                 worker["cluster_score"] >= worker["cluster_score"].quantile(0.38),
             ],
-            [t("重点改善组", "Priority"), t("观察组", "Watch")],
-            default=t("稳定组", "Stable"),
+            [t("普通", "Regular"), t("中等", "Intermediate")],
+            default=t("熟练", "Skilled"),
         )
     else:
-        worker["skill_tag"] = np.where(worker["defect_rate"] > worker["defect_rate"].median(), t("观察组", "Watch"), t("稳定组", "Stable"))
+        worker["skill_tag"] = np.where(
+            worker["defect_rate"] > worker["defect_rate"].median(),
+            t("普通", "Regular"),
+            t("熟练", "Skilled"),
+        )
     return worker.sort_values("defect_rate", ascending=False)
 
 
@@ -5802,12 +5918,12 @@ def render_chart_heading(
     key: str,
 ) -> None:
     title = t(title_cn, title_en)
-    left, right = st.columns([0.84, 0.16])
+    left, right = st.columns([0.90, 0.10])
     with left:
         st.subheader(title)
     with right:
         render_readme_popover(
-            t("指标说明", "README"),
+            t("说明", "Info"),
             title,
             t(purpose_cn, purpose_en),
             t(method_cn, method_en),
@@ -5816,8 +5932,9 @@ def render_chart_heading(
         )
 
 
-def render_kpi_cards(cards: list[dict[str, str]]):
-    html_parts = ['<div class="kpi-grid">']
+def render_kpi_cards(cards: list[dict[str, str]], variant: str = ""):
+    variant_class = f" {html.escape(variant)}" if variant else ""
+    html_parts = [f'<div class="kpi-grid{variant_class}">']
     for card in cards:
         label = html.escape(english_display_text(card["label"]))
         value = html.escape(english_display_text(card["value"]))
@@ -5957,33 +6074,6 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
     factory_inspection_share = effective_factory_inspected_qty / order_reference_qty if order_reference_qty else np.nan
     fqc_sampling_share = fqc_sampled_qty / order_reference_qty if order_reference_qty else np.nan
 
-    title_col, readme_col = st.columns([0.84, 0.16], vertical_alignment="center")
-    with title_col:
-        st.markdown(f"### {t('检验比例对比', 'Inspection-Rate Comparison')}")
-    with readme_col:
-        with st.popover(t("指标说明", "README"), use_container_width=True):
-            st.markdown(
-                t(
-                    """
-**工厂检验占比** = Σ有效检验量 ÷ Σ订单参考量。
-
-**有效检验量**：先按生产通知单汇总 Online / End 检验数，再对每张通知单取 `min(累计检验数, 订单数量)`。因此同一订单重复检验不会把覆盖量重复累计，结果不会超过 100%。
-
-**迪卡侬 FQC 抽检率** = 指定迪卡侬检验员的 FQC 抽样数 ÷ 同一范围订单参考量。
-
-订单参考量来自工厂 Excel 的生产通知单数量；它是当前可用的出货代理分母，不等同于独立核验的实际出货量。
-""",
-                    """
-**Factory inspection share** = sum of effectively inspected quantity / sum of order-reference quantity.
-
-**Effective inspection**: aggregate Online / End inspections by production notice, then use `min(accumulated inspected, order quantity)` for each notice. Re-inspections therefore do not duplicate coverage and the result cannot exceed 100%.
-
-**Decathlon FQC sampling rate** = FQC sample quantity by named Decathlon inspectors / the same order-reference quantity.
-
-The denominator comes from production-notice quantity in the factory Excel. It is the available shipment proxy, not independently verified actual shipment quantity.
-""",
-                )
-            )
     render_kpi_cards(
         [
             {
@@ -6004,7 +6094,8 @@ The denominator comes from production-notice quantity in the factory Excel. It i
                 ),
                 "level": "low",
             },
-        ]
+        ],
+        variant="coverage-grid",
     )
 
 
@@ -6142,7 +6233,6 @@ def render_scope_data_map(
     with st.expander(t("数据地图", "Data Map"), expanded=False):
         render_data_gap_matrix(gap_matrix)
         if scope_key == "ZX":
-            st.divider()
             jdy_fqc, _, _ = render_tu_jdy_refresh_control("zx_panel", include_cp=True)
     return jdy_fqc
 
@@ -7562,10 +7652,9 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
     worker_view["defect_rate_numeric"] = pd.to_numeric(worker_view.get("defect_rate", 0), errors="coerce").fillna(0)
     worker_view["qty_inspected"] = pd.to_numeric(worker_view.get("qty_inspected", 0), errors="coerce").fillna(0)
     worker_view["defect_qty"] = pd.to_numeric(worker_view.get("defect_qty", 0), errors="coerce").fillna(0)
-    ordinary_label = t("普通工", "Regular Worker")
-    high_label = t("高危工", "High-Risk Worker")
-    medium_label = t("中等工", "Medium Worker")
-    skilled_label = t("熟练工人", "Skilled Worker")
+    ordinary_label = t("普通", "Regular")
+    medium_label = t("中等", "Intermediate")
+    skilled_label = t("熟练", "Skilled")
 
     rate_p90 = worker_view["defect_rate_numeric"].quantile(0.90)
     rate_anchor = max(float(rate_p90), float(worker_view["defect_rate_numeric"].max()), 0.0001)
@@ -7574,9 +7663,9 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
     qty_anchor = max(float(qty_log.max()), 0.0001)
     worker_view["volume_axis"] = (qty_log / qty_anchor * 100).clip(0, 100)
 
-    if len(worker_view) >= 4:
+    if len(worker_view) >= 3:
         cluster_input = worker_view[["defect_risk_axis", "volume_axis"]].fillna(0).to_numpy(dtype=float)
-        labels, _ = deterministic_kmeans(cluster_input, cluster_count=4)
+        labels, _ = deterministic_kmeans(cluster_input, cluster_count=3)
         worker_view["_cluster_id"] = labels
         cluster_rank = (
             worker_view.groupby("_cluster_id")["defect_risk_axis"]
@@ -7588,35 +7677,21 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         cluster_names = {}
         if cluster_rank:
             cluster_names[cluster_rank[0]] = skilled_label
-            cluster_names[cluster_rank[-1]] = high_label
+            cluster_names[cluster_rank[-1]] = ordinary_label
         if len(cluster_rank) >= 2:
-            cluster_names[cluster_rank[1]] = ordinary_label
-        for cluster_id in cluster_rank[2:-1]:
-            cluster_names[cluster_id] = medium_label
+            for cluster_id in cluster_rank[1:-1]:
+                cluster_names[cluster_id] = medium_label
         worker_view["skill_level"] = worker_view["_cluster_id"].map(cluster_names).fillna(ordinary_label)
-        high_cut = worker_view["defect_risk_axis"].quantile(0.90)
-        conservative_high_mask = worker_view["skill_level"].eq(high_label) & (worker_view["defect_risk_axis"] >= high_cut)
-        worker_view.loc[worker_view["skill_level"].eq(high_label) & ~conservative_high_mask, "skill_level"] = medium_label
     else:
         median_rate = worker_view["defect_rate_numeric"].median()
-        worker_view["skill_level"] = np.where(worker_view["defect_rate_numeric"] > median_rate, medium_label, ordinary_label)
-
-    high_worker_names = (
-        worker_view[worker_view["skill_level"].eq(high_label)]
-        .sort_values(["defect_risk_axis", "defect_qty"], ascending=False)
-        .drop_duplicates("worker_team")
-        .head(5)["worker_team"]
-        .astype(str)
-        .tolist()
-    )
-    worker_view.loc[
-        worker_view["skill_level"].eq(high_label)
-        & ~worker_view["worker_team"].astype(str).isin(high_worker_names),
-        "skill_level",
-    ] = medium_label
+        worker_view["skill_level"] = np.where(
+            worker_view["defect_rate_numeric"] <= median_rate,
+            skilled_label,
+            ordinary_label,
+        )
     counts = worker_view.groupby("skill_level")["worker_team"].nunique()
-    skill_options = [ordinary_label, high_label, medium_label, skilled_label]
-    metric_cols = st.columns(4)
+    skill_options = [skilled_label, medium_label, ordinary_label]
+    metric_cols = st.columns(3)
     for col, label in zip(metric_cols, skill_options):
         with col:
             st.metric(label, int(counts.get(label, 0)))
@@ -7664,10 +7739,9 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
             "worker_view": t("工人 / 工序", "Worker / Process"),
         },
         color_discrete_map={
-            ordinary_label: "#60a5fa",
-            high_label: "#dc2626",
-            medium_label: "#d97706",
             skilled_label: "#16a34a",
+            medium_label: "#d97706",
+            ordinary_label: "#64748b",
         },
         hover_data={
             "worker_view": True,
@@ -7694,9 +7768,9 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         yref="paper",
         x=0.98,
         y=0.98,
-        text=t("右上：高不良率 + 高检验量", "Upper-right: high defect + high volume"),
+        text=t("右上：优先安排技能辅导", "Upper-right: prioritize skill coaching"),
         showarrow=False,
-        font=dict(size=13, color="#dc2626"),
+        font=dict(size=13, color="#475467"),
         bgcolor="rgba(255,255,255,0.72)",
     )
     plot_chart(fig, 420)
@@ -7926,16 +8000,17 @@ def render_tu_jdy_refresh_control(
 
     local_fqc, local_meta = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
     api_key = get_jdy_api_key()
-    action_col, status_col = st.columns([0.24, 0.76], vertical_alignment="center")
-    with action_col:
-        refresh_clicked = st.button(
-            t("刷新简道云 API", "Refresh Jiandaoyun API"),
-            key=f"{panel_key}_jdy_refresh_button",
-            icon=":material/refresh:",
-            type="primary",
-            use_container_width=True,
-            disabled=not bool(api_key),
-        )
+    with st.container(key=f"{panel_key}_jdy_refresh_strip"):
+        action_col, status_col = st.columns([0.25, 0.75], vertical_alignment="center")
+        with action_col:
+            refresh_clicked = st.button(
+                t("刷新简道云 API", "Refresh Jiandaoyun API"),
+                key=f"{panel_key}_jdy_refresh_button",
+                icon=":material/refresh:",
+                type="secondary",
+                use_container_width=True,
+                disabled=not bool(api_key),
+            )
 
     if refresh_clicked and api_key:
         token = int(st.session_state.get(token_state_key, 0)) + 1
@@ -7970,7 +8045,14 @@ def render_tu_jdy_refresh_control(
         f"Current: {mode} · {len(current_fqc):,} records" + (f" · {updated_at}" if updated_at else ""),
     )
     with status_col:
-        st.caption(status_text if api_key else t(f"{status_text} · 未配置 API Key", f"{status_text} · API key not configured"))
+        display_status = status_text if api_key else t(
+            f"{status_text} · 未配置 API Key",
+            f"{status_text} · API key not configured",
+        )
+        st.markdown(
+            f"<div class='jdy-status-line'>{html.escape(display_status)}</div>",
+            unsafe_allow_html=True,
+        )
     if current_error:
         st.warning(t("实时刷新失败，继续使用上一次可用数据。", "Live refresh failed; the last available data remains in use."))
     return current_fqc, current_meta, current_error
@@ -8586,8 +8668,7 @@ def render_zx_customer_360(voice_df: pd.DataFrame, finished_df: pd.DataFrame) ->
         [t("生产端 + 客户端双高", "High on Both"), t("生产端重点", "Production Priority"), t("客户端重点", "Customer Priority")],
         default=t("观察", "Watch"),
     )
-    left, right = st.columns([1.15, 1])
-    with left:
+    with st.container(key="customer_360_factory_rpm"):
         st.markdown(f"**{t('客户 360｜工厂不良率 × 客户 RPM', 'Customer 360 | Factory Defect Rate x Customer RPM')}**")
         if ranked.empty:
             st.info(t("当前没有同时匹配工厂检验与客户 RPM 的 CC。", "No CC currently matches both factory inspection and customer RPM data."))
@@ -8642,7 +8723,7 @@ def render_zx_customer_360(voice_df: pd.DataFrame, finished_df: pd.DataFrame) ->
             st.caption(t("仅展示联合关注分最高的 6 个 CC。横轴连接工厂检验不良率，纵轴连接客户 RPM，圆圈大小代表退货量；虚线分别是当前匹配范围的工厂平均不良率与总体 RPM。联合关注分 = 标准化工厂风险 50% + 标准化客户 RPM 风险 50%。", "Shows only the six CCs with the highest joint attention score. The x-axis links factory inspection defect rate, the y-axis customer RPM, and bubble size returned quantity. Dashed lines show the factory average defect rate and overall RPM for the matched scope. Joint score = normalized factory risk 50% + normalized customer RPM risk 50%."))
 
     location, defect = load_zx_customer_return_anatomy(DATA_SCOPE_CACHE_VERSION)
-    with right:
+    with st.container(key="customer_360_return_anatomy"):
         st.markdown(f"**{t('消费者退货解剖｜缺陷与部位', 'Return Anatomy | Defect and Location')}**")
         anatomy = pd.concat([location.head(5), defect.head(5)], ignore_index=True)
         if anatomy.empty:
@@ -8688,10 +8769,10 @@ def render_community_cockpit(
     jdy_fqc = render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
 
     if scope_key == "ZX":
-        _, readme_col = st.columns([0.84, 0.16])
+        _, readme_col = st.columns([0.90, 0.10])
         with readme_col:
             render_readme_popover(
-                t("指标说明", "README"),
+                t("说明", "Info"),
                 t("Textile Unit 看板核心指标", "Textile Unit Dashboard Core Metrics"),
                 t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
@@ -10617,7 +10698,7 @@ with tabs[1]:
     _, supplier_readme_col = st.columns([0.78, 0.22])
     with supplier_readme_col:
         render_readme_popover(
-            t("指标说明", "README"),
+            t("说明", "Info"),
             t("供应商风险分", "Supplier Risk Score"),
             t("比较各 community / 供应商的生产端与客户端质量风险。", "Compare production-side and client-side quality risk across communities and suppliers."),
             t("先把各信号标准化为 0-100 分，再按当前权重合成。", "Normalize each signal to 0-100 before applying the selected weights."),
@@ -10869,7 +10950,7 @@ with tabs[2]:
         client_iv_w = effective_weight_pct(risk_settings, "client_weights", "intern_voice_score")
         with formula_col:
             render_readme_popover(
-                t("指标说明", "README"),
+                t("说明", "Info"),
                 t("产品风险分", "Product Risk Score"),
                 t("识别同时存在生产端和客户端风险的 CC，并形成改善优先级。", "Identify CCs with combined production and client risk and rank improvement priority."),
                 t("QC 使用小样本收缩后的不良率；客户端使用 RPM 和 Intern Voice；双端完整 CC 参与 K-means。", "QC uses a low-volume-shrunk defect rate; the client side uses RPM and Intern Voice; CCs with both sides enter K-means."),
