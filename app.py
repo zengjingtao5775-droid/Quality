@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Iterable
@@ -5464,11 +5465,36 @@ def render_readme_popover(
     method = english_display_text(method)
     logic = english_display_text(logic)
     source = english_display_text(source)
+    source_parts: list[str] = []
+    source_directories = [
+        ROOT,
+        ROOT / "TU database" / "ZX Database",
+        ROOT / "TU database" / "GP database",
+        ROOT / "TU database" / "DS database",
+        ROOT / "BME Database",
+        ROOT / "SE Database",
+    ]
+    for raw_part in re.split(r"\s+\+\s+", source):
+        part = raw_part.strip()
+        if not part:
+            continue
+        direct_path = ROOT / part
+        candidates = [direct_path] if direct_path.exists() else [directory / part for directory in source_directories]
+        source_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if source_path is None:
+            source_parts.append(part)
+            continue
+        relative_path = source_path.relative_to(ROOT).as_posix()
+        source_url = (
+            "https://github.com/zengjingtao5775-droid/Quality/blob/main/"
+            + urllib.parse.quote(relative_path, safe="/")
+        )
+        source_parts.append(f"[{part}]({source_url})")
+    source_markdown = " + ".join(source_parts) if source_parts else source
     with st.popover(label, use_container_width=True):
         st.markdown(f"### {title}")
-        st.markdown(f"**1. {t('数据分析方法', 'Data Analysis Method')}**  \n{method}")
-        st.markdown(f"**2. {t('计算逻辑', 'Calculation Logic')}**  \n{logic}")
-        st.markdown(f"**3. {t('数据来源', 'Data Source')}**  \n{source}")
+        st.markdown(f"**1. {t('计算逻辑', 'Calculation Logic')}**  \n{logic}")
+        st.markdown(f"**2. {t('数据来源', 'Data Source')}**  \n{source_markdown}")
 
 
 def render_chart_heading(
@@ -5592,15 +5618,31 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
     source["qty_inspected"] = pd.to_numeric(source.get("qty_inspected", 0), errors="coerce").fillna(0)
     source["work_order_key"] = source.get("work_order", pd.Series("", index=source.index)).fillna("").astype(str).str.strip()
 
-    order_rows = source[source["qty_ordered"] > 0].copy()
-    keyed_orders = order_rows[order_rows["work_order_key"].ne("")]
-    unkeyed_orders = order_rows[order_rows["work_order_key"].eq("")]
-    order_reference_qty = float(keyed_orders.groupby("work_order_key")["qty_ordered"].max().sum())
+    keyed_orders = source[source["work_order_key"].ne("")].copy()
+    keyed_orders = (
+        keyed_orders.groupby("work_order_key", as_index=False)
+        .agg(order_qty=("qty_ordered", "max"), inspected_qty=("qty_inspected", "sum"))
+    )
+    keyed_orders = keyed_orders[keyed_orders["order_qty"] > 0].copy()
+    keyed_orders["effective_inspected_qty"] = np.minimum(
+        keyed_orders["inspected_qty"], keyed_orders["order_qty"]
+    )
+
+    unkeyed_orders = source[(source["work_order_key"].eq("")) & (source["qty_ordered"] > 0)].copy()
     if not unkeyed_orders.empty:
-        order_reference_qty += float(
-            unkeyed_orders.drop_duplicates(["product_code", "qty_ordered"])["qty_ordered"].sum()
+        unkeyed_orders = (
+            unkeyed_orders.groupby(["product_code", "qty_ordered"], as_index=False)["qty_inspected"].sum()
+            .rename(columns={"qty_ordered": "order_qty", "qty_inspected": "inspected_qty"})
         )
-    factory_inspected_qty = float(source["qty_inspected"].sum())
+        unkeyed_orders["effective_inspected_qty"] = np.minimum(
+            unkeyed_orders["inspected_qty"], unkeyed_orders["order_qty"]
+        )
+
+    order_reference_qty = float(keyed_orders["order_qty"].sum())
+    effective_factory_inspected_qty = float(keyed_orders["effective_inspected_qty"].sum())
+    if not unkeyed_orders.empty:
+        order_reference_qty += float(unkeyed_orders["order_qty"].sum())
+        effective_factory_inspected_qty += float(unkeyed_orders["effective_inspected_qty"].sum())
 
     fqc_view = jdy_fqc.copy() if isinstance(jdy_fqc, pd.DataFrame) else pd.DataFrame()
     if not fqc_view.empty:
@@ -5617,18 +5659,18 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
     fqc_sampled_qty = float(
         pd.to_numeric(fqc_view.get("sampling_size", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
     )
-    factory_inspection_intensity = factory_inspected_qty / order_reference_qty if order_reference_qty else np.nan
+    factory_inspection_share = effective_factory_inspected_qty / order_reference_qty if order_reference_qty else np.nan
     fqc_sampling_share = fqc_sampled_qty / order_reference_qty if order_reference_qty else np.nan
 
     st.markdown(f"### {t('检验比例对比', 'Inspection-Rate Comparison')}")
     render_kpi_cards(
         [
             {
-                "label": t("工厂累计检验强度", "Factory Cumulative Inspection Intensity"),
-                "value": pct(factory_inspection_intensity),
+                "label": t("工厂检验占比", "Factory Inspection Share"),
+                "value": pct(factory_inspection_share),
                 "note": t(
-                    f"累计检验 {factory_inspected_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
-                    f"Cumulative inspected {factory_inspected_qty:,.0f} / order reference {order_reference_qty:,.0f}",
+                    f"有效检验 {effective_factory_inspected_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
+                    f"Effectively inspected {effective_factory_inspected_qty:,.0f} / order reference {order_reference_qty:,.0f}",
                 ),
                 "level": "medium",
             },
@@ -5642,12 +5684,6 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
                 "level": "low",
             },
         ]
-    )
-    st.caption(
-        t(
-            "两个百分比均以按生产通知单去重后的订单数量为分母。工厂数据累计 Online / End 多次检验，因此这里是检验强度，可能超过 100%，不代表唯一件覆盖率。当前源没有独立的实际出货数量字段。",
-            "Both percentages use order quantity deduplicated by production notice as the denominator. Factory Online / End checks are cumulative, so this is inspection intensity and may exceed 100%; it is not unique-piece coverage. No independent actual-shipment field is currently available.",
-        )
     )
 
 
@@ -5928,8 +5964,7 @@ def render_zx_high_risk_cluster(
                 st.metric(t("客户端 / 检验量权重", "Client / Volume Weight"), f"{secondary_weight}%")
         with filter_intro:
             st.markdown(
-                f"<div class='zx-filter-title'>{t('风险等级', 'Risk Levels')}</div>"
-                f"<div class='zx-filter-note'>{t('可多选', 'Multi-select')}</div>",
+                f"<div class='zx-filter-title'>{t('风险等级', 'Risk Levels')}</div>",
                 unsafe_allow_html=True,
             )
         with filter_control:
