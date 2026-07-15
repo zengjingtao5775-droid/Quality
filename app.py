@@ -1060,12 +1060,14 @@ st.markdown(
         font-weight: 860;
         line-height: 1.25;
         margin-top: 2px;
+        text-align: center;
     }
     .zx-filter-note {
         color: #667085;
         font-size: 0.78rem;
         line-height: 1.35;
         margin-top: 4px;
+        text-align: center;
     }
     .zx-pareto-chip {
         display: inline-flex;
@@ -5487,7 +5489,7 @@ def render_chart_heading(
         st.subheader(title)
     with right:
         render_readme_popover(
-            "README",
+            t("指标说明", "README"),
             title,
             t(purpose_cn, purpose_en),
             t(method_cn, method_en),
@@ -5615,29 +5617,27 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
     fqc_sampled_qty = float(
         pd.to_numeric(fqc_view.get("sampling_size", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
     )
+    factory_inspection_intensity = factory_inspected_qty / order_reference_qty if order_reference_qty else np.nan
     fqc_sampling_share = fqc_sampled_qty / order_reference_qty if order_reference_qty else np.nan
 
-    st.markdown(f"### {t('数量与抽检对比', 'Volume and FQC Sampling Comparison')}")
+    st.markdown(f"### {t('检验比例对比', 'Inspection-Rate Comparison')}")
     render_kpi_cards(
         [
             {
-                "label": t("工厂订单 / 出货参考量", "Factory Order / Shipment Reference"),
-                "value": f"{order_reference_qty:,.0f}",
-                "note": t("按生产通知单去重；来源字段为订单数量", "Deduplicated by production notice; source field is order quantity"),
-                "level": "low",
-            },
-            {
-                "label": t("工厂累计检验量", "Factory Cumulative Inspected"),
-                "value": f"{factory_inspected_qty:,.0f}",
-                "note": t("Online / End 检验累计，可能重复覆盖同一件", "Cumulative Online / End checks may cover the same item more than once"),
+                "label": t("工厂累计检验强度", "Factory Cumulative Inspection Intensity"),
+                "value": pct(factory_inspection_intensity),
+                "note": t(
+                    f"累计检验 {factory_inspected_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
+                    f"Cumulative inspected {factory_inspected_qty:,.0f} / order reference {order_reference_qty:,.0f}",
+                ),
                 "level": "medium",
             },
             {
-                "label": t("迪卡侬 FQC 抽检量", "Decathlon FQC Sampled"),
-                "value": f"{fqc_sampled_qty:,.0f}",
+                "label": t("迪卡侬 FQC 抽检率", "Decathlon FQC Sampling Rate"),
+                "value": pct(fqc_sampling_share),
                 "note": t(
-                    f"占订单 / 出货参考量 {pct(fqc_sampling_share)}",
-                    f"{pct(fqc_sampling_share)} of order / shipment reference",
+                    f"FQC 抽检 {fqc_sampled_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
+                    f"FQC sampled {fqc_sampled_qty:,.0f} / order reference {order_reference_qty:,.0f}",
                 ),
                 "level": "low",
             },
@@ -5645,8 +5645,8 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
     )
     st.caption(
         t(
-            "当前源没有独立的实际出货数量字段，因此使用按生产通知单去重后的订单数量作为出货参考量；获得正式出货字段后可直接替换。",
-            "The current source has no independent actual-shipment field, so deduplicated order quantity is used as the shipment reference and can be replaced when an official shipment field is available.",
+            "两个百分比均以按生产通知单去重后的订单数量为分母。工厂数据累计 Online / End 多次检验，因此这里是检验强度，可能超过 100%，不代表唯一件覆盖率。当前源没有独立的实际出货数量字段。",
+            "Both percentages use order quantity deduplicated by production notice as the denominator. Factory Online / End checks are cumulative, so this is inspection intensity and may exceed 100%; it is not unique-piece coverage. No independent actual-shipment field is currently available.",
         )
     )
 
@@ -5815,8 +5815,9 @@ def render_zx_high_risk_cluster(
     view["secondary_weight_pct"] = float(secondary_weight)
 
     def client_component_contributions(row: pd.Series) -> pd.Series:
+        factory_settings = settings_for_factory(risk_settings, row.get("factory_code", "ZX"))
         weights = normalized_weights(
-            settings_for_factory(risk_settings, row.get("factory_code", "ZX")).get(
+            factory_settings.get(
                 "client_weights", DEFAULT_RISK_SETTINGS["client_weights"]
             )
         )
@@ -5830,6 +5831,8 @@ def render_zx_high_risk_cluster(
                 "iv_risk_contribution": iv_component * (secondary_weight / 100),
                 "rpm_client_weight_pct": weights.get("rpm_score", 0) * 100,
                 "iv_client_weight_pct": weights.get("intern_voice_score", 0) * 100,
+                "rpm_cap": max(float(factory_settings.get("rpm_cap", 1500)), 1),
+                "iv_cap": max(float(factory_settings.get("intern_voice_cap", 30)), 1),
             }
         )
 
@@ -5840,6 +5843,8 @@ def render_zx_high_risk_cluster(
             "iv_risk_contribution",
             "rpm_client_weight_pct",
             "iv_client_weight_pct",
+            "rpm_cap",
+            "iv_cap",
         ]
     ] = client_components
     view["client_risk_contribution"] = view["client_signal"] * (secondary_weight / 100)
@@ -5975,6 +5980,8 @@ def render_zx_high_risk_cluster(
             "secondary_weight_pct",
             "rpm_client_weight_pct",
             "iv_client_weight_pct",
+            "rpm_cap",
+            "iv_cap",
         ],
         labels={
             "plot_x": t("生产端风险分（QC不良率）", "Production Risk Score (QC defect rate)"),
@@ -5997,11 +6004,9 @@ def render_zx_high_risk_cluster(
         f"{t('生产端', 'Production')} %{{customdata[9]:.1f}} + {t('检验量强度', 'Volume intensity')} %{{customdata[10]:.1f}}"
     )
     risk_calculation_line_2 = (
-        f"Risk %{{customdata[5]:.1f}} = {t('生产端', 'Production')} %{{customdata[9]:.1f}} "
-        f"({t('不良率', 'defect rate')} %{{customdata[4]:.2%}} → {t('风险分', 'score')} %{{customdata[13]:.1f}} × %{{customdata[16]:.0f}}%) + "
-        f"{t('客户端', 'Client')} %{{customdata[10]:.1f}} "
-        f"[RPM %{{customdata[11]:.1f}} (RPM %{{customdata[2]:,.0f}} → {t('风险分', 'score')} %{{customdata[14]:.1f}} × %{{customdata[18]:.0f}}% × %{{customdata[17]:.0f}}%) + "
-        f"IV %{{customdata[12]:.1f}} (IV %{{customdata[3]:,.0f}} → {t('风险分', 'score')} %{{customdata[15]:.1f}} × %{{customdata[19]:.0f}}% × %{{customdata[17]:.0f}}%)]"
+        f"{t('明细', 'Detail')}  {t('生产', 'Production')}: %{{customdata[4]:.2%}} → %{{customdata[13]:.1f}} × %{{customdata[16]:.0f}}% = %{{customdata[9]:.1f}}; "
+        f"RPM: min(%{{customdata[2]:,.0f}} ÷ %{{customdata[20]:,.0f}} × 100, 100) = %{{customdata[14]:.1f}} × %{{customdata[18]:.0f}}% × %{{customdata[17]:.0f}}% = %{{customdata[11]:.1f}}; "
+        f"IV: min(%{{customdata[3]:,.0f}} ÷ %{{customdata[21]:,.0f}} × 100, 100) = %{{customdata[15]:.1f}} × %{{customdata[19]:.0f}}% × %{{customdata[17]:.0f}}% = %{{customdata[12]:.1f}}"
         if has_client_signal
         else f"Risk %{{customdata[5]:.1f}} = {t('生产端', 'Production')} %{{customdata[9]:.1f}} "
         f"({t('不良率', 'defect rate')} %{{customdata[4]:.2%}} → {t('风险分', 'score')} %{{customdata[13]:.1f}} × %{{customdata[16]:.0f}}%) + "
@@ -7917,7 +7922,7 @@ def render_community_cockpit(
         _, readme_col = st.columns([0.84, 0.16])
         with readme_col:
             render_readme_popover(
-                "README",
+                t("指标说明", "README"),
                 t("Textile Unit 看板核心指标", "Textile Unit Dashboard Core Metrics"),
                 t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
@@ -9823,7 +9828,7 @@ with tabs[1]:
     _, supplier_readme_col = st.columns([0.78, 0.22])
     with supplier_readme_col:
         render_readme_popover(
-            "README",
+            t("指标说明", "README"),
             t("供应商风险分", "Supplier Risk Score"),
             t("比较各 community / 供应商的生产端与客户端质量风险。", "Compare production-side and client-side quality risk across communities and suppliers."),
             t("先把各信号标准化为 0-100 分，再按当前权重合成。", "Normalize each signal to 0-100 before applying the selected weights."),
@@ -10075,7 +10080,7 @@ with tabs[2]:
         client_iv_w = effective_weight_pct(risk_settings, "client_weights", "intern_voice_score")
         with formula_col:
             render_readme_popover(
-                "README",
+                t("指标说明", "README"),
                 t("产品风险分", "Product Risk Score"),
                 t("识别同时存在生产端和客户端风险的 CC，并形成改善优先级。", "Identify CCs with combined production and client risk and rank improvement priority."),
                 t("QC 使用小样本收缩后的不良率；客户端使用 RPM 和 Intern Voice；双端完整 CC 参与 K-means。", "QC uses a low-volume-shrunk defect rate; the client side uses RPM and Intern Voice; CCs with both sides enter K-means."),
