@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 VENDOR_DIR = Path(__file__).resolve().parent / ".vendor"
 if VENDOR_DIR.exists() and str(VENDOR_DIR) not in sys.path:
@@ -48,13 +48,44 @@ def language_query_code() -> str:
     return "en" if st.session_state.get("lang") == "English" else "zh"
 
 
-requested_language = normalize_language(query_param_value("lang", "zh"))
-if st.session_state.get("lang") != requested_language:
+requested_language_code = str(query_param_value("lang", "zh") or "zh").strip().lower()
+requested_language = normalize_language(requested_language_code)
+if "_language_query_seen" not in st.session_state:
     st.session_state.lang = requested_language
+    st.session_state._language_query_seen = requested_language_code
+elif st.session_state.get("_language_query_seen") != requested_language_code:
+    # Respect a language supplied by a newly opened/shared URL, while allowing
+    # the in-app control below to switch languages without a browser reload.
+    st.session_state.lang = requested_language
+    st.session_state._language_query_seen = requested_language_code
 
 
 def t(cn_text: str, en_text: str) -> str:
     return cn_text if st.session_state.lang == "中文" else en_text
+
+
+def sync_interface_language() -> None:
+    selected_language = normalize_language(st.session_state.get("interface_language", st.session_state.lang))
+    selected_code = "en" if selected_language == "English" else "zh"
+    active_scope = globals().get("active_scope_key", str(query_param_value("scope", "ZX") or "ZX"))
+    filter_keys = [
+        f"{active_scope}_supplier_filter_single",
+        globals().get("GLOBAL_CC_FILTER_STATE_KEY", "global_cc_filter"),
+        f"{active_scope}_model_filter",
+        f"{active_scope}_inspection_period",
+        f"{active_scope}_custom_date_range",
+        f"{active_scope}_inspection_sources",
+        "focused_cc",
+    ]
+    st.session_state._language_filter_snapshot = {
+        key: st.session_state.get(key) for key in filter_keys if key in st.session_state
+    }
+    st.session_state.lang = selected_language
+    st.session_state._language_query_seen = selected_code
+    try:
+        st.query_params["lang"] = selected_code
+    except Exception:
+        pass
 
 
 ENGLISH_DISPLAY_EXACT = {
@@ -500,27 +531,22 @@ st.markdown(
         font-weight: 820;
         color: rgba(255, 255, 255, 0.92) !important;
     }
-    .language-links {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 4px;
+    .st-key-interface_language [data-baseweb="button-group"] {
+        width: 100%;
         padding: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
         border-radius: 999px;
         background: rgba(255, 255, 255, 0.12);
-        border: 1px solid rgba(255, 255, 255, 0.16);
     }
-    .language-links a {
-        display: flex;
-        align-items: center;
-        justify-content: center;
+    .st-key-interface_language button {
         min-height: 34px;
-        border-radius: 999px;
-        color: rgba(255, 255, 255, 0.78) !important;
-        font-weight: 800;
-        text-decoration: none !important;
+        border: 0 !important;
+        border-radius: 999px !important;
+        color: rgba(255, 255, 255, 0.82) !important;
+        font-weight: 800 !important;
     }
-    .language-links a.active {
-        background: #ffffff;
+    .st-key-interface_language button[aria-pressed="true"] {
+        background: #ffffff !important;
         color: #2434a7 !important;
         box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
     }
@@ -1133,6 +1159,7 @@ st.markdown(
     .st-key-zx_process_toolbar .st-key-zx_process_cc_filter {
         margin: 0;
         padding: 7px 9px 5px;
+        min-height: 54px;
     }
     .st-key-zx_process_toolbar .st-key-zx_process_cc_filter [data-baseweb="select"] > div {
         min-height: 38px;
@@ -1146,9 +1173,14 @@ st.markdown(
     .st-key-zx_process_toolbar .st-key-zx_process_cc_filter [data-baseweb="tag"] * {
         font-size: 0.71rem !important;
     }
-    .st-key-zx_process_toolbar .st-key-zx_process_cc_filter button[type="submit"],
-    .st-key-zx_process_toolbar [data-testid="stPopover"] button {
+    .st-key-zx_process_toolbar .st-key-zx_process_cc_filter button[type="submit"] {
         min-height: 38px !important;
+    }
+    .st-key-zx_process_toolbar [data-testid="stPopoverButton"] {
+        height: 54px !important;
+        min-height: 54px !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
     }
     .zx-filter-title {
         color: #172033;
@@ -1240,6 +1272,18 @@ st.markdown(
         border-radius: 14px;
         background: rgba(255, 255, 255, 0.92);
         box-shadow: 0 8px 22px rgba(36, 52, 167, 0.06);
+    }
+    .st-key-worker_skill_control {
+        min-height: 82px;
+        padding: 10px 12px 8px;
+        margin: 2px 0 12px;
+        border-radius: 14px;
+    }
+    .st-key-worker_skill_control .worker-skill-label {
+        margin-bottom: 4px;
+    }
+    .st-key-worker_skill_control [data-baseweb="select"] > div {
+        min-height: 38px;
     }
     .worker-skill-label {
         color: #667085;
@@ -1500,6 +1544,11 @@ FACTORIES = {
         "location": "ZX",
         "finished": Path("TU database/ZX Database/Factory data/05.7-06.6检验数据.xlsx"),
         "voice": Path("TU database/ZX Database/Decathlon Customer data/Compare hierarchy (CC).xlsx"),
+        "customer_rpm_r12m": Path("TU database/ZX Database/Decathlon Customer data/R12M RPM.csv"),
+        "customer_rpm_ytd": Path("TU database/ZX Database/Decathlon Customer data/YTD RPM.csv"),
+        "customer_nqc_r12m": Path("TU database/ZX Database/Decathlon Customer data/R12M NQC.csv"),
+        # The supplied export is named YDT; it contains the YTD NQC aggregate.
+        "customer_nqc_ytd": Path("TU database/ZX Database/Decathlon Customer data/YDT NQC.csv"),
         "customer_model": Path("TU database/ZX Database/Decathlon Customer data/Compare hierarchy (model).csv"),
         "customer_return_location": Path("TU database/ZX Database/Decathlon Customer data/1 - Export - Detailed Table by Location [Defloc - Location].csv"),
         "customer_return_defect": Path("TU database/ZX Database/Decathlon Customer data/2 - Export - Detailed Table by Defect [Defloc - Location].csv"),
@@ -3018,6 +3067,44 @@ def load_zx_customer_cc_workbook(path: Path, factory_code: str, cfg: dict) -> pd
 
 
 @st.cache_data(show_spinner=False)
+def load_zx_customer_period_metrics(
+    period: str = "R12M",
+    cache_version: int = DATA_SCOPE_CACHE_VERSION,
+) -> dict[str, float | str]:
+    """Read the four aggregate ZX RPM/NQC exports used by the top KPI cards."""
+    _ = cache_version
+    normalized_period = "YTD" if str(period).upper() == "YTD" else "R12M"
+    cfg = FACTORIES["ZX"]
+
+    def read_export(path_key: str, metric: str) -> tuple[float, float]:
+        path = ROOT / cfg[path_key]
+        if not path.exists():
+            return np.nan, np.nan
+        raw = pd.read_csv(path, encoding="utf-16", sep="\t", header=None, dtype=str)
+        if raw.shape[1] < 2:
+            return np.nan, np.nan
+        keys = raw.iloc[:, 0].fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip().str.casefold()
+        values = clean_numeric_series(raw.iloc[:, 1])
+        current_key = f"n0 {metric.lower()}"
+        previous_key = f"{metric.lower()} n-x"
+        current_rows = values[keys.eq(current_key)]
+        previous_rows = values[keys.eq(previous_key)]
+        current = float(current_rows.iloc[0]) if not current_rows.empty and pd.notna(current_rows.iloc[0]) else np.nan
+        previous = float(previous_rows.iloc[0]) if not previous_rows.empty and pd.notna(previous_rows.iloc[0]) else np.nan
+        return current, previous
+
+    rpm_now, rpm_prev = read_export(f"customer_rpm_{normalized_period.lower()}", "RPM")
+    nqc_now, nqc_prev = read_export(f"customer_nqc_{normalized_period.lower()}", "NQC")
+    return {
+        "period": normalized_period,
+        "rpm_now": rpm_now,
+        "rpm_prev": rpm_prev,
+        "nqc_now": nqc_now,
+        "nqc_prev": nqc_prev,
+    }
+
+
+@st.cache_data(show_spinner=False)
 def load_customer_voice(
     cache_version: int = DATA_SCOPE_CACHE_VERSION,
     factory_codes: tuple[str, ...] | None = None,
@@ -3893,23 +3980,23 @@ def build_tu_community_ai_fact_pack(
             nqc_trend_tone = "bad" if nqc_change > 0 else "good" if nqc_change < 0 else "flat"
             nqc_note = t(
                 f"较上期上升 {nqc_change:.1%}" if nqc_change > 0 else f"较上期下降 {abs(nqc_change):.1%}" if nqc_change < 0 else "较上期持平",
-                f"Up {nqc_change:.1%} vs prior" if nqc_change > 0 else f"Down {abs(nqc_change):.1%} vs prior" if nqc_change < 0 else "Flat vs prior",
+                f"Up {nqc_change:.1%} vs previous" if nqc_change > 0 else f"Down {abs(nqc_change):.1%} vs previous" if nqc_change < 0 else "Flat vs previous",
             ) + t(
                 f" · 当前 €{compact_num(total_nqc)} / 上期 €{compact_num(previous_nqc)}",
-                f" · current €{compact_num(total_nqc)} / prior €{compact_num(previous_nqc)}",
+                f" · current €{compact_num(total_nqc)} / previous €{compact_num(previous_nqc)}",
             )
         elif total_nqc > 0:
             nqc_trend_direction = "up"
             nqc_trend_tone = "bad"
             nqc_note = t(
                 f"较上期上升 · 当前 €{compact_num(total_nqc)} / 上期 €0",
-                f"Up vs prior · current €{compact_num(total_nqc)} / prior €0",
+                f"Up vs previous · current €{compact_num(total_nqc)} / previous €0",
             )
         else:
             nqc_trend_direction = "flat"
-            nqc_note = t("当前与上期均为 €0", "Current and prior are both €0")
+            nqc_note = t("当前与上期均为 €0", "Current and previous are both €0")
     else:
-        nqc_note = t("客户 NQC 金额（欧元）· 上期数据未接入", "Customer NQC amount (EUR) · prior data unavailable")
+        nqc_note = t("客户 NQC 金额（欧元）· 上期数据未接入", "Customer NQC amount (EUR) · previous data unavailable")
 
     iv_voice = voice_df[
         voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("Intern Voice")
@@ -4112,7 +4199,7 @@ def build_tu_community_ai_fact_pack(
             {"fact_id": "KPI03", "scope": "ZX only / Decathlon inspectors", "metric": "Decathlon inspection first-pass RFT YTD", "value": finite_number(decathlon_fqc_metrics["rft"]), "year": latest_year, "pass": int(decathlon_fqc_metrics["pass_count"]), "fail": int(decathlon_fqc_metrics["fail_count"]), "valid_records": int(decathlon_fqc_metrics["valid_records"])},
             {"fact_id": "KPI03B", "scope": "ZX only / ZX factory inspectors", "metric": "ZX factory self-inspection first-pass RFT YTD", "value": finite_number(zx_factory_fqc_metrics["rft"]), "year": latest_year, "pass": int(zx_factory_fqc_metrics["pass_count"]), "fail": int(zx_factory_fqc_metrics["fail_count"]), "valid_records": int(zx_factory_fqc_metrics["valid_records"])},
             {"fact_id": "KPI04", "scope": "TU: ZX + GP + DS where available", "metric": "RPM R12M (returns per million sold)", "value": finite_number(rpm_r12m), "returns": finite_number(returned_now), "sold": finite_number(sold_now)},
-            {"fact_id": "KPI05", "scope": "ZX only", "metric": "Factory pre-sale Intern Voice cases (Before)", "value": iv_current, "prior_year_value": iv_previous, "prior_year_available": previous_available},
+            {"fact_id": "KPI05", "scope": "ZX only", "metric": "Factory before-sale Intern Voice cases", "value": iv_current, "prior_year_value": iv_previous, "prior_year_available": previous_available},
         ],
         "product_risks": product_facts,
         "ps_actions": ps_action_facts,
@@ -4206,7 +4293,7 @@ NON-NEGOTIABLE RULES
 2. Cite fact IDs in every paragraph and every table row containing a factual claim, for example [KPI03], [PRD01], [DFT02].
 3. Always show the denominator next to a rate. Distinguish overall QC defect rate, End-of-line RFT, Jiandaoyun FQC first-pass RFT, RPM, and IV; never merge them into one quality rate.
 4. A risk score is a prioritization index, not a defect probability, causal proof, or audit result [MDL01].
-5. Do not claim improvement or deterioration unless a valid comparison period exists. If prior-year IV is unavailable, say so explicitly.
+5. Do not claim improvement or deterioration unless a valid comparison period exists. If previous-year IV is unavailable, say so explicitly.
 6. Separate OBSERVED FACT, MANAGEMENT INTERPRETATION, and HYPOTHESIS TO VERIFY. Root causes must remain hypotheses unless the fact pack proves them.
 7. Select no more than three priority CCs. A CC must be prioritized using concrete production and/or customer evidence, not rank alone.
 8. Avoid generic recommendations such as "strengthen quality control". Every action must specify owner role, timing, evidence to collect, KPI, and closure criterion.
@@ -4449,7 +4536,7 @@ QC 数据截至 {quality.get('latest_qc_date') or '-'}；有 QC 数据的产品 
         f"| End-of-line calculated RFT proxy | {percentage(kpis.get('KPI02', {}).get('value'))} ({number(kpis.get('KPI02', {}).get('defect_points'))} defect points / {number(kpis.get('KPI02', {}).get('inspected'))} inspected) | Calculated as 1 - defect points / inspected; defect points are not failed pieces | [KPI02] |",
         f"| Decathlon inspection first-pass RFT YTD {kpis.get('KPI03', {}).get('year') or '-'} | {percentage(kpis.get('KPI03', {}).get('value'))} ({number(kpis.get('KPI03', {}).get('pass'))} PASS / {number(kpis.get('KPI03', {}).get('valid_records'))} valid records) | Named Decathlon inspectors only; no approved target or comparable period supplied | [KPI03] |",
         f"| RPM R12M | {number(kpis.get('KPI04', {}).get('value'), 2)} per million ({number(kpis.get('KPI04', {}).get('returns'))} returns / {number(kpis.get('KPI04', {}).get('sold'))} sold) | Current customer-return signal only; no approved target or comparison supplied | [KPI04] |",
-        f"| Factory pre-sale IV cases (Before) | {number(kpis.get('KPI05', {}).get('value'))} | Prior-year comparable data {'available' if kpis.get('KPI05', {}).get('prior_year_available') else 'not available'}; only issues found before use are counted | [KPI05] |",
+        f"| Factory before-sale IV cases | {number(kpis.get('KPI05', {}).get('value'))} | Previous-year comparable data {'available' if kpis.get('KPI05', {}).get('prior_year_available') else 'not available'}; only issues found before sale are counted | [KPI05] |",
     ]
     product_rows = []
     for index, item in enumerate(products, start=1):
@@ -4897,7 +4984,7 @@ def build_jdy_ai_report(fqc: pd.DataFrame) -> pd.DataFrame:
                     t("近30天质量有恶化信号。", "Recent 30 days show a worsening signal.") if delta > 0 else t("近30天质量有改善信号。", "Recent 30 days show an improvement signal."),
                     t(
                         f"近30天不良率 {recent_rate:.2%}；前30天 {prior_rate:.2%}；变化 {delta:+.2%}。",
-                        f"Recent 30-day defect rate {recent_rate:.2%}; prior 30-day {prior_rate:.2%}; delta {delta:+.2%}.",
+                        f"Recent 30-day defect rate {recent_rate:.2%}; previous 30-day {prior_rate:.2%}; delta {delta:+.2%}.",
                     ),
                     t("若恶化，锁定近期新增PO/款式/检查项；若改善，沉淀有效动作并持续监控。", "If worse, isolate recent PO/style/check-area changes; if better, capture effective actions and keep monitoring."),
                 )
@@ -5928,7 +6015,7 @@ def plotly_hover_labels() -> dict[str, str]:
         "work_order": t("工单", "Work Order"),
         "material_type": t("材料类型", "Material Type"),
         "material_issues": t("来料问题数", "Material Issues"),
-        "issue_view": t("工厂 / 质量问题点", "Factory / Issue"),
+        "issue_view": t("工厂 / 原辅料问题", "Factory / Material Defect"),
         "supplier_view": t("来料供应商", "Material Supplier"),
         "size": t("数量", "Count"),
         "combined_signal": t("组合信号强度", "Combined Signal"),
@@ -6133,9 +6220,12 @@ def plot_chart(
     *,
     cc_customdata_index: int | None = None,
     enable_box_zoom: bool = False,
+    localize_values: bool = True,
 ):
     st.session_state["_plot_chart_counter"] = int(st.session_state.get("_plot_chart_counter", 0)) + 1
-    prepared_fig = localize_plotly_figure(clean_plotly_hover(fig))
+    prepared_fig = clean_plotly_hover(fig)
+    if localize_values:
+        prepared_fig = localize_plotly_figure(prepared_fig)
     layout_json = prepared_fig.layout.to_plotly_json()
     for axis_name in [name for name in layout_json if name.startswith("yaxis")]:
         axis = getattr(prepared_fig.layout, axis_name, None)
@@ -6212,7 +6302,7 @@ def dataframe_with_format(df: pd.DataFrame, column_config: dict | None = None, h
         "source_file": t("原始文件", "Source File"),
         "material_type": t("材料类型", "Material Type"),
         "material_supplier": t("来料供应商", "Material Supplier"),
-        "issue": t("质量问题点", "Quality Issue"),
+        "issue": t("原辅料问题类型", "Material Defect Type"),
         "decision": t("判定", "Decision"),
         "risk_trend": t("趋势", "Trend"),
     }
@@ -6333,6 +6423,7 @@ def render_readme_popover(
     logic: str,
     source: str,
     section_title: str | None = None,
+    extra_renderer: Callable[[], None] | None = None,
 ) -> None:
     raw_source = source
     title = english_display_text(title)
@@ -6370,6 +6461,9 @@ def render_readme_popover(
         st.markdown(f"### {title}")
         st.markdown(f"**1. {section_title or t('计算逻辑', 'Calculation Logic')}**  \n{logic}")
         st.markdown(f"**2. {t('数据来源', 'Data Source')}**  \n{source_markdown}")
+        if extra_renderer is not None:
+            st.markdown(f"**3. {t('公式示例', 'Formula Example')}**")
+            extra_renderer()
 
 
 def render_chart_heading(
@@ -6383,6 +6477,7 @@ def render_chart_heading(
     logic_en: str,
     source: str,
     key: str,
+    extra_renderer: Callable[[], None] | None = None,
 ) -> None:
     title = t(title_cn, title_en)
     left, right = st.columns([0.90, 0.10])
@@ -6396,6 +6491,7 @@ def render_chart_heading(
             t(method_cn, method_en),
             t(logic_cn, logic_en),
             source,
+            extra_renderer=extra_renderer,
         )
 
 
@@ -6548,7 +6644,7 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
                 "value": pct(factory_inspection_share),
                 "note": t(
                     f"有效检验 {effective_factory_inspected_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
-                    f"Effectively inspected {effective_factory_inspected_qty:,.0f} / order reference {order_reference_qty:,.0f}",
+                    f"Effectively inspected {effective_factory_inspected_qty:,.0f} / order {order_reference_qty:,.0f}",
                 ),
                 "level": "medium",
             },
@@ -6557,7 +6653,7 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
                 "value": pct(fqc_sampling_share),
                 "note": t(
                     f"FQC 抽检 {fqc_sampled_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
-                    f"FQC sampled {fqc_sampled_qty:,.0f} / order reference {order_reference_qty:,.0f}",
+                    f"FQC sampled {fqc_sampled_qty:,.0f} / order {order_reference_qty:,.0f}",
                 ),
                 "level": "low",
             },
@@ -6685,7 +6781,7 @@ def render_scope_data_map(
         )
         jdy_cfg = JIANDAOYUN_SOURCES.get("ZX_FQC", {})
         access_row = {column: "-" for column in gap_matrix.columns}
-        access_row[t("Community", "Community")] = t("接入方式", "Access Method")
+        access_row[t("Community", "Community")] = t("加载格式", "Load Format")
         access_row[t("Supplier", "Supplier")] = t("当前方式", "Current")
         for column in [
             t("QC / FQC / PQC", "QC / FQC / PQC"),
@@ -6897,7 +6993,7 @@ def render_zx_high_risk_cluster(
         axis=1,
     )
 
-    with st.expander(t("公式示例｜随便选一个 CC 看懂计算", "Formula Example | Select a CC"), expanded=False):
+    def render_formula_example() -> None:
         example_options = view.sort_values("cluster_score", ascending=False)["product_code"].astype(str).tolist()
         default_example = example_options.index("335330") if "335330" in example_options else 0
         example_cc = st.selectbox(
@@ -6937,7 +7033,7 @@ def render_zx_high_risk_cluster(
                 f"""
 **CC {example_cc} · Model {example.get('model_display', '-')}**
 
-1. Production uses small-sample shrinkage: `({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} prior defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {SAMPLE_PSEUDO_COUNT} prior samples) = {shrunk_rate:.2%}`. The piecewise scale maps {benchmark_pct:.1f}% to 50 and {benchmark_pct + 8:.1f}% to 100, giving **production {example.get('production_axis', 0):.1f}**.
+1. Production uses small-sample shrinkage: `({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} previous defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {SAMPLE_PSEUDO_COUNT} previous samples) = {shrunk_rate:.2%}`. The piecewise scale maps {benchmark_pct:.1f}% to 50 and {benchmark_pct + 8:.1f}% to 100, giving **production {example.get('production_axis', 0):.1f}**.
 2. RPM: `min({rpm_value:,.0f} / {example.get('rpm_cap', 1500):,.0f} x 100, 100) = {example.get('rpm_score', 0):.1f}`; IV: `min({iv_value:,.0f} / {example.get('iv_cap', 30):,.0f} x 100, 100) = {example.get('intern_voice_score', 0):.1f}`.
 3. Client: `RPM {example.get('rpm_score', 0):.1f} x {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} x {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`.
 4. Combined: `production {example.get('production_axis', 0):.1f} x {production_weight}% + client {example.get('client_signal', 0):.1f} x {secondary_weight}% = {example.get('cluster_score', 0):.1f}`.
@@ -6952,6 +7048,33 @@ def render_zx_high_risk_cluster(
 """,
             )
         )
+
+    if widget_key == "zx":
+        heading_content = (
+            "识别哪些 CC 同时存在生产端质量风险和客户端风险。",
+            "Identify CCs with combined production-side and client-side quality risk.",
+            "使用 K-means 将每个 CC 按两个风险维度聚成高 / 中 / 低风险组。",
+            "K-means groups each CC into high / medium / low risk by two risk dimensions.",
+            "生产端风险来自 QC 不良率；客户端风险来自 RPM 与 Intern Voice；综合风险用于排序和颜色判断。",
+            "Production risk comes from QC defect rate; client risk comes from RPM and Intern Voice; combined risk drives ranking and color.",
+        )
+    else:
+        heading_content = (
+            "先看当前 community 哪些产品或款号处在高风险区域。",
+            "Start by identifying which products/styles are in the high-risk area.",
+            "使用 K-means 对产品风险进行聚类；没有客户端信号时，用生产端风险和检验量强度聚类。",
+            "Use K-means for product risk clustering; when client signals are missing, use production risk and inspection-volume strength.",
+            "生产端风险来自 QC 不良率；检验量强度用于判断样本可信度。",
+            "Production risk comes from QC defect rate; inspection-volume strength indicates sample confidence.",
+        )
+    render_chart_heading(
+        "高风险产品聚类分析",
+        "High-Risk Product Cluster Analysis",
+        *heading_content,
+        source_label,
+        f"{widget_key}_cluster",
+        extra_renderer=render_formula_example,
+    )
 
     risk_filter_options = [t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
     with st.container(key="zx_cluster_control"):
@@ -7439,9 +7562,21 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
     if source.empty:
         st.info(t("当前日期范围没有 CC 趋势数据。", "No CC trend data exists in the current date range."))
         return
-    selected_ccs = pareto_risk_cc_codes(products)
+    options = sorted(source["product_code"].dropna().astype(str).unique().tolist())
+    default_ccs = pareto_risk_cc_codes(products)
+    selected_ccs = render_cc_search_form(
+        options,
+        default_ccs,
+        state_key=f"zx_defect_trend_cc_selection_{language_query_code()}",
+        form_key=f"zx_defect_trend_cc_form_{language_query_code()}",
+        container_key="zx_cc_search",
+        title="",
+        note="",
+        show_header=False,
+        hide_input_label=True,
+    )
     if not selected_ccs:
-        st.info(t("当前范围没有可显示的 Top 20% CC。", "No Top 20% CCs are available in the current scope."))
+        st.info(t("请至少选择一个 CC。", "Select at least one CC."))
         return
     trend_source = source[source["product_code"].isin(selected_ccs)].copy()
     trend_source["trend_week"] = trend_source["trend_date"].dt.to_period("W").dt.start_time
@@ -7455,7 +7590,7 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         st.info(t("当前日期范围没有所选 CC 的趋势数据。", "No trend data for the selected CCs in the current date range."))
         return
     st.markdown(
-        f"<span class='zx-pareto-chip'>Top 20% · {len(selected_ccs)} {t('个 CC', 'CCs')}</span>",
+        f"<span class='zx-pareto-chip'>{t('当前显示', 'Showing')} · {len(selected_ccs)} {t('个 CC', 'CCs')}</span>",
         unsafe_allow_html=True,
     )
     fig = px.line(
@@ -8178,27 +8313,41 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         )
     counts = worker_view.groupby("skill_level")["worker_team"].nunique()
     skill_options = [skilled_label, medium_label, ordinary_label]
-    worker_card_html = ["<div class='worker-skill-grid'>"]
-    for label in skill_options:
-        worker_card_html.append(
-            "<div class='worker-skill-card'>"
-            f"<div class='worker-skill-label'>{html.escape(label)}</div>"
-            f"<div class='worker-skill-value'>{int(counts.get(label, 0))}</div>"
-            "</div>"
-        )
-    worker_card_html.append("</div>")
-    st.markdown("".join(worker_card_html), unsafe_allow_html=True)
+    cards_col, filter_col = st.columns([0.76, 0.24], gap="small", vertical_alignment="top")
+    with cards_col:
+        worker_card_html = ["<div class='worker-skill-grid'>"]
+        for label in skill_options:
+            worker_card_html.append(
+                "<div class='worker-skill-card'>"
+                f"<div class='worker-skill-label'>{html.escape(label)}</div>"
+                f"<div class='worker-skill-value'>{int(counts.get(label, 0))}</div>"
+                "</div>"
+            )
+        worker_card_html.append("</div>")
+        st.markdown("".join(worker_card_html), unsafe_allow_html=True)
+    with filter_col:
+        with st.container(key="worker_skill_control"):
+            st.markdown(
+                f"<div class='worker-skill-label'>{html.escape(t('分类筛选', 'Category Filter'))}</div>",
+                unsafe_allow_html=True,
+            )
+            all_skill_label = t("全部分类", "All Categories")
+            selected_skill = st.selectbox(
+                t("工人技能分类筛选", "Worker Skill Category Filter"),
+                [all_skill_label, *skill_options],
+                key=f"worker_skill_category_filter_{language_query_code()}_{source_label}",
+                label_visibility="collapsed",
+            )
 
     plot_source = worker_view.copy()
-
-    def stable_worker_jitter(value: object, scale: float = 1.8) -> float:
-        seed = int(hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:8], 16)
-        return ((seed % 10000) / 9999 - 0.5) * 2 * scale
+    if selected_skill != all_skill_label:
+        plot_source = plot_source[plot_source["skill_level"].eq(selected_skill)].copy()
+    if plot_source.empty:
+        st.info(t("当前分类没有可显示的工人数据。", "No worker data is available for this category."))
+        return
 
     display_view = plot_source.sort_values(["defect_risk_axis", "qty_inspected"], ascending=False).head(28).copy()
     display_view["worker_view"] = display_view["worker_team"].astype(str) + " / " + display_view["process"].astype(str)
-    display_view["plot_x"] = (display_view["defect_risk_axis"] + display_view["worker_view"].map(stable_worker_jitter)).clip(0, 100)
-    display_view["plot_y"] = (display_view["volume_axis"] + display_view["worker_view"].map(lambda value: stable_worker_jitter(value, 1.5))).clip(0, 100)
     display_view["bubble_size"] = np.log1p(display_view["defect_qty"].clip(lower=0) + 1)
     display_view["worker_text"] = display_view["worker_team"].astype(str)
     label_positions = [
@@ -8209,18 +8358,16 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
 
     fig = px.scatter(
         display_view.sort_values("defect_risk_axis", ascending=False),
-        x="plot_x",
-        y="plot_y",
+        x="defect_rate_numeric",
+        y="qty_inspected",
         color="skill_level",
         size="bubble_size",
         text="worker_text",
         size_max=18,
         labels={
-            "plot_x": t("不良率风险分", "Defect-Rate Risk Score"),
-            "plot_y": t("检验量强度", "Inspection Volume Strength"),
-            "skill_level": t("技能分类", "Skill Category"),
             "defect_rate_numeric": t("不良率", "Defect Rate"),
-            "qty_inspected": t("检验数量", "Inspected Qty"),
+            "qty_inspected": t("被检验量", "Inspected Quantity"),
+            "skill_level": t("技能分类", "Skill Category"),
             "defect_qty": t("疵点数", "Defects"),
             "worker_view": t("工人 / 工序", "Worker / Process"),
         },
@@ -8237,8 +8384,6 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
             "defect_risk_axis": ":.1f",
             "volume_axis": ":.1f",
             "skill_level": True,
-            "plot_x": False,
-            "plot_y": False,
             "bubble_size": False,
             "worker_text": False,
         },
@@ -8251,27 +8396,13 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
     )
     fig.update_layout(legend=dict(font=dict(size=11), itemsizing="constant"))
 
-    def focused_worker_axis(values: pd.Series, reference: float = 55.0) -> list[float]:
-        numeric = pd.to_numeric(values, errors="coerce").dropna()
-        if numeric.empty:
-            return [-4.0, 104.0]
-        low = min(float(numeric.min()), reference)
-        high = max(float(numeric.max()), reference)
-        span = max(high - low, 24.0)
-        padding = max(span * 0.16, 4.0)
-        axis_low = max(-5.0, low - padding)
-        axis_high = min(105.0, high + padding)
-        if axis_high - axis_low < 34.0:
-            midpoint = (axis_low + axis_high) / 2
-            axis_low = max(-5.0, midpoint - 17.0)
-            axis_high = min(105.0, midpoint + 17.0)
-        return [axis_low, axis_high]
-
-    fig.update_xaxes(range=focused_worker_axis(display_view["plot_x"]), autorange=False)
-    fig.update_yaxes(range=focused_worker_axis(display_view["plot_y"]), autorange=False)
-    fig.add_vline(x=55, line_dash="dash", line_color="#8b96b8", opacity=0.40)
-    fig.add_hline(y=55, line_dash="dash", line_color="#8b96b8", opacity=0.40)
-    plot_chart(fig, 420)
+    x_max = max(float(display_view["defect_rate_numeric"].max()) * 1.12, 0.01)
+    y_max = max(float(display_view["qty_inspected"].max()) * 1.12, 1)
+    fig.update_xaxes(range=[0, x_max], tickformat=".1%", autorange=False)
+    fig.update_yaxes(range=[0, y_max], tickformat=",.0f", autorange=False)
+    # Names are proper nouns. Keep the original Chinese names in both languages
+    # instead of turning them into anonymous English-mode placeholders.
+    plot_chart(fig, 420, localize_values=False)
 
 
 def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact: bool = False):
@@ -8284,36 +8415,75 @@ def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact:
         st.info(t("当前范围暂无来料 / 返工异常记录。", "No incoming/rework risk records under current scope."))
         return
 
+    material_issue_en = {
+        "印刷不良": "Printing defect",
+        "印字不全": "Incomplete printing",
+        "拉力不符合要求": "Tensile strength out of specification",
+        "注塑点毛刺": "Burr at injection point",
+        "烫亮、残次": "Heat shine and damaged pieces",
+        "色差": "Color variation",
+        "有毛刺不良60%": "Burr defects (60%)",
+        "残次、小破洞严重超标": "Excessive damaged pieces and small holes",
+        "色差3级": "Grade-3 color variation",
+        "渐变色不能使用": "Unacceptable gradient color",
+        "不好打开": "Difficult to open",
+        "残次": "Damaged pieces",
+        "有印刷不良现象": "Printing defects observed",
+        "印刷不清晰": "Unclear printing",
+        "拉力不达标": "Tensile strength below specification",
+    }
+
+    def material_issue_display(value: object) -> str:
+        text = str(value if value is not None else "").strip()
+        if st.session_state.get("lang") != "English":
+            return text
+        # Keep unmatched proper descriptions verbatim; an untranslated source
+        # description is more useful than an anonymous hash placeholder.
+        return material_issue_en.get(text, text)
+
     def render_type_chart() -> None:
         mat_type = risk_df.groupby("material_type", as_index=False).size().sort_values("size", ascending=False)
+        mat_type["size"] = pd.to_numeric(mat_type["size"], errors="coerce").fillna(0).astype(int)
+        mat_type["size_label"] = mat_type["size"].map(lambda value: f"{int(value)}")
+        mat_type["material_type_display"] = mat_type["material_type"].map(
+            lambda value: {"主料": "Main material", "辅料": "Auxiliary material"}.get(str(value), str(value))
+            if st.session_state.get("lang") == "English"
+            else str(value)
+        )
         fig = px.bar(
             mat_type,
-            x="material_type",
+            x="material_type_display",
             y="size",
-            text="size",
-            labels={"material_type": t("数据类型", "Data Type"), "size": t("记录数", "Records")},
+            text="size_label",
+            labels={"material_type_display": t("原辅料类型", "Material Type"), "size": t("记录数", "Records")},
             color_discrete_sequence=["#3341c4"],
         )
         y_max = max(float(mat_type["size"].max()) * 1.25, 1) if not mat_type.empty else 1
-        fig.update_yaxes(range=[0, y_max])
-        fig.update_traces(textposition="outside", cliponaxis=False)
+        fig.update_yaxes(range=[0, y_max], tickformat=",d")
+        fig.update_traces(textposition="outside", texttemplate="%{text}", cliponaxis=False)
         fig.update_layout(margin=dict(l=60, r=36, t=28, b=72))
         plot_chart(fig, 330 if compact else 320)
 
     def render_issue_chart() -> None:
         issue = risk_df.groupby("issue", as_index=False).size().sort_values("size", ascending=False).head(8)
+        issue["size"] = pd.to_numeric(issue["size"], errors="coerce").fillna(0).astype(int)
+        issue["size_label"] = issue["size"].map(lambda value: f"{int(value)}")
+        issue["issue_display"] = issue["issue"].map(material_issue_display)
         fig = px.bar(
             issue.sort_values("size", ascending=True),
             x="size",
-            y="issue",
+            y="issue_display",
             orientation="h",
-            text="size",
-            labels={"issue": t("质量问题点", "Quality Issue"), "size": t("记录数", "Records")},
+            text="size_label",
+            labels={
+                "issue_display": t("原辅料问题类型", "Material Defect Type"),
+                "size": t("记录数", "Records"),
+            },
             color_discrete_sequence=["#60a5fa"],
         )
         x_max = max(float(issue["size"].max()) * 1.25, 1) if not issue.empty else 1
-        fig.update_xaxes(range=[0, x_max])
-        fig.update_traces(textposition="outside", cliponaxis=False)
+        fig.update_xaxes(range=[0, x_max], tickformat=",d")
+        fig.update_traces(textposition="outside", texttemplate="%{text}", cliponaxis=False)
         fig.update_layout(margin=dict(l=180 if compact else 150, r=44, t=28, b=58))
         plot_chart(fig, 360 if compact else 320)
 
@@ -8536,7 +8706,7 @@ def render_tu_jdy_refresh_control(
     current_fqc = live_fqc.copy() if using_live else local_fqc
     current_meta = dict(st.session_state.get(meta_state_key, {})) if using_live else local_meta
     current_error = str(st.session_state.get(error_state_key, ""))
-    mode = t("本次会话实时数据", "Live data in this session") if using_live else t("本地缓存快照", "Local cached snapshot")
+    mode = t("本次会话实时数据", "Live data in this session") if using_live else t("本地缓存数据量", "Local cached records")
     updated_at = current_meta.get("pulled_at", "")
     status_text = t(
         f"当前：{mode} · {len(current_fqc):,} 条" + (f" · {updated_at}" if updated_at else ""),
@@ -8924,6 +9094,7 @@ def build_zx_kpi_cards(
     finished_df: pd.DataFrame,
     voice_df: pd.DataFrame,
     jdy_fqc: pd.DataFrame | None = None,
+    customer_period: str = "R12M",
 ) -> list[dict[str, str]]:
     end_qc = finished_df[finished_df["inspection_stage"].eq("End QC / FQC")].copy()
     eol_qty = float(pd.to_numeric(end_qc.get("qty_inspected", 0), errors="coerce").fillna(0).sum())
@@ -8945,6 +9116,10 @@ def build_zx_kpi_cards(
         previous_period = latest_period - 1
         current_rows = monthly_eol[monthly_eol["month_period"].eq(latest_period)]
         previous_rows = monthly_eol[monthly_eol["month_period"].eq(previous_period)]
+        if not current_rows.empty:
+            # Keep the headline and its comparison note on the same monthly
+            # grain; mixing an all-period headline with a monthly note is misleading.
+            eol_rft = float(current_rows.iloc[0]["rft"])
         if not current_rows.empty and not previous_rows.empty:
             current_rft = float(current_rows.iloc[0]["rft"])
             previous_rft = float(previous_rows.iloc[0]["rft"])
@@ -8978,6 +9153,7 @@ def build_zx_kpi_cards(
         owner_view = jdy_fqc[jdy_fqc.get("inspector_owner", pd.Series("", index=jdy_fqc.index)).eq(owner)].copy()
         metrics = jdy_fqc_rft_metrics(owner_view)
         owner_rft = float(metrics["rft"]) if pd.notna(metrics["rft"]) else np.nan
+        display_rft = owner_rft
         trend_direction = ""
         trend_tone = "flat"
         if pd.notna(owner_rft):
@@ -9003,6 +9179,9 @@ def build_zx_kpi_cards(
                 if latest_period is not None:
                     current_rows = monthly[monthly["month_period"].eq(latest_period)]
                     previous_rows = monthly[monthly["month_period"].eq(latest_period - 1)]
+                    if not current_rows.empty:
+                        display_rft = float(current_rows.iloc[0]["rft"])
+                        value = pct(display_rft)
                     if not current_rows.empty and not previous_rows.empty:
                         current_rft = float(current_rows.iloc[0]["rft"])
                         previous_rft = float(previous_rows.iloc[0]["rft"])
@@ -9029,7 +9208,7 @@ def build_zx_kpi_cards(
             "note": note,
             "trend_direction": trend_direction,
             "trend_tone": trend_tone,
-            "level": "high" if pd.notna(owner_rft) and owner_rft < 0.92 else "medium" if pd.notna(owner_rft) and owner_rft < 0.97 else "low",
+            "level": "high" if pd.notna(display_rft) and display_rft < 0.92 else "medium" if pd.notna(display_rft) and display_rft < 0.97 else "low",
         }
 
     decathlon_fqc_card = fqc_owner_card("Decathlon", "迪卡侬验货合格率", "Decathlon Inspection RFT")
@@ -9048,6 +9227,36 @@ def build_zx_kpi_cards(
     nqc_prev_series = pd.to_numeric(ytd_voice.get("nqc_prev", pd.Series(dtype=float)), errors="coerce")
     total_nqc = float(nqc_now_series.sum(min_count=1)) if not nqc_now_series.empty else np.nan
     previous_nqc = float(nqc_prev_series.sum(min_count=1)) if not nqc_prev_series.empty else np.nan
+
+    period_metrics = load_zx_customer_period_metrics(customer_period)
+    metric_period = str(period_metrics.get("period", "R12M"))
+    period_rpm_now = finite_number(period_metrics.get("rpm_now"))
+    period_rpm_prev = finite_number(period_metrics.get("rpm_prev"))
+    if period_rpm_now is not None:
+        rpm_r12m = period_rpm_now
+    if finite_number(period_metrics.get("nqc_now")) is not None:
+        total_nqc = float(period_metrics["nqc_now"])
+    if finite_number(period_metrics.get("nqc_prev")) is not None:
+        previous_nqc = float(period_metrics["nqc_prev"])
+
+    rpm_trend_direction = ""
+    rpm_trend_tone = "flat"
+    if period_rpm_now is not None and period_rpm_prev is not None and period_rpm_prev > 0:
+        rpm_change = (period_rpm_now - period_rpm_prev) / period_rpm_prev
+        rpm_trend_direction = "up" if rpm_change > 0 else "down" if rpm_change < 0 else "flat"
+        rpm_trend_tone = "bad" if rpm_change > 0 else "good" if rpm_change < 0 else "flat"
+        rpm_note = t(
+            f"较上期上升 {rpm_change:.1%}" if rpm_change > 0 else f"较上期下降 {abs(rpm_change):.1%}" if rpm_change < 0 else "较上期持平",
+            f"Up {rpm_change:.1%} vs previous" if rpm_change > 0 else f"Down {abs(rpm_change):.1%} vs previous" if rpm_change < 0 else "Flat vs previous",
+        ) + t(
+            f" · 当前 {compact_num(period_rpm_now)} / 上期 {compact_num(period_rpm_prev)}",
+            f" · current {compact_num(period_rpm_now)} / previous {compact_num(period_rpm_prev)}",
+        )
+    else:
+        rpm_note = t(
+            f"退货 {compact_num(returned_now)} / 销量 {compact_num(sold_now)}",
+            f"Returns {compact_num(returned_now)} / sold {compact_num(sold_now)}",
+        )
     nqc_trend_direction = ""
     nqc_trend_tone = "flat"
     if pd.notna(total_nqc) and pd.notna(previous_nqc):
@@ -9057,23 +9266,23 @@ def build_zx_kpi_cards(
             nqc_trend_tone = "bad" if nqc_change > 0 else "good" if nqc_change < 0 else "flat"
             nqc_note = t(
                 f"较上期上升 {nqc_change:.1%}" if nqc_change > 0 else f"较上期下降 {abs(nqc_change):.1%}" if nqc_change < 0 else "较上期持平",
-                f"Up {nqc_change:.1%} vs prior" if nqc_change > 0 else f"Down {abs(nqc_change):.1%} vs prior" if nqc_change < 0 else "Flat vs prior",
+                f"Up {nqc_change:.1%} vs previous" if nqc_change > 0 else f"Down {abs(nqc_change):.1%} vs previous" if nqc_change < 0 else "Flat vs previous",
             ) + t(
                 f" · 当前 €{compact_num(total_nqc)} / 上期 €{compact_num(previous_nqc)}",
-                f" · current €{compact_num(total_nqc)} / prior €{compact_num(previous_nqc)}",
+                f" · current €{compact_num(total_nqc)} / previous €{compact_num(previous_nqc)}",
             )
         elif total_nqc > 0:
             nqc_trend_direction = "up"
             nqc_trend_tone = "bad"
             nqc_note = t(
                 f"较上期上升 · 当前 €{compact_num(total_nqc)} / 上期 €0",
-                f"Up vs prior · current €{compact_num(total_nqc)} / prior €0",
+                f"Up vs previous · current €{compact_num(total_nqc)} / previous €0",
             )
         else:
             nqc_trend_direction = "flat"
-            nqc_note = t("当前与上期均为 €0", "Current and prior are both €0")
+            nqc_note = t("当前与上期均为 €0", "Current and previous are both €0")
     else:
-        nqc_note = t("客户 NQC 金额（欧元）· 上期数据未接入", "Customer NQC amount (EUR) · prior data unavailable")
+        nqc_note = t("客户 NQC 金额（欧元）· 上期数据未接入", "Customer NQC amount (EUR) · previous data unavailable")
 
     iv_voice = (
         voice_df[voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("Intern Voice")].copy()
@@ -9094,13 +9303,13 @@ def build_zx_kpi_cards(
             yoy_change = (iv_current - iv_previous) / iv_previous
             iv_trend_direction = "down" if yoy_change < 0 else "up" if yoy_change > 0 else "flat"
             yoy_note = t(
-                f"工厂售前（Before）· 同比下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"工厂售前（Before）· 同比上升 {yoy_change:.1%}" if yoy_change > 0 else "工厂售前（Before）· 同比持平",
-                f"Factory pre-sale (Before) · YoY down {abs(yoy_change):.1%}" if yoy_change < 0 else f"Factory pre-sale (Before) · YoY up {yoy_change:.1%}" if yoy_change > 0 else "Factory pre-sale (Before) · YoY flat",
+                f"工厂售前（Before）· 较去年同期下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"工厂售前（Before）· 较去年同期上升 {yoy_change:.1%}" if yoy_change > 0 else "工厂售前（Before）· 与去年同期持平",
+                f"Before sale · down {abs(yoy_change):.1%} vs previous year" if yoy_change < 0 else f"Before sale · up {yoy_change:.1%} vs previous year" if yoy_change > 0 else "Before sale · flat vs previous year",
             )
         else:
-            yoy_note = t("工厂售前（Before）· 去年同期为 0，无法计算同比", "Factory pre-sale (Before) · prior-year period was 0; change is not calculable")
+            yoy_note = t("工厂售前（Before）· 去年同期为 0，无法计算同比", "Before sale · previous-year period was 0; change is not calculable")
     else:
-        yoy_note = t("工厂售前（Before）· 去年同期数据未接入", "Factory pre-sale (Before) · prior-year comparable data not loaded")
+        yoy_note = t("工厂售前（Before）· 去年同期数据未接入", "Before sale · previous-year comparable data not loaded")
 
     return [
         decathlon_fqc_card,
@@ -9114,16 +9323,15 @@ def build_zx_kpi_cards(
             "level": "high" if pd.notna(eol_rft) and eol_rft < 0.96 else "medium" if pd.notna(eol_rft) and eol_rft < 0.98 else "low",
         },
         {
-            "label": "RPM (R12M)",
+            "label": f"RPM ({metric_period})",
             "value": num(rpm_r12m, 0) if pd.notna(rpm_r12m) else "N/A",
-            "note": t(
-                f"退货 {compact_num(returned_now)} / 销量 {compact_num(sold_now)}",
-                f"Returns {compact_num(returned_now)} / sold {compact_num(sold_now)}",
-            ),
+            "note": rpm_note,
+            "trend_direction": rpm_trend_direction,
+            "trend_tone": rpm_trend_tone,
             "level": "high" if pd.notna(rpm_r12m) and rpm_r12m >= 1_000 else "medium" if pd.notna(rpm_r12m) and rpm_r12m >= 500 else "low",
         },
         {
-            "label": t("NQC 金额", "NQC Amount"),
+            "label": t(f"NQC 金额（{metric_period}）", f"NQC Amount ({metric_period})"),
             "value": f"€{compact_num(total_nqc)}" if pd.notna(total_nqc) else "N/A",
             "note": nqc_note,
             "trend_direction": nqc_trend_direction,
@@ -9131,7 +9339,7 @@ def build_zx_kpi_cards(
             "level": "high" if nqc_trend_direction == "up" else "low" if nqc_trend_direction == "down" else "medium",
         },
         {
-            "label": t("工厂售前 IV", "Factory Pre-sale IV"),
+            "label": t("工厂售前 IV", "Factory Before-Sale IV"),
             "value": f"{iv_current:,}",
             "note": yoy_note,
             "trend_direction": iv_trend_direction,
@@ -9278,16 +9486,24 @@ def render_community_cockpit(
                     "- **ZX factory self-inspection pass rate:** First self-inspection results completed by ZX factory inspectors.\n"
                     "- **End-of-line RFT:** A reference for first-pass performance at the end of the production line.\n"
                     "- **RPM (R12M):** Returns per million units sold over the latest 12 months.\n"
-                    "- **Factory pre-sale IV:** Factory-owned issues found before sale.\n"
+                    "- **Factory before-sale IV:** Factory-owned issues found before sale.\n"
                     "- **Effective inspected quantity:** Actual inspection coverage after deduplication and order-quantity capping.\n"
-                    "- **Order reference quantity:** Total order quantity on production notices, used as the reference denominator for coverage and sampling.\n"
-                    "- **Factory inspection share:** Factory effective inspection coverage as a share of order reference quantity.\n"
-                    "- **Decathlon FQC sampling rate:** Decathlon sampled quantity as a share of order reference quantity.",
+                    "- **Order quantity:** Total order quantity on production notices, used as the denominator for coverage and sampling.\n"
+                    "- **Factory inspection share:** Factory effective inspection coverage as a share of order quantity.\n"
+                    "- **Decathlon FQC sampling rate:** Decathlon sampled quantity as a share of order quantity.",
                 ),
-                "Decathlon PS data/ZX_FQC_normalized_snapshot.csv + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/Compare hierarchy (CC).xlsx + Decathlon Customer data/ZX intervoice.xlsx",
+                "Decathlon PS data/ZX_FQC_normalized_snapshot.csv + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/R12M RPM.csv + YTD RPM.csv + R12M NQC.csv + YDT NQC.csv + ZX intervoice.xlsx",
                 section_title=t("卡片含义", "Card Guide"),
             )
-        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc), variant="zx-top")
+        render_kpi_cards(
+            build_zx_kpi_cards(
+                finished_df,
+                voice_df,
+                jdy_fqc,
+                customer_period=st.session_state.get(f"{scope_key}_inspection_period", "R12M"),
+            ),
+            variant="zx-top",
+        )
         render_inspection_volume_comparison(finished_df, jdy_fqc)
     else:
         render_kpi_cards(
@@ -9326,18 +9542,6 @@ def render_community_cockpit(
         zx_qc_source = "TU database/ZX Database/Factory data/05.7-06.6检验数据.xlsx"
         zx_client_source = "TU database/ZX Database/Decathlon Customer data/Compare hierarchy (CC).xlsx + TU database/ZX Database/Decathlon Customer data/ZX intervoice.xlsx"
         zx_risk_source = f"{zx_qc_source} + {zx_client_source}"
-        render_chart_heading(
-            "高风险产品聚类分析",
-            "High-Risk Product Cluster Analysis",
-            "识别哪些 CC 同时存在生产端质量风险和客户端风险。",
-            "Identify CCs with combined production-side and client-side quality risk.",
-            "使用 K-means 将每个 CC 按两个风险维度聚成高 / 中 / 低风险组。",
-            "K-means groups each CC into high / medium / low risk by two risk dimensions.",
-            "生产端风险来自 QC 不良率；客户端风险来自 RPM 与 Intern Voice；综合风险用于排序和颜色判断。",
-            "Production risk comes from QC defect rate; client risk comes from RPM and Intern Voice; combined risk drives ranking and color.",
-            zx_risk_source,
-            "zx_cluster",
-        )
         render_zx_high_risk_cluster(product_df, risk_settings, zx_risk_source, "zx")
 
         render_chart_heading(
@@ -9411,8 +9615,8 @@ def render_community_cockpit(
                 report_language = st.segmented_control(
                     t("报告语言", "Report Language"),
                     ["中文", "English"],
-                    default="中文",
-                    key="zx_dashboard1_ai_report_language",
+                    default=t("中文", "English"),
+                    key=f"zx_dashboard1_ai_report_language_{language_query_code()}",
                 )
                 facts = build_tu_community_ai_fact_pack(
                     finished_df,
@@ -9432,18 +9636,6 @@ def render_community_cockpit(
                 )
         return
 
-    render_chart_heading(
-        "高风险产品聚类分析",
-        "High-Risk Product Cluster Analysis",
-        "先看当前 community 哪些产品或款号处在高风险区域。",
-        "Start by identifying which products/styles are in the high-risk area.",
-        "使用 K-means 对产品风险进行聚类；没有客户端信号时，用生产端风险和检验量强度聚类。",
-        "Use K-means for product risk clustering; when client signals are missing, use production risk and inspection-volume strength.",
-        "生产端风险来自 QC 不良率；检验量强度用于判断样本可信度。",
-        "Production risk comes from QC defect rate; inspection-volume strength indicates sample confidence.",
-        source_label,
-        f"{scope_key}_cluster",
-    )
     render_zx_high_risk_cluster(product_df, risk_settings, source_label, scope_key.lower())
 
     render_chart_heading(
@@ -10537,14 +10729,18 @@ selected_factories = DASHBOARD_SCOPES[active_scope_key]["factories"]
 selected_factory_source_label = ", ".join(english_display_text(FACTORIES[code]["name"]) for code in selected_factories)
 
 st.sidebar.markdown(
-    f"""
-    <div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>
-    <div class='language-links'>
-        <a class='{'active' if st.session_state.lang == '中文' else ''}' href='?scope={html.escape(active_scope_key)}&lang=zh' target='_self'>中文</a>
-        <a class='{'active' if st.session_state.lang == 'English' else ''}' href='?scope={html.escape(active_scope_key)}&lang=en' target='_self'>English</a>
-    </div>
-    """,
+    f"<div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>",
     unsafe_allow_html=True,
+)
+if st.session_state.get("interface_language") != st.session_state.lang:
+    st.session_state.interface_language = st.session_state.lang
+st.sidebar.segmented_control(
+    t("Language / 语言", "Language"),
+    ["中文", "English"],
+    key="interface_language",
+    on_change=sync_interface_language,
+    width="stretch",
+    label_visibility="collapsed",
 )
 st.sidebar.markdown("---")
 st.sidebar.markdown(t("**筛选条件**", "**Filters**"))
@@ -10555,6 +10751,9 @@ max_date = valid_dates.max().date()
 r12m_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
 ytd_start = max(min_date, dt.date(max_date.year, 1, 1))
 selected_jdy_owners: list[str] | None = None
+language_filter_snapshot = st.session_state.pop("_language_filter_snapshot", {})
+for snapshot_key, snapshot_value in language_filter_snapshot.items():
+    st.session_state[snapshot_key] = snapshot_value
 with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
     supplier_filter_key = f"{active_scope_key}_supplier_filter_single"
     model_filter_key = f"{active_scope_key}_model_filter"
@@ -12200,7 +12399,7 @@ with tabs[4]:
                 y="issue_view",
                 color="material_type",
                 orientation="h",
-                labels={"size": t("批次数", "Batches"), "issue_view": t("工厂 / 质量问题点", "Factory / Issue")},
+                labels={"size": t("批次数", "Batches"), "issue_view": t("工厂 / 原辅料问题", "Factory / Material Defect")},
             )
             fig.update_yaxes(autorange="reversed")
             plot_chart(fig, 390)
@@ -12280,7 +12479,7 @@ with tabs[5]:
     with left:
         st.subheader(t("近30天过程变化｜双窗口差分模型", "Recent Process Shift | Two-Window Delta"))
         if process_shift.empty:
-            st.info(t(f"{method_factory_name} 当前数据不足以比较近30天与前30天。", f"{method_factory_name} does not have enough data to compare recent and prior 30-day windows."))
+            st.info(t(f"{method_factory_name} 当前数据不足以比较近30天与前30天。", f"{method_factory_name} does not have enough data to compare recent and previous 30-day windows."))
         else:
             shift_plot = pd.concat([process_shift.head(8), process_shift.tail(4)]).drop_duplicates("process_view")
             fig = px.bar(
@@ -12294,7 +12493,7 @@ with tabs[5]:
             )
             fig.update_xaxes(tickformat="+.1%")
             plot_chart(fig, 390)
-            st.caption(t(f"{method_factory} QC data。算法：近30天不良率 - 前30天不良率；向右/红色代表过程恶化，向左/绿色代表改善。", f"{method_factory} QC data. Logic: recent 30-day defect rate minus prior 30-day defect rate; red/right means worse, green/left means better."))
+            st.caption(t(f"{method_factory} QC data。算法：近30天不良率 - 前30天不良率；向右/红色代表过程恶化，向左/绿色代表改善。", f"{method_factory} QC data. Logic: recent 30-day defect rate minus previous 30-day defect rate; red/right means worse, green/left means better."))
 
     with right:
         st.subheader(t("异常工单分布｜鲁棒 Z-Score 离群检测", "Work-Order Anomaly | Robust Z-Score Outlier"))
