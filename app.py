@@ -1137,6 +1137,10 @@ st.markdown(
         color: #2434a7 !important;
         fill: #2434a7 !important;
     }
+    .st-key-zx_cluster_parameter_button button,
+    .st-key-zx_cluster_parameter_button button p {
+        white-space: nowrap !important;
+    }
     .st-key-zx_process_toolbar .st-key-zx_process_cc_filter {
         margin: 0;
         padding: 7px 9px 5px;
@@ -1956,6 +1960,7 @@ def shrunk_defect_rate(
     qty_inspected: object,
     benchmark_pct: object,
     pseudo: float = SAMPLE_PSEUDO_COUNT,
+    prior_defects: float | None = None,
 ) -> float:
     """对不良率做贝叶斯收缩：小批量向基准回归，避免少量样本把分数推到极端。
 
@@ -1964,10 +1969,12 @@ def shrunk_defect_rate(
     qty = 0.0 if pd.isna(qty_inspected) else max(float(qty_inspected), 0.0)
     defects = 0.0 if pd.isna(defect_qty) else max(float(defect_qty), 0.0)
     prior = max(float(benchmark_pct) / 100, 0.0)
+    pseudo = max(float(pseudo), 0.0)
+    prior_defect_qty = prior * pseudo if prior_defects is None else max(float(prior_defects), 0.0)
     denom = qty + pseudo
     if denom <= 0:
         return np.nan
-    return (defects + prior * pseudo) / denom
+    return (defects + prior_defect_qty) / denom
 
 
 def volume_confidence(qty_inspected: object) -> str:
@@ -6468,7 +6475,7 @@ def render_chart_heading(
     control_renderer: Callable[[], None] | None = None,
 ) -> None:
     title = t(title_cn, title_en)
-    heading_columns = st.columns([0.80, 0.10, 0.10]) if control_renderer is not None else st.columns([0.90, 0.10])
+    heading_columns = st.columns([0.70, 0.20, 0.10]) if control_renderer is not None else st.columns([0.90, 0.10])
     left = heading_columns[0]
     control = heading_columns[1] if control_renderer is not None else None
     right = heading_columns[2] if control_renderer is not None else heading_columns[1]
@@ -6838,21 +6845,28 @@ def render_zx_high_risk_cluster(
         view[column] = pd.to_numeric(view.get(column, np.nan), errors="coerce")
     cluster_factory_settings = settings_for_factory(risk_settings, "ZX")
     cluster_qc_benchmark = float(cluster_factory_settings.get("qc_benchmark_pct", 4.0))
+    default_pseudo_count = int(cluster_factory_settings.get("sample_pseudo_count", SAMPLE_PSEUDO_COUNT))
     cluster_pseudo_count = int(
         st.session_state.get(
             f"{widget_key}_cluster_sample_pseudo_count",
-            cluster_factory_settings.get("sample_pseudo_count", SAMPLE_PSEUDO_COUNT),
+            default_pseudo_count,
+        )
+    )
+    cluster_prior_defects = float(
+        st.session_state.get(
+            f"{widget_key}_cluster_prior_defects",
+            cluster_qc_benchmark / 100 * default_pseudo_count,
         )
     )
     cluster_rpm_cap = float(
         st.session_state.get(
-            f"{widget_key}_cluster_rpm_benchmark",
+            f"{widget_key}_cluster_rpm_threshold",
             cluster_factory_settings.get("rpm_cap", 1500),
         )
     )
     cluster_iv_cap = int(
         st.session_state.get(
-            f"{widget_key}_cluster_iv_benchmark",
+            f"{widget_key}_cluster_iv_threshold",
             cluster_factory_settings.get("intern_voice_cap", 30),
         )
     )
@@ -6864,6 +6878,7 @@ def render_zx_high_risk_cluster(
                     row.get("qty_inspected", 0),
                     cluster_qc_benchmark,
                     cluster_pseudo_count,
+                    cluster_prior_defects,
                 ),
                 cluster_qc_benchmark,
             ),
@@ -7038,9 +7053,13 @@ def render_zx_high_risk_cluster(
         )
         example = view[view["product_code"].astype(str).eq(example_cc)].iloc[0]
         benchmark_pct = cluster_qc_benchmark
-        pseudo_defects = benchmark_pct / 100 * cluster_pseudo_count
+        pseudo_defects = cluster_prior_defects
         shrunk_rate = shrunk_defect_rate(
-            example.get("defect_qty", 0), example.get("qty_inspected", 0), benchmark_pct, cluster_pseudo_count
+            example.get("defect_qty", 0),
+            example.get("qty_inspected", 0),
+            benchmark_pct,
+            cluster_pseudo_count,
+            cluster_prior_defects,
         )
         rpm_value = float(example.get("rpm_now")) if pd.notna(example.get("rpm_now")) else 0.0
         iv_value = float(example.get("intern_voice_count")) if pd.notna(example.get("intern_voice_count")) else 0.0
@@ -7066,36 +7085,47 @@ def render_zx_high_risk_cluster(
         )
 
     def render_cluster_parameters() -> None:
-        with st.popover(t("参数设定", "Parameters"), icon=":material/tune:", use_container_width=True):
-            st.number_input(
-                t("先验样本数", "Reference Sample Size"),
-                min_value=0,
-                max_value=5000,
-                value=cluster_pseudo_count,
-                step=50,
-                key=f"{widget_key}_cluster_sample_pseudo_count",
-                help=t("用于小样本收缩；数值越大，结果越靠近 QC 基准。", "Used for small-sample shrinkage; a larger value pulls results closer to the QC benchmark."),
-            )
-            st.number_input(
-                t("RPM 百万退货率基准", "RPM Returns-per-Million Benchmark"),
-                min_value=100.0,
-                max_value=10000.0,
-                value=cluster_rpm_cap,
-                step=100.0,
-                format="%.0f",
-                key=f"{widget_key}_cluster_rpm_benchmark",
-                help=t("公司规定的 RPM 风险参考阈值，默认 1500。", "Company-defined RPM risk reference threshold; default 1500."),
-            )
-            st.number_input(
-                t("IV 风险基准", "IV Risk Benchmark"),
-                min_value=1,
-                max_value=500,
-                value=cluster_iv_cap,
-                step=5,
-                key=f"{widget_key}_cluster_iv_benchmark",
-                help=t("Intern Voice 风险参考阈值，默认 30。", "Intern Voice risk reference threshold; default 30."),
-            )
-            st.caption(t("修改后立即按当前筛选重新计算。", "Changes immediately recalculate the current filtered view."))
+        with st.container(key="zx_cluster_parameter_button"):
+            with st.popover(t("参数设定", "Parameters"), icon=":material/tune:", use_container_width=True):
+                st.number_input(
+                    t("先验疵点数", "Prior Defect Count"),
+                    min_value=0.0,
+                    max_value=5000.0,
+                    value=cluster_prior_defects,
+                    step=1.0,
+                    format="%.0f",
+                    key=f"{widget_key}_cluster_prior_defects",
+                    help=t("与先验样本数共同决定小样本收缩结果。", "Used with the prior sample size to determine small-sample shrinkage."),
+                )
+                st.number_input(
+                    t("先验样本数", "Prior Sample Size"),
+                    min_value=0,
+                    max_value=5000,
+                    value=cluster_pseudo_count,
+                    step=50,
+                    key=f"{widget_key}_cluster_sample_pseudo_count",
+                    help=t("与先验疵点数共同决定先验不良率和收缩强度。", "Used with prior defects to determine the prior defect rate and shrinkage strength."),
+                )
+                st.number_input(
+                    t("RPM 百万退货率阈值", "RPM Returns-per-Million Threshold"),
+                    min_value=100.0,
+                    max_value=10000.0,
+                    value=cluster_rpm_cap,
+                    step=100.0,
+                    format="%.0f",
+                    key=f"{widget_key}_cluster_rpm_threshold",
+                    help=t("公司规定的 RPM 风险阈值，默认 1500。", "Company-defined RPM risk threshold; default 1500."),
+                )
+                st.number_input(
+                    t("IV 风险阈值", "IV Risk Threshold"),
+                    min_value=1,
+                    max_value=500,
+                    value=cluster_iv_cap,
+                    step=5,
+                    key=f"{widget_key}_cluster_iv_threshold",
+                    help=t("Intern Voice 风险阈值，默认 30。", "Intern Voice risk threshold; default 30."),
+                )
+                st.caption(t("修改后立即按当前筛选重新计算。", "Changes immediately recalculate the current filtered view."))
 
     if widget_key == "zx":
         heading_content = (
@@ -9611,7 +9641,7 @@ def render_community_cockpit(
         )
         render_zx_cc_defect_rate_trend_v1(finished_df, product_df)
 
-        with st.expander(t("更多分析", "More Analysis"), expanded=False):
+        with st.expander(t("更多分析", "More Analysis"), expanded=True):
             analysis_labels = {
                 "process": t("工序", "Process"),
                 "worker": t("工人", "Worker"),
