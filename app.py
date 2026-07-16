@@ -97,6 +97,11 @@ ENGLISH_DISPLAY_EXACT = {
     "网布抽丝": "Mesh fabric snagging",
     "死皱": "Permanent creasing",
     "吃丝不匀": "Uneven gathering",
+    "内里": "Lining",
+    "町缝": "Gusset stitching",
+    "大指": "Thumb",
+    "袖口": "Cuff",
+    "手背": "Back of hand",
 }
 
 ENGLISH_DISPLAY_TOKENS = {
