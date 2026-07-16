@@ -64,30 +64,6 @@ def t(cn_text: str, en_text: str) -> str:
     return cn_text if st.session_state.lang == "中文" else en_text
 
 
-def sync_interface_language() -> None:
-    selected_language = normalize_language(st.session_state.get("interface_language", st.session_state.lang))
-    selected_code = "en" if selected_language == "English" else "zh"
-    active_scope = globals().get("active_scope_key", str(query_param_value("scope", "ZX") or "ZX"))
-    filter_keys = [
-        f"{active_scope}_supplier_filter_single",
-        globals().get("GLOBAL_CC_FILTER_STATE_KEY", "global_cc_filter"),
-        f"{active_scope}_model_filter",
-        f"{active_scope}_inspection_period",
-        f"{active_scope}_custom_date_range",
-        f"{active_scope}_inspection_sources",
-        "focused_cc",
-    ]
-    st.session_state._language_filter_snapshot = {
-        key: st.session_state.get(key) for key in filter_keys if key in st.session_state
-    }
-    st.session_state.lang = selected_language
-    st.session_state._language_query_seen = selected_code
-    try:
-        st.query_params["lang"] = selected_code
-    except Exception:
-        pass
-
-
 ENGLISH_DISPLAY_EXACT = {
     "中兴": "Zhongxing",
     "ZX / 中兴": "ZX / Zhongxing",
@@ -531,21 +507,26 @@ st.markdown(
         font-weight: 820;
         color: rgba(255, 255, 255, 0.92) !important;
     }
-    .st-key-interface_language [data-baseweb="button-group"] {
-        width: 100%;
+    .language-links {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
         padding: 4px;
-        border: 1px solid rgba(255, 255, 255, 0.16);
         border-radius: 999px;
         background: rgba(255, 255, 255, 0.12);
+        border: 1px solid rgba(255, 255, 255, 0.16);
     }
-    .st-key-interface_language button {
+    .language-links a {
+        display: flex;
+        align-items: center;
+        justify-content: center;
         min-height: 34px;
-        border: 0 !important;
-        border-radius: 999px !important;
-        color: rgba(255, 255, 255, 0.82) !important;
-        font-weight: 800 !important;
+        border-radius: 999px;
+        color: rgba(255, 255, 255, 0.78) !important;
+        font-weight: 800;
+        text-decoration: none !important;
     }
-    .st-key-interface_language button[aria-pressed="true"] {
+    .language-links a.active {
         background: #ffffff !important;
         color: #2434a7 !important;
         box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
@@ -1751,6 +1732,7 @@ DEFAULT_RISK_SETTINGS = {
     },
     "qc_benchmark_pct": 4.0,
     "process_benchmark_pct": 5.0,
+    "sample_pseudo_count": 200,
     "rpm_cap": 1500,
     "intern_voice_cap": 30,
     "incoming_reject_cap": 25,
@@ -2014,6 +1996,7 @@ def merge_risk_settings(raw: dict | None) -> dict:
     for key in [
         "qc_benchmark_pct",
         "process_benchmark_pct",
+        "sample_pseudo_count",
         "rpm_cap",
         "intern_voice_cap",
         "incoming_reject_cap",
@@ -2171,6 +2154,7 @@ def risk_settings_from_widget_state(settings: dict, profile: str) -> dict:
         },
         "qc_benchmark_pct": get_number("qc_benchmark_pct", settings["qc_benchmark_pct"], float),
         "process_benchmark_pct": get_number("process_benchmark_pct", settings["process_benchmark_pct"], float),
+        "sample_pseudo_count": get_number("sample_pseudo_count", settings["sample_pseudo_count"], int),
         "rpm_cap": get_number("rpm_cap", settings["rpm_cap"], float),
         "intern_voice_cap": get_number("intern_voice_cap", settings["intern_voice_cap"], int),
         "incoming_reject_cap": get_number("incoming_reject_cap", settings["incoming_reject_cap"], int),
@@ -2328,7 +2312,9 @@ def render_risk_settings_panel() -> dict:
             f"{widget_prefix}_client_iv_weight",
             f"{widget_prefix}_qc_benchmark_pct",
             f"{widget_prefix}_process_benchmark_pct",
+            f"{widget_prefix}_sample_pseudo_count",
             f"{widget_prefix}_rpm_cap",
+            f"{widget_prefix}_intern_voice_cap",
         ]:
             st.session_state.pop(key, None)
         st.rerun()
@@ -5610,6 +5596,7 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
                 row.get("defect_qty", 0),
                 row.get("qty_inspected", 0),
                 settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
+                settings_for_factory(risk_settings, row["factory_code"]).get("sample_pseudo_count", SAMPLE_PSEUDO_COUNT),
             ),
             settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
         ),
@@ -6478,11 +6465,18 @@ def render_chart_heading(
     source: str,
     key: str,
     extra_renderer: Callable[[], None] | None = None,
+    control_renderer: Callable[[], None] | None = None,
 ) -> None:
     title = t(title_cn, title_en)
-    left, right = st.columns([0.90, 0.10])
+    heading_columns = st.columns([0.80, 0.10, 0.10]) if control_renderer is not None else st.columns([0.90, 0.10])
+    left = heading_columns[0]
+    control = heading_columns[1] if control_renderer is not None else None
+    right = heading_columns[2] if control_renderer is not None else heading_columns[1]
     with left:
         st.subheader(title)
+    if control is not None:
+        with control:
+            control_renderer()
     with right:
         render_readme_popover(
             t("说明", "Info"),
@@ -6842,8 +6836,48 @@ def render_zx_high_risk_cluster(
         "intern_voice_score",
     ]:
         view[column] = pd.to_numeric(view.get(column, np.nan), errors="coerce")
-    fallback_production = view["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
-    view["production_axis"] = view["production_score"].fillna(fallback_production).fillna(0).clip(0, 100)
+    cluster_factory_settings = settings_for_factory(risk_settings, "ZX")
+    cluster_qc_benchmark = float(cluster_factory_settings.get("qc_benchmark_pct", 4.0))
+    cluster_pseudo_count = int(
+        st.session_state.get(
+            f"{widget_key}_cluster_sample_pseudo_count",
+            cluster_factory_settings.get("sample_pseudo_count", SAMPLE_PSEUDO_COUNT),
+        )
+    )
+    cluster_rpm_cap = float(
+        st.session_state.get(
+            f"{widget_key}_cluster_rpm_benchmark",
+            cluster_factory_settings.get("rpm_cap", 1500),
+        )
+    )
+    cluster_iv_cap = int(
+        st.session_state.get(
+            f"{widget_key}_cluster_iv_benchmark",
+            cluster_factory_settings.get("intern_voice_cap", 30),
+        )
+    )
+    if widget_key == "zx":
+        view["production_axis"] = view.apply(
+            lambda row: defect_risk_score(
+                shrunk_defect_rate(
+                    row.get("defect_qty", 0),
+                    row.get("qty_inspected", 0),
+                    cluster_qc_benchmark,
+                    cluster_pseudo_count,
+                ),
+                cluster_qc_benchmark,
+            ),
+            axis=1,
+        ).fillna(0).clip(0, 100)
+        view["rpm_score"] = view["rpm_now"].map(
+            lambda value: np.nan if pd.isna(value) else min(max(float(value), 0) / max(cluster_rpm_cap, 1) * 100, 100)
+        )
+        view["intern_voice_score"] = view["intern_voice_count"].map(
+            lambda value: min((0 if pd.isna(value) else max(float(value), 0)) / max(cluster_iv_cap, 1) * 100, 100)
+        )
+    else:
+        fallback_production = view["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
+        view["production_axis"] = view["production_score"].fillna(fallback_production).fillna(0).clip(0, 100)
     has_client_signal = view[["client_score", "rpm_score", "intern_voice_score"]].notna().any(axis=1).any()
     if has_client_signal:
         # Cluster-specific neutral weighting. Until outcome validation shows
@@ -6898,8 +6932,8 @@ def render_zx_high_risk_cluster(
                 "iv_risk_contribution": iv_component * (secondary_weight / 100),
                 "rpm_client_weight_pct": weights.get("rpm_score", 0) * 100,
                 "iv_client_weight_pct": weights.get("intern_voice_score", 0) * 100,
-                "rpm_cap": max(float(factory_settings.get("rpm_cap", 1500)), 1),
-                "iv_cap": max(float(factory_settings.get("intern_voice_cap", 30)), 1),
+                "rpm_cap": max(cluster_rpm_cap if widget_key == "zx" else float(factory_settings.get("rpm_cap", 1500)), 1),
+                "iv_cap": max(cluster_iv_cap if widget_key == "zx" else float(factory_settings.get("intern_voice_cap", 30)), 1),
             }
         )
 
@@ -7003,12 +7037,10 @@ def render_zx_high_risk_cluster(
             key=f"{widget_key}_cluster_formula_example",
         )
         example = view[view["product_code"].astype(str).eq(example_cc)].iloc[0]
-        benchmark_pct = float(
-            settings_for_factory(risk_settings, example.get("factory_code", "ZX")).get("qc_benchmark_pct", 4.0)
-        )
-        pseudo_defects = benchmark_pct / 100 * SAMPLE_PSEUDO_COUNT
+        benchmark_pct = cluster_qc_benchmark
+        pseudo_defects = benchmark_pct / 100 * cluster_pseudo_count
         shrunk_rate = shrunk_defect_rate(
-            example.get("defect_qty", 0), example.get("qty_inspected", 0), benchmark_pct
+            example.get("defect_qty", 0), example.get("qty_inspected", 0), benchmark_pct, cluster_pseudo_count
         )
         rpm_value = float(example.get("rpm_now")) if pd.notna(example.get("rpm_now")) else 0.0
         iv_value = float(example.get("intern_voice_count")) if pd.notna(example.get("intern_voice_count")) else 0.0
@@ -7017,37 +7049,53 @@ def render_zx_high_risk_cluster(
                 f"""
 **CC {example_cc} · Model {example.get('model_display', '-')}**
 
-1. 生产端先做小样本收缩：`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {SAMPLE_PSEUDO_COUNT} 先验样本) = {shrunk_rate:.2%}`，再按 {benchmark_pct:.1f}% 对应 50 分、{benchmark_pct + 8:.1f}% 对应 100 分的分段规则，得到 **生产端 {example.get('production_axis', 0):.1f} 分**。
+1. 生产端：`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {cluster_pseudo_count} 先验样本) = {shrunk_rate:.2%}` → **生产端 {example.get('production_axis', 0):.1f} 分**。
 2. RPM：`min({rpm_value:,.0f} ÷ {example.get('rpm_cap', 1500):,.0f} × 100, 100) = {example.get('rpm_score', 0):.1f}`；IV：`min({iv_value:,.0f} ÷ {example.get('iv_cap', 30):,.0f} × 100, 100) = {example.get('intern_voice_score', 0):.1f}`。
 3. 客户端：`RPM {example.get('rpm_score', 0):.1f} × {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} × {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`。
-4. 综合分：`生产端 {example.get('production_axis', 0):.1f} × {production_weight}% + 客户端 {example.get('client_signal', 0):.1f} × {secondary_weight}% = {example.get('cluster_score', 0):.1f}`。
-
-**为什么这样处理？**
-
-- `min(..., 100)` 只给标准化后的风险分封顶，原始 RPM / IV 仍保留在悬浮信息中。这样一个极端值不会无限拉大坐标或压扁其他 CC，所有信号都能在 0–100 的同一量尺上比较。
-- 客户端内部在两类数据都存在时暂用 **RPM 50% + IV 50%**；如果某个 CC 只有其中一个信号，已有信号自动承担 100%，不会把缺失数据当成 0 分。两者先分别标准化，所以 50/50 是“两个风险信号同等重要”，不是原始数量直接相加。当前没有经过结果验证的证据证明某一个应该占 70%，因此 50/50 是更中性的默认值；未来可用历史 action 是否有效、退货是否下降来校准。
-- **小样本收缩**是把观察结果与统一基准混合：检验量小时更靠近基准，检验量大时更接近真实不良率。它避免“只检 1 件坏 1 件”被当成与“检 10,000 件坏 1,000 件”同等可靠的 100% 风险证据。
-
-**为什么是“{example.get('cluster_risk_level', '-')}”？** K-means 按生产端与客户端两个坐标分成 3 组，再把平均综合分最高的一组命名为高风险、最低的一组命名为低风险。因此这是当前数据范围内的**相对聚类等级**，不是“综合分达到固定阈值就高风险”。
+4. Risk Score：`生产端 {example.get('production_axis', 0):.1f} × {production_weight}% + 客户端 {example.get('client_signal', 0):.1f} × {secondary_weight}% = {example.get('cluster_score', 0):.1f}`。
 """,
                 f"""
 **CC {example_cc} · Model {example.get('model_display', '-')}**
 
-1. Production uses small-sample shrinkage: `({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} previous defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {SAMPLE_PSEUDO_COUNT} previous samples) = {shrunk_rate:.2%}`. The piecewise scale maps {benchmark_pct:.1f}% to 50 and {benchmark_pct + 8:.1f}% to 100, giving **production {example.get('production_axis', 0):.1f}**.
+1. Production: `({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} reference defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {cluster_pseudo_count} reference samples) = {shrunk_rate:.2%}` → **production {example.get('production_axis', 0):.1f}**.
 2. RPM: `min({rpm_value:,.0f} / {example.get('rpm_cap', 1500):,.0f} x 100, 100) = {example.get('rpm_score', 0):.1f}`; IV: `min({iv_value:,.0f} / {example.get('iv_cap', 30):,.0f} x 100, 100) = {example.get('intern_voice_score', 0):.1f}`.
 3. Client: `RPM {example.get('rpm_score', 0):.1f} x {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} x {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`.
-4. Combined: `production {example.get('production_axis', 0):.1f} x {production_weight}% + client {example.get('client_signal', 0):.1f} x {secondary_weight}% = {example.get('cluster_score', 0):.1f}`.
-
-**Why these treatments?**
-
-- `min(..., 100)` caps only the normalized risk score; raw RPM / IV remain available in the hover. One extreme value therefore cannot stretch the scale indefinitely or flatten every other CC, and all signals remain comparable on 0-100.
-- When both sources exist, the client axis uses **RPM 50% + IV 50%**. If a CC has only one signal, the available signal automatically carries 100%; missing data is not treated as a zero score. Each signal is normalized first, so equal weighting means equal importance of the two risk signals, not adding raw counts. There is no outcome-validated evidence yet that either should carry 70%, making 50/50 the neutral default; it can later be calibrated against action effectiveness and subsequent returns.
-- **Small-sample shrinkage** blends the observed rate with a common benchmark. Small samples move more toward the benchmark; large samples stay close to the observed rate. This prevents 1 defect in 1 inspection from being treated as equally reliable as 1,000 defects in 10,000 inspections.
-
-**Why “{example.get('cluster_risk_level', '-')}”?** K-means forms three groups from the production and client axes. The group with the highest average combined score is named high risk, and the lowest is named low risk. This is a **relative cluster label**, not a fixed score threshold.
+4. Risk Score: `production {example.get('production_axis', 0):.1f} x {production_weight}% + client {example.get('client_signal', 0):.1f} x {secondary_weight}% = {example.get('cluster_score', 0):.1f}`.
 """,
             )
         )
+
+    def render_cluster_parameters() -> None:
+        with st.popover(t("参数设定", "Parameters"), icon=":material/tune:", use_container_width=True):
+            st.number_input(
+                t("先验样本数", "Reference Sample Size"),
+                min_value=0,
+                max_value=5000,
+                value=cluster_pseudo_count,
+                step=50,
+                key=f"{widget_key}_cluster_sample_pseudo_count",
+                help=t("用于小样本收缩；数值越大，结果越靠近 QC 基准。", "Used for small-sample shrinkage; a larger value pulls results closer to the QC benchmark."),
+            )
+            st.number_input(
+                t("RPM 百万退货率基准", "RPM Returns-per-Million Benchmark"),
+                min_value=100.0,
+                max_value=10000.0,
+                value=cluster_rpm_cap,
+                step=100.0,
+                format="%.0f",
+                key=f"{widget_key}_cluster_rpm_benchmark",
+                help=t("公司规定的 RPM 风险参考阈值，默认 1500。", "Company-defined RPM risk reference threshold; default 1500."),
+            )
+            st.number_input(
+                t("IV 风险基准", "IV Risk Benchmark"),
+                min_value=1,
+                max_value=500,
+                value=cluster_iv_cap,
+                step=5,
+                key=f"{widget_key}_cluster_iv_benchmark",
+                help=t("Intern Voice 风险参考阈值，默认 30。", "Intern Voice risk reference threshold; default 30."),
+            )
+            st.caption(t("修改后立即按当前筛选重新计算。", "Changes immediately recalculate the current filtered view."))
 
     if widget_key == "zx":
         heading_content = (
@@ -7074,11 +7122,12 @@ def render_zx_high_risk_cluster(
         source_label,
         f"{widget_key}_cluster",
         extra_renderer=render_formula_example,
+        control_renderer=render_cluster_parameters if widget_key == "zx" else None,
     )
 
     risk_filter_options = [t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
     with st.container(key="zx_cluster_control"):
-        weight_control, filter_intro, filter_control = st.columns([0.18, 0.22, 0.60], vertical_alignment="center")
+        weight_control, filter_control = st.columns([0.18, 0.82], vertical_alignment="center")
         with weight_control:
             with st.popover(t("权重调整", "Adjust Weights"), use_container_width=True):
                 production_weight = st.slider(
@@ -7091,11 +7140,6 @@ def render_zx_high_risk_cluster(
                 )
                 secondary_weight = 100 - production_weight
                 st.metric(t("客户端 / 检验量权重", "Client / Volume Weight"), f"{secondary_weight}%")
-        with filter_intro:
-            st.markdown(
-                f"<div class='zx-filter-title'>{t('风险等级', 'Risk Levels')}</div>",
-                unsafe_allow_html=True,
-            )
         with filter_control:
             selected_risk_levels = st.multiselect(
                 t("风险筛选（可多选）", "Risk Filter (multi-select)"),
@@ -7159,32 +7203,13 @@ def render_zx_high_risk_cluster(
             "cluster_risk_formula": t("风险分计算", "Risk Calculation"),
         },
     )
-    risk_calculation_line_1 = (
-        f"{t('Risk计算', 'Risk calculation')}  <b>%{{customdata[5]:.1f}}</b> = "
-        f"{t('生产端', 'Production')} %{{customdata[9]:.1f}} + {t('客户端', 'Client')} %{{customdata[10]:.1f}} "
-        f"(RPM %{{customdata[11]:.1f}} + IV %{{customdata[12]:.1f}})"
-        if has_client_signal
-        else f"{t('Risk计算', 'Risk calculation')}  <b>%{{customdata[5]:.1f}}</b> = "
-        f"{t('生产端', 'Production')} %{{customdata[9]:.1f}} + {t('检验量强度', 'Volume intensity')} %{{customdata[10]:.1f}}"
-    )
-    risk_calculation_line_2 = (
-        f"{t('明细', 'Detail')}  {t('生产', 'Production')}: %{{customdata[4]:.2%}} → %{{customdata[13]:.1f}} × %{{customdata[16]:.0f}}% = %{{customdata[9]:.1f}}; "
-        f"RPM: min(%{{customdata[2]:,.0f}} ÷ %{{customdata[20]:,.0f}} × 100, 100) = %{{customdata[14]:.1f}} × %{{customdata[18]:.0f}}% × %{{customdata[17]:.0f}}% = %{{customdata[11]:.1f}}; "
-        f"IV: min(%{{customdata[3]:,.0f}} ÷ %{{customdata[21]:,.0f}} × 100, 100) = %{{customdata[15]:.1f}} × %{{customdata[19]:.0f}}% × %{{customdata[17]:.0f}}% = %{{customdata[12]:.1f}}"
-        if has_client_signal
-        else f"Risk %{{customdata[5]:.1f}} = {t('生产端', 'Production')} %{{customdata[9]:.1f}} "
-        f"({t('不良率', 'defect rate')} %{{customdata[4]:.2%}} → {t('风险分', 'score')} %{{customdata[13]:.1f}} × %{{customdata[16]:.0f}}%) + "
-        f"{t('检验量强度', 'Volume intensity')} %{{customdata[10]:.1f}}"
-    )
     hover_template = (
         f"<b>CC %{{customdata[0]}} · %{{customdata[8]}}</b><br>"
         f"<span style='color:#667085'>Model</span>  %{{customdata[1]}}<br>"
         f"━━━━━━━━━━━━━━━━━━━━<br>"
         f"RPM  <b>%{{customdata[2]:,.0f}}</b>　 IV  <b>%{{customdata[3]:,.0f}}</b><br>"
-        f"{t('不良率', 'Defect rate')}  <b>%{{customdata[4]:.2%}}</b>　 Risk  <b>%{{customdata[5]:.1f}}</b><br>"
-        f"{t('检验数', 'Inspected')}  %{{customdata[6]:,.0f}}　 {t('疵点', 'Defects')}  %{{customdata[7]:,.0f}}<br>"
-        f"{risk_calculation_line_1}<br>"
-        f"{risk_calculation_line_2}"
+        f"{t('不良率', 'Defect rate')}  <b>%{{customdata[4]:.2%}}</b>　 Risk Score  <b>%{{customdata[5]:.1f}}</b><br>"
+        f"{t('检验数', 'Inspected')}  %{{customdata[6]:,.0f}}　 {t('疵点', 'Defects')}  %{{customdata[7]:,.0f}}"
         "<extra></extra>"
     )
     fig.update_traces(
@@ -7236,7 +7261,7 @@ def render_zx_high_risk_cluster(
             620,
             key=f"{widget_key}_cluster_plot",
             cc_customdata_index=0,
-            enable_box_zoom=False,
+            enable_box_zoom=True,
         )
 
 
@@ -10729,18 +10754,14 @@ selected_factories = DASHBOARD_SCOPES[active_scope_key]["factories"]
 selected_factory_source_label = ", ".join(english_display_text(FACTORIES[code]["name"]) for code in selected_factories)
 
 st.sidebar.markdown(
-    f"<div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>",
+    f"""
+    <div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>
+    <div class='language-links'>
+        <a class='{'active' if st.session_state.lang == '中文' else ''}' href='?scope={html.escape(active_scope_key)}&lang=zh' target='_self'>中文</a>
+        <a class='{'active' if st.session_state.lang == 'English' else ''}' href='?scope={html.escape(active_scope_key)}&lang=en' target='_self'>English</a>
+    </div>
+    """,
     unsafe_allow_html=True,
-)
-if st.session_state.get("interface_language") != st.session_state.lang:
-    st.session_state.interface_language = st.session_state.lang
-st.sidebar.segmented_control(
-    t("Language / 语言", "Language"),
-    ["中文", "English"],
-    key="interface_language",
-    on_change=sync_interface_language,
-    width="stretch",
-    label_visibility="collapsed",
 )
 st.sidebar.markdown("---")
 st.sidebar.markdown(t("**筛选条件**", "**Filters**"))
@@ -10751,9 +10772,6 @@ max_date = valid_dates.max().date()
 r12m_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
 ytd_start = max(min_date, dt.date(max_date.year, 1, 1))
 selected_jdy_owners: list[str] | None = None
-language_filter_snapshot = st.session_state.pop("_language_filter_snapshot", {})
-for snapshot_key, snapshot_value in language_filter_snapshot.items():
-    st.session_state[snapshot_key] = snapshot_value
 with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
     supplier_filter_key = f"{active_scope_key}_supplier_filter_single"
     model_filter_key = f"{active_scope_key}_model_filter"
