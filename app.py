@@ -4706,7 +4706,6 @@ def tu_report_passes_guardrails(content: str, language: str) -> bool:
     return not re.search(forbidden, content, flags=re.IGNORECASE) and all(section in content for section in required)
 
 
-@st.cache_data(show_spinner=False, ttl=1800, max_entries=20)
 def generate_qwen_quality_summary(report_scope: str, facts_json: str, language: str, model: str, prompt_profile: str, prompt_version: str, api_key_fingerprint: str, _api_key: str) -> dict:
     del api_key_fingerprint
     del prompt_version
@@ -4753,10 +4752,21 @@ def generate_qwen_quality_summary(report_scope: str, facts_json: str, language: 
     return {"content": content, "model": str(response.get("model") or model), "generated_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 
+@st.cache_resource(show_spinner=False)
+def saved_ai_report_store() -> dict[str, dict[str, object]]:
+    """Keep the latest generated report available across Streamlit sessions.
+
+    The store is process-local: it survives widget reruns and new browser
+    sessions while the deployed app process is alive. A deliberate Generate /
+    Regenerate click is the only path that writes a new model response.
+    """
+    return {}
+
+
 def render_qwen_summary_panel(
     key: str,
     title: str,
-    facts: dict,
+    facts: dict | Callable[[], dict],
     *,
     show_title: bool = True,
     prompt_profile: str = "general",
@@ -4796,29 +4806,55 @@ def render_qwen_summary_panel(
         else "general-v1"
     )
     active_language = report_language or st.session_state.lang
-    facts_json = json.dumps(facts, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-    report_fingerprint = hashlib.sha256(
-        f"{prompt_profile}|{prompt_version}|{active_language}|{model}|{facts_json}".encode()
-    ).hexdigest()
+    report_state_key = f"{key}_{active_language}_report"
+    fingerprint_state_key = f"{key}_{active_language}_facts"
+    store_key = f"{key}|{active_language}"
+    report_store = saved_ai_report_store()
+    session_report = st.session_state.get(report_state_key)
+    session_fingerprint = st.session_state.get(fingerprint_state_key)
+    stored_entry = report_store.get(store_key, {})
+    report = session_report or stored_entry.get("report")
+    saved_fingerprint = session_fingerprint if session_report else stored_entry.get("fingerprint")
+    facts_json: str | None = None
+
+    def current_facts_json() -> str:
+        nonlocal facts_json
+        if facts_json is None:
+            fact_payload = facts() if callable(facts) else facts
+            facts_json = json.dumps(fact_payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        return facts_json
+
     generate_clicked = st.button(
-        t("通义千问一键生成报告", "Generate Report with Qwen"),
+        t("重新生成报告", "Regenerate Report") if report else t("生成报告", "Generate Report"),
         type="primary",
         icon=":material/auto_awesome:",
         key=f"{key}_generate",
         disabled=not bool(api_key),
     )
     if not api_key:
-        st.info(t("当前显示经规则校验的总结；配置 DASHSCOPE_API_KEY 后可一键生成增强版。", "A rule-validated summary is shown below; configure DASHSCOPE_API_KEY to generate an enhanced version."))
+        st.info(
+            t(
+                "当前显示已保存报告。配置 DASHSCOPE_API_KEY 后可重新生成。" if report else "当前显示经规则校验的总结；配置 DASHSCOPE_API_KEY 后可生成增强版。",
+                "Showing the saved report. Configure DASHSCOPE_API_KEY to regenerate it." if report else "A rule-validated summary is shown below; configure DASHSCOPE_API_KEY to generate an enhanced version.",
+            )
+        )
+    generated_now = False
     if generate_clicked:
         try:
+            active_facts_json = current_facts_json()
+            report_fingerprint = hashlib.sha256(
+                f"{prompt_profile}|{prompt_version}|{active_language}|{model}|{active_facts_json}".encode()
+            ).hexdigest()
             with st.spinner(t("通义千问正在生成管理总结...", "Qwen is generating the management summary...")):
-                report = generate_qwen_quality_summary(title, facts_json, active_language, model, prompt_profile, prompt_version, hashlib.sha256(api_key.encode()).hexdigest()[:12], api_key)
-            st.session_state[f"{key}_{active_language}_report"] = report
-            st.session_state[f"{key}_{active_language}_facts"] = report_fingerprint
+                report = generate_qwen_quality_summary(title, active_facts_json, active_language, model, prompt_profile, prompt_version, hashlib.sha256(api_key.encode()).hexdigest()[:12], api_key)
+            saved_fingerprint = report_fingerprint
+            st.session_state[report_state_key] = report
+            st.session_state[fingerprint_state_key] = saved_fingerprint
+            report_store[store_key] = {"report": report, "fingerprint": saved_fingerprint}
+            generated_now = True
         except Exception as exc:
             st.error(t(f"AI 总结生成失败：{exc}", f"AI summary failed: {exc}"))
-    report = st.session_state.get(f"{key}_{active_language}_report")
-    if report and st.session_state.get(f"{key}_{active_language}_facts") == report_fingerprint:
+    if report:
         if prompt_profile == "zx_conclusion":
             with st.container(key="zx_ai_report_result"):
                 st.markdown(report["content"])
@@ -4830,11 +4866,19 @@ def render_qwen_summary_panel(
         else:
             st.markdown(report["content"])
             st.caption(t(f"通义千问 {report['model']} · {report['generated_at']}。数字来自当前看板事实，根因仍需现场验证。", f"Qwen {report['model']} · {report['generated_at']}. Numbers come from dashboard facts; root causes still require on-site validation."))
+        if not generated_now:
+            st.caption(
+                t(
+                    "当前显示上一次保存的报告；需要按当前筛选更新时，请点击“重新生成报告”。",
+                    "Showing the last saved report. Click Regenerate Report to update it for the current filters.",
+                )
+            )
     elif prompt_profile == "zx_conclusion":
         with st.container(key="zx_ai_report_result"):
-            st.markdown(build_zx_conclusion_report(facts_json, active_language))
+            st.markdown(build_zx_conclusion_report(current_facts_json(), active_language))
+        st.caption(t("当前暂无已保存的 AI 报告；以上为规则生成的即时总结。", "No saved AI report yet; the summary above is generated instantly from rules."))
     elif prompt_profile == "tu_community":
-        st.markdown(build_tu_guardrailed_report(facts_json, active_language))
+        st.markdown(build_tu_guardrailed_report(current_facts_json(), active_language))
 
 
 def jdy_section_pareto(fqc: pd.DataFrame) -> pd.DataFrame:
@@ -9673,18 +9717,17 @@ def render_community_cockpit(
                     default=t("中文", "English"),
                     key=f"zx_dashboard1_ai_report_language_{language_query_code()}",
                 )
-                facts = build_tu_community_ai_fact_pack(
-                    finished_df,
-                    voice_df,
-                    incoming_df,
-                    product_df,
-                    process_df,
-                    risk_settings,
-                )
                 render_qwen_summary_panel(
                     "zx_dashboard1_conclusion",
                     "质量结论报告" if report_language == "中文" else "Quality Conclusion Report",
-                    facts,
+                    lambda: build_tu_community_ai_fact_pack(
+                        finished_df,
+                        voice_df,
+                        incoming_df,
+                        product_df,
+                        process_df,
+                        risk_settings,
+                    ),
                     show_title=False,
                     prompt_profile="zx_conclusion",
                     report_language=report_language,
@@ -10310,18 +10353,17 @@ def render_zx_management_dashboard_v2(
         return
 
     st.subheader(t("TU Community AI 总结", "TU Community AI Summary"))
-    facts = build_tu_community_ai_fact_pack(
-        finished_df,
-        voice_df,
-        incoming_df,
-        product_df,
-        process_df,
-        risk_settings,
-    )
     render_qwen_summary_panel(
         "zx_v2_community",
         t("TU Community 质量总结", "TU Community Quality Summary"),
-        facts,
+        lambda: build_tu_community_ai_fact_pack(
+            finished_df,
+            voice_df,
+            incoming_df,
+            product_df,
+            process_df,
+            risk_settings,
+        ),
         show_title=False,
         prompt_profile="tu_community",
     )
@@ -10729,7 +10771,7 @@ def render_scope_nav(active_scope: str) -> None:
             <span class="side-logo">D</span>
             <span>
                 <div class="side-brand-title">DECATHLON</div>
-                <div class="side-brand-sub">{html.escape(t('NEA 质量管理平台', 'NEA Quality Platform'))}</div>
+                <div class="side-brand-sub">{html.escape(t('NEA 质量管理平台（POC）', 'NEA Quality Platform（POC）'))}</div>
             </span>
         </div>
         <div class="side-section-title">{html.escape(t("业务看板", "Business Dashboard"))}</div>
