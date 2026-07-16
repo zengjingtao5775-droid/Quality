@@ -302,15 +302,15 @@ st.markdown(
         resize: horizontal !important;
         overflow: auto !important;
         background:
-            linear-gradient(180deg, #3341c4 0%, #2434a7 54%, #1f2f92 100%);
-        background-color: #2434a7 !important;
-        border-right: 1px solid rgba(30, 41, 151, 0.95);
+            linear-gradient(180deg, #4352cb 0%, #3043b5 54%, #273a9f 100%);
+        background-color: #3043b5 !important;
+        border-right: 1px solid rgba(48, 67, 181, 0.92);
         box-shadow: 16px 0 34px rgba(15, 23, 42, 0.16);
-        scrollbar-color: rgba(255, 255, 255, 0.28) #1f2f92;
+        scrollbar-color: rgba(255, 255, 255, 0.32) #273a9f;
     }
     section[data-testid="stSidebar"]::-webkit-scrollbar-corner,
     section[data-testid="stSidebar"]::-webkit-resizer {
-        background: #1f2f92 !important;
+        background: #273a9f !important;
         border: 0 !important;
     }
     section[data-testid="stSidebar"] > div {
@@ -453,14 +453,47 @@ st.markdown(
     }
     .side-current {
         margin: 12px 0 14px 0;
-        padding: 12px 12px;
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.12);
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        font-size: 0.82rem;
-        line-height: 1.45;
+        padding: 14px 14px 13px;
+        border-radius: 14px;
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.10));
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 12px 24px rgba(15, 23, 90, 0.14);
+        line-height: 1.3;
     }
-    .side-current b {font-size: 0.95rem;}
+    .side-current-kicker {
+        color: rgba(255, 255, 255, 0.68) !important;
+        font-size: 0.69rem;
+        font-weight: 820;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+    .side-current-title {
+        margin-top: 5px;
+        color: #ffffff !important;
+        font-size: 0.96rem;
+        font-weight: 850;
+    }
+    .side-current-supplier {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 10px;
+        color: rgba(255, 255, 255, 0.94) !important;
+        font-size: 0.82rem;
+        font-weight: 760;
+    }
+    .side-current-code {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #ffffff;
+        color: #2638b2 !important;
+        font-size: 0.72rem;
+        font-weight: 900;
+        box-shadow: 0 6px 14px rgba(12, 22, 82, 0.18);
+    }
     .language-toggle-title {
         margin: 18px 0 8px 0;
         font-size: 0.82rem;
@@ -598,7 +631,7 @@ st.markdown(
         font-weight: 680;
         vertical-align: middle;
     }
-    .gap-matrix-table tr:last-child td {border-bottom: 0;}
+    .gap-matrix-table tr:last-child td {border-bottom: 1px solid #e2e8f0;}
     .gap-status {
         display: inline-flex;
         align-items: center;
@@ -620,6 +653,19 @@ st.markdown(
         color: #c01048;
         border: 1px solid #ffccd5;
     }
+    .gap-method {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: #eef2ff;
+        color: #3043b5;
+        border: 1px solid #c7d2fe;
+        font-size: 0.78rem;
+        font-weight: 850;
+        white-space: nowrap;
+    }
     div[data-testid="stMetric"] {
         background: #ffffff;
         border: 1px solid #e2e7fb;
@@ -636,10 +682,10 @@ st.markdown(
         background:
             linear-gradient(120deg, rgba(255,255,255,0.98) 0%, rgba(249,250,255,0.96) 42%, rgba(229,235,255,0.94) 100%);
         color: #172033;
-        border-radius: 20px;
-        padding: 27px 30px;
-        margin-bottom: 14px;
-        box-shadow: 0 20px 46px rgba(36, 52, 167, 0.13);
+        border-radius: 16px;
+        padding: 23px 29px 22px;
+        margin-bottom: 12px;
+        box-shadow: 0 14px 34px rgba(36, 52, 167, 0.11);
         border: 1px solid rgba(205, 214, 250, 0.95);
         position: relative;
         overflow: hidden;
@@ -656,10 +702,10 @@ st.markdown(
     .hero::after {
         content: "";
         position: absolute;
-        right: -90px;
-        top: -120px;
-        width: 310px;
-        height: 310px;
+        right: -68px;
+        top: -92px;
+        width: 230px;
+        height: 230px;
         border-radius: 50%;
         background:
             radial-gradient(circle at 34% 34%, rgba(255,255,255,0.36), transparent 34%),
@@ -667,7 +713,7 @@ st.markdown(
         pointer-events: none;
     }
     .hero-title {
-        font-size: clamp(1.72rem, 2.8vw, 2.22rem);
+        font-size: clamp(1.66rem, 2.5vw, 2.08rem);
         font-weight: 860;
         line-height: 1.08;
         margin: 0;
@@ -679,16 +725,16 @@ st.markdown(
         color: #3341c4;
         font-weight: 800;
         text-transform: uppercase;
-        font-size: 0.82rem;
-        margin-bottom: 8px;
+        font-size: 0.77rem;
+        margin-bottom: 7px;
         position: relative;
         z-index: 1;
     }
     .hero-meta {
         display: flex;
         flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 16px;
+        gap: 8px;
+        margin-top: 14px;
         position: relative;
         z-index: 1;
     }
@@ -696,9 +742,9 @@ st.markdown(
         background: rgba(255, 255, 255, 0.92);
         border: 1px solid #d6ddfb;
         border-radius: 999px;
-        padding: 7px 12px;
+        padding: 6px 11px;
         color: #344054;
-        font-size: 0.88rem;
+        font-size: 0.82rem;
         font-weight: 650;
         box-shadow: 0 8px 20px rgba(36, 52, 167, 0.08);
     }
@@ -735,6 +781,9 @@ st.markdown(
     .kpi-grid.coverage-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         margin-top: 8px;
+    }
+    .kpi-grid.zx-top {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .coverage-grid .kpi-card {
         min-height: 126px;
@@ -1081,6 +1130,26 @@ st.markdown(
         color: #2434a7 !important;
         fill: #2434a7 !important;
     }
+    .st-key-zx_process_toolbar .st-key-zx_process_cc_filter {
+        margin: 0;
+        padding: 7px 9px 5px;
+    }
+    .st-key-zx_process_toolbar .st-key-zx_process_cc_filter [data-baseweb="select"] > div {
+        min-height: 38px;
+    }
+    .st-key-zx_process_toolbar .st-key-zx_process_cc_filter [data-baseweb="tag"] {
+        min-height: 25px !important;
+        margin: 1px 2px !important;
+        padding-left: 5px !important;
+        padding-right: 3px !important;
+    }
+    .st-key-zx_process_toolbar .st-key-zx_process_cc_filter [data-baseweb="tag"] * {
+        font-size: 0.71rem !important;
+    }
+    .st-key-zx_process_toolbar .st-key-zx_process_cc_filter button[type="submit"],
+    .st-key-zx_process_toolbar [data-testid="stPopover"] button {
+        min-height: 38px !important;
+    }
     .zx-filter-title {
         color: #172033;
         font-size: 0.92rem;
@@ -1116,6 +1185,73 @@ st.markdown(
         border-radius: 50%;
         background: #3341c4;
         box-shadow: 0 0 0 4px rgba(51, 65, 196, 0.10);
+    }
+    .zx-process-legend {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        min-height: 34px;
+        margin: 2px 0 4px;
+        padding: 6px 10px;
+        color: #344054;
+        font-size: 0.82rem;
+        font-weight: 760;
+    }
+    .zx-process-legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+    }
+    .zx-process-legend-bar {
+        width: 18px;
+        height: 11px;
+        border-radius: 3px;
+        background: #4f6edb;
+        border: 1px solid #304da8;
+    }
+    .zx-process-legend-line {
+        position: relative;
+        width: 24px;
+        height: 3px;
+        border-radius: 999px;
+        background: #ef4444;
+    }
+    .zx-process-legend-line::after {
+        content: "";
+        position: absolute;
+        width: 7px;
+        height: 7px;
+        top: -2px;
+        left: 9px;
+        border-radius: 50%;
+        background: #ef4444;
+    }
+    .worker-skill-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin: 2px 0 12px;
+    }
+    .worker-skill-card {
+        min-height: 82px;
+        padding: 13px 16px;
+        border: 1px solid #d9e0fb;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 8px 22px rgba(36, 52, 167, 0.06);
+    }
+    .worker-skill-label {
+        color: #667085;
+        font-size: 0.84rem;
+        font-weight: 780;
+    }
+    .worker-skill-value {
+        margin-top: 3px;
+        color: #172033;
+        font-size: 1.72rem;
+        line-height: 1.12;
+        font-weight: 880;
     }
     .zx-report-hero {
         position: relative;
@@ -1220,6 +1356,11 @@ st.markdown(
         font-weight: 780;
         border-bottom: 1px solid transparent !important;
     }
+    .st-key-zx_data_map_panel div[data-testid="stExpander"] summary {
+        min-height: 38px !important;
+        padding-top: 5px !important;
+        padding-bottom: 5px !important;
+    }
     div[data-testid="stExpander"] details[open] > summary {
         border-bottom-color: rgba(203, 213, 225, 0.72) !important;
     }
@@ -1230,7 +1371,7 @@ st.markdown(
     }
     section[data-testid="stSidebar"] div[data-testid="stExpander"] details {
         border: 1px solid rgba(255, 255, 255, 0.16) !important;
-        background: rgba(18, 31, 132, 0.36) !important;
+        background: rgba(36, 53, 156, 0.32) !important;
         box-shadow: none !important;
         backdrop-filter: none !important;
     }
@@ -1241,7 +1382,36 @@ st.markdown(
         box-shadow: none !important;
     }
     section[data-testid="stSidebar"] div[data-testid="stExpander"] [data-testid="stExpanderDetails"] {
-        background: rgba(18, 31, 132, 0.22) !important;
+        background: rgba(36, 53, 156, 0.18) !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_control"] {
+        background: rgba(255, 255, 255, 0.96) !important;
+        border-color: #c9d3ff !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_control"] * {
+        color: #26378f !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"] {
+        background: #5263d7 !important;
+        border-color: #8290ee !important;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"] * {
+        color: #ffffff !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stButtonGroup"] [data-baseweb="button-group"] {
+        width: 100% !important;
+        flex-wrap: nowrap !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stButtonGroup"] [data-baseweb="button-group"] > button {
+        min-width: 0 !important;
+        flex: 1 1 0 !important;
+        padding-left: 5px !important;
+        padding-right: 5px !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stButtonGroup"] [data-baseweb="button-group"] > button p {
+        font-size: 0.72rem !important;
+        white-space: nowrap !important;
     }
     .st-key-zx_panel_jdy_refresh_strip {
         margin-top: 14px;
@@ -1302,7 +1472,7 @@ st.markdown(
         }
     }
     @media (max-width: 720px) {
-        .kpi-grid, .kpi-grid.coverage-grid, .signal-grid {grid-template-columns: 1fr;}
+        .kpi-grid, .kpi-grid.coverage-grid, .kpi-grid.zx-top, .signal-grid {grid-template-columns: 1fr;}
         .hero-title {font-size: 1.8rem;}
         .hero {padding: 22px 20px; border-radius: 16px;}
     }
@@ -3710,6 +3880,36 @@ def build_tu_community_ai_fact_pack(
     returned_now = float(pd.to_numeric(ytd_voice.get("returned_now", 0), errors="coerce").fillna(0).sum()) if not ytd_voice.empty else 0
     sold_now = float(pd.to_numeric(ytd_voice.get("sold_now", 0), errors="coerce").fillna(0).sum()) if not ytd_voice.empty else 0
     rpm_r12m = returned_now / sold_now * 1_000_000 if sold_now else np.nan
+    nqc_now_series = pd.to_numeric(ytd_voice.get("nqc_now", pd.Series(dtype=float)), errors="coerce")
+    nqc_prev_series = pd.to_numeric(ytd_voice.get("nqc_prev", pd.Series(dtype=float)), errors="coerce")
+    total_nqc = float(nqc_now_series.sum(min_count=1)) if not nqc_now_series.empty else np.nan
+    previous_nqc = float(nqc_prev_series.sum(min_count=1)) if not nqc_prev_series.empty else np.nan
+    nqc_trend_direction = ""
+    nqc_trend_tone = "flat"
+    if pd.notna(total_nqc) and pd.notna(previous_nqc):
+        if previous_nqc > 0:
+            nqc_change = (total_nqc - previous_nqc) / previous_nqc
+            nqc_trend_direction = "up" if nqc_change > 0 else "down" if nqc_change < 0 else "flat"
+            nqc_trend_tone = "bad" if nqc_change > 0 else "good" if nqc_change < 0 else "flat"
+            nqc_note = t(
+                f"较上期上升 {nqc_change:.1%}" if nqc_change > 0 else f"较上期下降 {abs(nqc_change):.1%}" if nqc_change < 0 else "较上期持平",
+                f"Up {nqc_change:.1%} vs prior" if nqc_change > 0 else f"Down {abs(nqc_change):.1%} vs prior" if nqc_change < 0 else "Flat vs prior",
+            ) + t(
+                f" · 当前 €{compact_num(total_nqc)} / 上期 €{compact_num(previous_nqc)}",
+                f" · current €{compact_num(total_nqc)} / prior €{compact_num(previous_nqc)}",
+            )
+        elif total_nqc > 0:
+            nqc_trend_direction = "up"
+            nqc_trend_tone = "bad"
+            nqc_note = t(
+                f"较上期上升 · 当前 €{compact_num(total_nqc)} / 上期 €0",
+                f"Up vs prior · current €{compact_num(total_nqc)} / prior €0",
+            )
+        else:
+            nqc_trend_direction = "flat"
+            nqc_note = t("当前与上期均为 €0", "Current and prior are both €0")
+    else:
+        nqc_note = t("客户 NQC 金额（欧元）· 上期数据未接入", "Customer NQC amount (EUR) · prior data unavailable")
 
     iv_voice = voice_df[
         voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("Intern Voice")
@@ -6105,13 +6305,18 @@ def render_hero(
             hero_title = t(f"{scope_title} 看板", f"{scope_title} Dashboard")
     hero_title = html.escape(english_display_text(hero_title))
     hero_kicker = html.escape(t("NEA 质量管理平台", "NEA QUALITY PLATFORM"))
+    supplier_value = (
+        t("49425 中兴", "49425 Zhongxing")
+        if scope_key == "ZX"
+        else str(supplier_count)
+    )
     st.markdown(
         f"""
         <div class="hero">
             <div class="hero-kicker">{hero_kicker}</div>
             <div class="hero-title">{hero_title}</div>
             <div class="hero-meta">
-                <span class="hero-chip">{t('供应商', 'Suppliers')}: {supplier_count}</span>
+                <span class="hero-chip">{t('供应商', 'Suppliers')}: {html.escape(supplier_value)}</span>
                 <span class="hero-chip">{t('数据周期', 'Data period')}: {start_date} - {end_date}</span>
             </div>
         </div>
@@ -6438,6 +6643,7 @@ def render_data_gap_matrix(matrix: pd.DataFrame) -> None:
     matrix = localize_display_frame(matrix)
     loaded_labels = {t("已接入", "Loaded"), "已接入", "Loaded"}
     missing_labels = {t("缺失", "Missing"), "缺失", "Missing"}
+    method_labels = {t("手动 Excel", "Manual Excel"), "手动 Excel", "Manual Excel", "API"}
     header = "".join(f"<th>{html.escape(str(col))}</th>" for col in matrix.columns)
     body_rows: list[str] = []
     for _, row in matrix.iterrows():
@@ -6448,6 +6654,8 @@ def render_data_gap_matrix(matrix: pd.DataFrame) -> None:
                 cells.append(f"<td><span class='gap-status loaded'>{html.escape(value)}</span></td>")
             elif value in missing_labels:
                 cells.append(f"<td><span class='gap-status missing'>{html.escape(value)}</span></td>")
+            elif value in method_labels:
+                cells.append(f"<td><span class='gap-method'>{html.escape(value)}</span></td>")
             else:
                 cells.append(f"<td>{html.escape(value)}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
@@ -6464,6 +6672,9 @@ def render_scope_data_map(
     finished_df: pd.DataFrame,
     voice_df: pd.DataFrame,
     incoming_df: pd.DataFrame,
+    start_date: dt.date | None = None,
+    end_date: dt.date | None = None,
+    jdy_owners: list[str] | None = None,
 ) -> pd.DataFrame:
     scope_codes = DASHBOARD_SCOPES.get(scope_key, {}).get("factories", [])
     gap_matrix = build_data_gap_matrix(finished_df, voice_df, incoming_df, scope_codes)
@@ -6492,10 +6703,22 @@ def render_scope_data_map(
             access_row[jdy_column] = t("API", "API")
         gap_matrix = pd.concat([gap_matrix, pd.DataFrame([access_row])], ignore_index=True)
     jdy_fqc = pd.DataFrame()
-    with st.expander(t("数据地图", "Data Map"), expanded=False):
-        render_data_gap_matrix(gap_matrix)
-        if scope_key == "ZX":
-            jdy_fqc, _, _ = render_tu_jdy_refresh_control("zx_panel", include_cp=True)
+    panel_key = "zx_data_map_panel" if scope_key == "ZX" else f"{scope_key.lower()}_data_map_panel"
+    with st.container(key=panel_key):
+        with st.expander(t("数据地图", "Data Map"), expanded=False):
+            render_data_gap_matrix(gap_matrix)
+            if scope_key == "ZX":
+                jdy_fqc, _, _ = render_tu_jdy_refresh_control("zx_panel", include_cp=True)
+    if not jdy_fqc.empty:
+        jdy_fqc = jdy_fqc.copy()
+        if start_date is not None and end_date is not None and "date" in jdy_fqc.columns:
+            jdy_dates = pd.to_datetime(jdy_fqc["date"], errors="coerce").dt.date
+            jdy_fqc = jdy_fqc[jdy_dates.between(start_date, end_date)]
+        if jdy_owners is not None:
+            if not jdy_owners:
+                jdy_fqc = jdy_fqc.iloc[0:0]
+            elif "inspector_owner" in jdy_fqc.columns:
+                jdy_fqc = jdy_fqc[jdy_fqc["inspector_owner"].isin(jdy_owners)]
     return jdy_fqc
 
 
@@ -7132,6 +7355,7 @@ def render_cc_search_form(
     title: str,
     note: str,
     show_header: bool = True,
+    hide_input_label: bool = False,
 ) -> list[str]:
     options = list(dict.fromkeys(str(option) for option in options if str(option).strip()))
     defaults = [value for value in defaults if value in options]
@@ -7159,6 +7383,7 @@ def render_cc_search_form(
                     default=stored,
                     key=widget_key,
                     placeholder=t("输入 CC 搜索，可多选", "Type a CC to search; multi-select supported"),
+                    label_visibility="collapsed" if hide_input_label else "visible",
                 )
             with action_col:
                 submitted = st.form_submit_button(
@@ -7585,13 +7810,11 @@ def render_zx_process_risk_by_cc(
     products: pd.DataFrame,
     risk_settings: dict,
 ) -> None:
-    with st.expander(t("工序风险计算说明", "Process-Risk Calculation"), expanded=False):
-        benchmark_pct = float(settings_for_factory(risk_settings, "ZX").get("process_benchmark_pct", 5.0))
-        example_source = finished_df[finished_df.get("qty_inspected", pd.Series(0, index=finished_df.index)).gt(0)].copy()
-        example_view = compute_zx_cc_process_summary(example_source, risk_settings).head(1)
-        st.markdown(
-            t(
-                f"""
+    benchmark_pct = float(settings_for_factory(risk_settings, "ZX").get("process_benchmark_pct", 5.0))
+    example_source = finished_df[finished_df.get("qty_inspected", pd.Series(0, index=finished_df.index)).gt(0)].copy()
+    example_view = compute_zx_cc_process_summary(example_source, risk_settings).head(1)
+    formula_markdown = t(
+        f"""
 **公式**
 
 1. 原始工序不良率 = 该 CC × 工序的疵点数 ÷ 检验数。
@@ -7599,7 +7822,7 @@ def render_zx_process_risk_by_cc(
 3. 风险分：收缩后不良率达到 {benchmark_pct:.1f}% 时为 50 分；超过后按区间继续上升，在 {benchmark_pct + 8:.1f}% 时达到 100 分；最终限制在 0–100。
 4. 页面风险等级使用固定阈值：低 `<35`，中 `35–54.9`，高 `55–74.9`，严重 `≥75`。
 """,
-                f"""
+        f"""
 **Formula**
 
 1. Raw process defect rate = defects / inspected quantity for each CC x process.
@@ -7607,34 +7830,41 @@ def render_zx_process_risk_by_cc(
 3. Risk score: {benchmark_pct:.1f}% maps to 50; the score rises through the next interval and reaches 100 at {benchmark_pct + 8:.1f}%; the final value is capped at 0-100.
 4. Fixed page levels: Low `<35`, Medium `35-54.9`, High `55-74.9`, Critical `>=75`.
 """,
-            )
-        )
-        if not example_view.empty:
-            example = example_view.iloc[0]
-            shrunk = shrunk_defect_rate(
-                example.get("defect_qty", 0), example.get("qty_inspected", 0), benchmark_pct
-            )
-            st.info(
-                t(
-                    f"示例：CC {example.get('product_code')} / {example.get('process')}：{example.get('defect_qty', 0):,.0f} 疵点 ÷ {example.get('qty_inspected', 0):,.0f} 检验；收缩后不良率 {shrunk:.2%}，工序风险分 {example.get('risk_score', 0):.1f}（{risk_level_text(example.get('risk_level'))}）。",
-                    f"Example: CC {example.get('product_code')} / {example.get('process')}: {example.get('defect_qty', 0):,.0f} defects / {example.get('qty_inspected', 0):,.0f} inspected; shrunk rate {shrunk:.2%}, process risk {example.get('risk_score', 0):.1f} ({risk_level_text(example.get('risk_level'))}).",
-                )
-            )
+    )
     options = sorted(
         value
         for value in finished_df.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique()
         if value and value.lower() not in {"nan", "none"}
     )
     defaults = pareto_risk_cc_codes(products)
-    selected_ccs = render_cc_search_form(
-        options,
-        defaults,
-        state_key=f"zx_process_cc_selection_{language_query_code()}",
-        form_key=f"zx_process_cc_form_{language_query_code()}",
-        container_key="zx_process_cc_filter",
-        title=t("按 CC 检查工序风险", "Inspect process risk by CC"),
-        note=t("默认使用综合风险排名前 20% 的 CC；可搜索并组合多个 CC。", "Defaults to the top 20% of CCs by overall risk; search and combine multiple CCs."),
-    )
+    with st.container(key="zx_process_toolbar"):
+        filter_col, info_col = st.columns([0.88, 0.12], vertical_alignment="top")
+        with filter_col:
+            selected_ccs = render_cc_search_form(
+                options,
+                defaults,
+                state_key=f"zx_process_cc_selection_{language_query_code()}",
+                form_key=f"zx_process_cc_form_{language_query_code()}",
+                container_key="zx_process_cc_filter",
+                title="",
+                note="",
+                show_header=False,
+                hide_input_label=True,
+            )
+        with info_col:
+            with st.popover(t("说明", "Info"), use_container_width=True):
+                st.markdown(formula_markdown)
+                if not example_view.empty:
+                    example = example_view.iloc[0]
+                    shrunk = shrunk_defect_rate(
+                        example.get("defect_qty", 0), example.get("qty_inspected", 0), benchmark_pct
+                    )
+                    st.info(
+                        t(
+                            f"示例：CC {example.get('product_code')} / {example.get('process')}：{example.get('defect_qty', 0):,.0f} 疵点 ÷ {example.get('qty_inspected', 0):,.0f} 检验；收缩后不良率 {shrunk:.2%}，工序风险分 {example.get('risk_score', 0):.1f}（{risk_level_text(example.get('risk_level'))}）。",
+                            f"Example: CC {example.get('product_code')} / {example.get('process')}: {example.get('defect_qty', 0):,.0f} defects / {example.get('qty_inspected', 0):,.0f} inspected; shrunk rate {shrunk:.2%}, process risk {example.get('risk_score', 0):.1f} ({risk_level_text(example.get('risk_level'))}).",
+                        )
+                    )
     if not selected_ccs:
         st.info(t("请至少选择一个 CC。", "Select at least one CC."))
         return
@@ -7649,17 +7879,18 @@ def render_zx_process_risk_by_cc(
         default=t("疵点帕累托", "Defect Pareto"),
         key=f"zx_process_view_{language_query_code()}",
     )
-    st.caption(
-        t(
-            "帕累托回答“疵点主要集中在哪里”，适合安排改善资源；风险分回答“相对不良率哪里异常”，能发现数量不大但表现异常的工序。日常改善先看帕累托，风险预警再看风险分。",
-            "Pareto answers where defects concentrate and is best for allocating improvement resources. Risk score detects abnormally high relative rates, including lower-volume processes. Use Pareto first for daily improvement and risk score as the warning view.",
-        )
-    )
     if view_mode == t("疵点帕累托", "Defect Pareto"):
         pareto_view = process_view.sort_values("defect_qty", ascending=False).head(12).copy()
         pareto_total = float(process_view["defect_qty"].sum())
         pareto_view["defect_share"] = pareto_view["defect_qty"] / pareto_total if pareto_total else 0
         pareto_view["cumulative_share"] = pareto_view["defect_share"].cumsum()
+        st.markdown(
+            "<div class='zx-process-legend'>"
+            f"<span class='zx-process-legend-item'><span class='zx-process-legend-bar'></span>{t('疵点数', 'Defects')}</span>"
+            f"<span class='zx-process-legend-item'><span class='zx-process-legend-line'></span>{t('累计占比', 'Cumulative Share')}</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         fig = go.Figure()
         fig.add_trace(
             go.Bar(
@@ -7697,6 +7928,7 @@ def render_zx_process_risk_by_cc(
                 x=pareto_view["cc_process_view"],
                 y=pareto_view["cumulative_share"],
                 name=t("累计占比", "Cumulative Share"),
+                showlegend=False,
                 mode="lines+markers",
                 line=dict(color="#ef4444", width=3),
                 marker=dict(size=7),
@@ -7705,31 +7937,11 @@ def render_zx_process_risk_by_cc(
             )
         )
         fig.update_layout(
-            yaxis=dict(title=t("疵点数", "Defects")),
-            yaxis2=dict(title=t("累计占比", "Cumulative Share"), overlaying="y", side="right", tickformat=".0%", range=[0, 1.05]),
+            yaxis=dict(title=None),
+            yaxis2=dict(title=None, overlaying="y", side="right", tickformat=".0%", range=[0, 1.05]),
             xaxis=dict(title="CC / " + t("工序", "Process"), tickangle=-28),
-            legend=dict(
-                orientation="h",
-                y=1.12,
-                x=0.20,
-                bgcolor="rgba(255,255,255,0)",
-                font=dict(color="#344054", size=12),
-            ),
-            margin=dict(t=88),
-        )
-        fig.add_annotation(
-            xref="paper",
-            yref="paper",
-            x=0,
-            y=1.12,
-            text=t("<b>蓝色柱：疵点数</b>", "<b>Blue bars: Defects</b>"),
-            showarrow=False,
-            align="left",
-            font=dict(color="#24324b", size=12),
-            bgcolor="rgba(238,242,255,0.96)",
-            bordercolor="#c7d2fe",
-            borderwidth=1,
-            borderpad=6,
+            showlegend=False,
+            margin=dict(t=34),
         )
         fig.add_hline(y=0.8, line_dash="dot", line_color="#f59e0b", yref="y2")
         plot_chart(fig, 460)
@@ -7966,35 +8178,34 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         )
     counts = worker_view.groupby("skill_level")["worker_team"].nunique()
     skill_options = [skilled_label, medium_label, ordinary_label]
-    metric_cols = st.columns(3)
-    for col, label in zip(metric_cols, skill_options):
-        with col:
-            st.metric(label, int(counts.get(label, 0)))
-
-    with st.container(key="worker_skill_control"):
-        selected_skill_levels = st.multiselect(
-            t("工人分类筛选", "Worker Level Filter"),
-            skill_options,
-            default=skill_options,
-            key=f"worker_skill_filter_{language_query_code()}",
+    worker_card_html = ["<div class='worker-skill-grid'>"]
+    for label in skill_options:
+        worker_card_html.append(
+            "<div class='worker-skill-card'>"
+            f"<div class='worker-skill-label'>{html.escape(label)}</div>"
+            f"<div class='worker-skill-value'>{int(counts.get(label, 0))}</div>"
+            "</div>"
         )
-    plot_source = worker_view[worker_view["skill_level"].isin(selected_skill_levels)].copy() if selected_skill_levels else worker_view.iloc[0:0].copy()
-    if plot_source.empty:
-        st.info(t("当前筛选下没有对应工人分类。", "No worker level matches the current filter."))
-        return
+    worker_card_html.append("</div>")
+    st.markdown("".join(worker_card_html), unsafe_allow_html=True)
 
-    def stable_worker_jitter(value: object, scale: float = 1.1) -> float:
+    plot_source = worker_view.copy()
+
+    def stable_worker_jitter(value: object, scale: float = 1.8) -> float:
         seed = int(hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:8], 16)
         return ((seed % 10000) / 9999 - 0.5) * 2 * scale
 
     display_view = plot_source.sort_values(["defect_risk_axis", "qty_inspected"], ascending=False).head(28).copy()
     display_view["worker_view"] = display_view["worker_team"].astype(str) + " / " + display_view["process"].astype(str)
     display_view["plot_x"] = (display_view["defect_risk_axis"] + display_view["worker_view"].map(stable_worker_jitter)).clip(0, 100)
-    display_view["plot_y"] = (display_view["volume_axis"] + display_view["worker_view"].map(lambda value: stable_worker_jitter(value, 0.9))).clip(0, 100)
+    display_view["plot_y"] = (display_view["volume_axis"] + display_view["worker_view"].map(lambda value: stable_worker_jitter(value, 1.5))).clip(0, 100)
     display_view["bubble_size"] = np.log1p(display_view["defect_qty"].clip(lower=0) + 1)
-    top_worker_index = display_view["defect_risk_axis"].nlargest(min(14, len(display_view))).index
-    display_view["worker_text"] = ""
-    display_view.loc[top_worker_index, "worker_text"] = display_view.loc[top_worker_index, "worker_team"].astype(str).str.slice(0, 10)
+    display_view["worker_text"] = display_view["worker_team"].astype(str)
+    label_positions = [
+        "top center", "bottom center", "middle left", "middle right",
+        "top left", "top right", "bottom left", "bottom right",
+    ]
+    display_view["label_position"] = [label_positions[index % len(label_positions)] for index in range(len(display_view))]
 
     fig = px.scatter(
         display_view.sort_values("defect_risk_axis", ascending=False),
@@ -8007,7 +8218,7 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
         labels={
             "plot_x": t("不良率风险分", "Defect-Rate Risk Score"),
             "plot_y": t("检验量强度", "Inspection Volume Strength"),
-            "skill_level": t("技能分层", "Skill Level"),
+            "skill_level": t("技能分类", "Skill Category"),
             "defect_rate_numeric": t("不良率", "Defect Rate"),
             "qty_inspected": t("检验数量", "Inspected Qty"),
             "defect_qty": t("疵点数", "Defects"),
@@ -8032,22 +8243,34 @@ def render_worker_focus(worker_df: pd.DataFrame, source_label: str):
             "worker_text": False,
         },
     )
-    fig.update_traces(textposition="top center", marker=dict(opacity=0.78, line=dict(color="#ffffff", width=0.8)))
+    fig.update_traces(
+        textposition=display_view.sort_values("defect_risk_axis", ascending=False)["label_position"].tolist(),
+        textfont=dict(size=9, color="#475467"),
+        cliponaxis=False,
+        marker=dict(opacity=0.78, line=dict(color="#ffffff", width=0.8)),
+    )
     fig.update_layout(legend=dict(font=dict(size=11), itemsizing="constant"))
-    fig.update_xaxes(range=[-4, 104])
-    fig.update_yaxes(range=[-4, 104])
+
+    def focused_worker_axis(values: pd.Series, reference: float = 55.0) -> list[float]:
+        numeric = pd.to_numeric(values, errors="coerce").dropna()
+        if numeric.empty:
+            return [-4.0, 104.0]
+        low = min(float(numeric.min()), reference)
+        high = max(float(numeric.max()), reference)
+        span = max(high - low, 24.0)
+        padding = max(span * 0.16, 4.0)
+        axis_low = max(-5.0, low - padding)
+        axis_high = min(105.0, high + padding)
+        if axis_high - axis_low < 34.0:
+            midpoint = (axis_low + axis_high) / 2
+            axis_low = max(-5.0, midpoint - 17.0)
+            axis_high = min(105.0, midpoint + 17.0)
+        return [axis_low, axis_high]
+
+    fig.update_xaxes(range=focused_worker_axis(display_view["plot_x"]), autorange=False)
+    fig.update_yaxes(range=focused_worker_axis(display_view["plot_y"]), autorange=False)
     fig.add_vline(x=55, line_dash="dash", line_color="#8b96b8", opacity=0.40)
     fig.add_hline(y=55, line_dash="dash", line_color="#8b96b8", opacity=0.40)
-    fig.add_annotation(
-        xref="paper",
-        yref="paper",
-        x=0.98,
-        y=0.98,
-        text=t("右上：优先安排技能辅导", "Upper-right: prioritize skill coaching"),
-        showarrow=False,
-        font=dict(size=13, color="#475467"),
-        bgcolor="rgba(255,255,255,0.72)",
-    )
     plot_chart(fig, 420)
 
 
@@ -8821,6 +9044,37 @@ def build_zx_kpi_cards(
     sold_now = float(pd.to_numeric(ytd_voice.get("sold_now", 0), errors="coerce").fillna(0).sum()) if not ytd_voice.empty else 0
     rpm_r12m = returned_now / sold_now * 1_000_000 if sold_now else np.nan
 
+    nqc_now_series = pd.to_numeric(ytd_voice.get("nqc_now", pd.Series(dtype=float)), errors="coerce")
+    nqc_prev_series = pd.to_numeric(ytd_voice.get("nqc_prev", pd.Series(dtype=float)), errors="coerce")
+    total_nqc = float(nqc_now_series.sum(min_count=1)) if not nqc_now_series.empty else np.nan
+    previous_nqc = float(nqc_prev_series.sum(min_count=1)) if not nqc_prev_series.empty else np.nan
+    nqc_trend_direction = ""
+    nqc_trend_tone = "flat"
+    if pd.notna(total_nqc) and pd.notna(previous_nqc):
+        if previous_nqc > 0:
+            nqc_change = (total_nqc - previous_nqc) / previous_nqc
+            nqc_trend_direction = "up" if nqc_change > 0 else "down" if nqc_change < 0 else "flat"
+            nqc_trend_tone = "bad" if nqc_change > 0 else "good" if nqc_change < 0 else "flat"
+            nqc_note = t(
+                f"较上期上升 {nqc_change:.1%}" if nqc_change > 0 else f"较上期下降 {abs(nqc_change):.1%}" if nqc_change < 0 else "较上期持平",
+                f"Up {nqc_change:.1%} vs prior" if nqc_change > 0 else f"Down {abs(nqc_change):.1%} vs prior" if nqc_change < 0 else "Flat vs prior",
+            ) + t(
+                f" · 当前 €{compact_num(total_nqc)} / 上期 €{compact_num(previous_nqc)}",
+                f" · current €{compact_num(total_nqc)} / prior €{compact_num(previous_nqc)}",
+            )
+        elif total_nqc > 0:
+            nqc_trend_direction = "up"
+            nqc_trend_tone = "bad"
+            nqc_note = t(
+                f"较上期上升 · 当前 €{compact_num(total_nqc)} / 上期 €0",
+                f"Up vs prior · current €{compact_num(total_nqc)} / prior €0",
+            )
+        else:
+            nqc_trend_direction = "flat"
+            nqc_note = t("当前与上期均为 €0", "Current and prior are both €0")
+    else:
+        nqc_note = t("客户 NQC 金额（欧元）· 上期数据未接入", "Customer NQC amount (EUR) · prior data unavailable")
+
     iv_voice = (
         voice_df[voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("Intern Voice")].copy()
         if not voice_df.empty
@@ -8867,6 +9121,14 @@ def build_zx_kpi_cards(
                 f"Returns {compact_num(returned_now)} / sold {compact_num(sold_now)}",
             ),
             "level": "high" if pd.notna(rpm_r12m) and rpm_r12m >= 1_000 else "medium" if pd.notna(rpm_r12m) and rpm_r12m >= 500 else "low",
+        },
+        {
+            "label": t("NQC 金额", "NQC Amount"),
+            "value": f"€{compact_num(total_nqc)}" if pd.notna(total_nqc) else "N/A",
+            "note": nqc_note,
+            "trend_direction": nqc_trend_direction,
+            "trend_tone": nqc_trend_tone,
+            "level": "high" if nqc_trend_direction == "up" else "low" if nqc_trend_direction == "down" else "medium",
         },
         {
             "label": t("工厂售前 IV", "Factory Pre-sale IV"),
@@ -8958,7 +9220,6 @@ def render_zx_customer_360(voice_df: pd.DataFrame, finished_df: pd.DataFrame) ->
             )
             fig.update_traces(textposition="outside", cliponaxis=False)
             plot_chart(fig, 420)
-            st.caption(t("当前Defloc文件没有CC或Model字段，因此此图是中兴总体视角，暂不跟随CC筛选。", "The current Defloc files have no CC or Model key, so this is an overall ZX view and does not follow the CC filter."))
 
 
 def render_community_cockpit(
@@ -8971,6 +9232,9 @@ def render_community_cockpit(
     process_df: pd.DataFrame,
     worker_df: pd.DataFrame,
     risk_settings: dict,
+    start_date: dt.date | None = None,
+    end_date: dt.date | None = None,
+    jdy_owners: list[str] | None = None,
 ):
     source_label = community_source_label(scope_key)
     total_qty = finished_df["qty_inspected"].sum()
@@ -8982,7 +9246,15 @@ def render_community_cockpit(
     high_processes = int(process_df[process_df["risk_level"].isin(["High", "Critical"])].shape[0]) if not process_df.empty else 0
     alert_df = build_community_alerts(product_df, process_df, incoming_df, voice_df, scope_key)
 
-    jdy_fqc = render_scope_data_map(scope_key, finished_df, voice_df, incoming_df)
+    jdy_fqc = render_scope_data_map(
+        scope_key,
+        finished_df,
+        voice_df,
+        incoming_df,
+        start_date=start_date,
+        end_date=end_date,
+        jdy_owners=jdy_owners,
+    )
 
     if scope_key == "ZX":
         _, readme_col = st.columns([0.90, 0.10])
@@ -9015,7 +9287,7 @@ def render_community_cockpit(
                 "Decathlon PS data/ZX_FQC_normalized_snapshot.csv + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/Compare hierarchy (CC).xlsx + Decathlon Customer data/ZX intervoice.xlsx",
                 section_title=t("卡片含义", "Card Guide"),
             )
-        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc))
+        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc), variant="zx-top")
         render_inspection_volume_comparison(finished_df, jdy_fqc)
     else:
         render_kpi_cards(
@@ -9115,7 +9387,6 @@ def render_community_cockpit(
                 "process": t("工序", "Process"),
                 "worker": t("工人", "Worker"),
                 "material": t("原辅料", "Material"),
-                "customer": t("客户 360", "Customer 360"),
                 "ai": t("AI 总结报告", "AI Summary Report"),
             }
             selected_analysis = st.segmented_control(
@@ -9130,14 +9401,11 @@ def render_community_cockpit(
                 st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
                 render_zx_process_risk_by_cc(finished_df, product_df, risk_settings)
             elif selected_analysis == "worker":
-                st.markdown(f"**{t('工人技能分层', 'Worker Skill Segmentation')}**")
+                st.markdown(f"**{t('工人技能分类', 'Worker Skill Classification')}**")
                 render_worker_focus(worker_df, source_label)
             elif selected_analysis == "material":
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
-            elif selected_analysis == "customer":
-                st.markdown(f"**{t('客户 360｜退货解剖', 'Customer 360 | Return Anatomy')}**")
-                render_zx_customer_360(voice_df, finished_df)
             elif selected_analysis == "ai":
                 st.markdown(f"**{t('AI 质量结论报告', 'AI Quality Conclusion Report')}**")
                 report_language = st.segmented_control(
@@ -9632,7 +9900,7 @@ def render_zx_management_dashboard_v2(
 
     if active_page == "overview":
         st.subheader(t("TU 问题总览", "TU Problem Overview"))
-        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc))
+        render_kpi_cards(build_zx_kpi_cards(finished_df, voice_df, jdy_fqc), variant="zx-top")
         high_risk_count = int(product_df.get("risk_level", pd.Series(dtype=object)).isin(["High", "Critical"]).sum())
         confidence = zx_data_confidence(finished_df, voice_df, jdy_fqc)
         render_kpi_cards(
@@ -10197,6 +10465,17 @@ def render_scope_nav(active_scope: str) -> None:
         scope_key for scope_key in DASHBOARD_SCOPES if DASHBOARD_VISIBILITY.get(scope_key, False)
     ]
     visible_nav = "".join(nav_item(scope_key) for scope_key in visible_scope_keys)
+    if active_scope == "ZX":
+        current_identity = (
+            "<div class='side-current-supplier'>"
+            "<span class='side-current-code'>49425</span>"
+            f"<span>{html.escape(t('中兴', 'Zhongxing'))}</span>"
+            "</div>"
+        )
+    else:
+        current_identity = (
+            f"<div class='side-current-supplier'><span>{html.escape(scope_subtitle(active_scope))}</span></div>"
+        )
     st.sidebar.markdown(
         f"""
         <div class="side-brand">
@@ -10209,9 +10488,9 @@ def render_scope_nav(active_scope: str) -> None:
         <div class="side-section-title">{html.escape(t("业务看板", "Business Dashboard"))}</div>
         {visible_nav}
         <div class="side-current">
-            {html.escape(t("当前页面", "Current Page"))}<br>
-            <b>{html.escape(scope_display(active_scope))}</b><br>
-            <span>{html.escape(scope_subtitle(active_scope))}</span>
+            <div class="side-current-kicker">{html.escape(t("当前页面", "Current Page"))}</div>
+            <div class="side-current-title">{html.escape(scope_display(active_scope))}</div>
+            {current_identity}
         </div>
         """,
         unsafe_allow_html=True,
@@ -10227,6 +10506,12 @@ def _reset_cc_and_model_filters(model_filter_key: str) -> None:
 def _sync_cc_dropdown_focus(model_filter_key: str) -> None:
     selected_cc = str(st.session_state.get(GLOBAL_CC_FILTER_STATE_KEY, ALL_FILTER_VALUE))
     st.session_state["focused_cc"] = "" if selected_cc == ALL_FILTER_VALUE else selected_cc
+    st.session_state[model_filter_key] = ALL_FILTER_VALUE
+
+
+def _clear_global_cc_focus(model_filter_key: str) -> None:
+    st.session_state["focused_cc"] = ""
+    st.session_state[GLOBAL_CC_FILTER_STATE_KEY] = ALL_FILTER_VALUE
     st.session_state[model_filter_key] = ALL_FILTER_VALUE
 
 
@@ -10267,28 +10552,45 @@ st.sidebar.markdown(t("**筛选条件**", "**Filters**"))
 valid_dates = finished_all["date"].dropna()
 min_date = valid_dates.min().date()
 max_date = valid_dates.max().date()
-if active_scope_key in {"ZX", "ZX_V2"}:
-    default_start = max(min_date, dt.date(max_date.year - 1, 7, 1))
-else:
-    default_start = max(min_date, max_date - dt.timedelta(days=180))
+r12m_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
+ytd_start = max(min_date, dt.date(max_date.year, 1, 1))
+selected_jdy_owners: list[str] | None = None
 with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
     supplier_filter_key = f"{active_scope_key}_supplier_filter_single"
     model_filter_key = f"{active_scope_key}_model_filter"
 
     supplier_options = sorted(finished_all["supplier"].dropna().astype(str).unique().tolist())
-    supplier_choices = [ALL_FILTER_VALUE, *supplier_options]
-    if st.session_state.get(supplier_filter_key) not in supplier_choices:
-        st.session_state[supplier_filter_key] = ALL_FILTER_VALUE
-    selected_supplier = st.selectbox(
-        t("供应商", "Supplier"),
-        supplier_choices,
-        key=supplier_filter_key,
-        format_func=lambda value: (
-            t("全部供应商", "All Suppliers") if value == ALL_FILTER_VALUE else english_display_text(value)
-        ),
-        on_change=_reset_cc_and_model_filters,
-        args=(model_filter_key,),
-    )
+    if active_scope_key == "ZX":
+        zx_supplier = FACTORIES["ZX"]["supplier"]
+        supplier_choices = [ALL_FILTER_VALUE, zx_supplier]
+        if st.session_state.get(supplier_filter_key) not in supplier_choices:
+            st.session_state[supplier_filter_key] = zx_supplier
+        selected_supplier = st.selectbox(
+            t("供应商", "Supplier"),
+            supplier_choices,
+            key=supplier_filter_key,
+            format_func=lambda value: (
+                t("全部供应商", "All Suppliers")
+                if value == ALL_FILTER_VALUE
+                else t("49425 中兴", "49425 Zhongxing")
+            ),
+            on_change=_reset_cc_and_model_filters,
+            args=(model_filter_key,),
+        )
+    else:
+        supplier_choices = [ALL_FILTER_VALUE, *supplier_options]
+        if st.session_state.get(supplier_filter_key) not in supplier_choices:
+            st.session_state[supplier_filter_key] = ALL_FILTER_VALUE
+        selected_supplier = st.selectbox(
+            t("供应商", "Supplier"),
+            supplier_choices,
+            key=supplier_filter_key,
+            format_func=lambda value: (
+                t("全部供应商", "All Suppliers") if value == ALL_FILTER_VALUE else english_display_text(value)
+            ),
+            on_change=_reset_cc_and_model_filters,
+            args=(model_filter_key,),
+        )
     selected_suppliers = [] if selected_supplier == ALL_FILTER_VALUE else [selected_supplier]
 
     cc_option_source = finished_all.copy()
@@ -10345,23 +10647,62 @@ with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
         format_func=lambda value: t("全部 Model", "All Models") if value == ALL_FILTER_VALUE else value,
     )
 
-    date_range = st.date_input(
-        t("检验日期", "Inspection Date"),
-        value=(default_start, max_date),
-        min_value=min_date,
-        max_value=max_date,
+    inspection_period = st.segmented_control(
+        t("检验日期", "Inspection Period"),
+        ["R12M", "YTD", "CUSTOM"],
+        default="R12M",
+        key=f"{active_scope_key}_inspection_period",
+        selection_mode="single",
+        format_func=lambda value: t("自定义", "Custom") if value == "CUSTOM" else value,
+        width="stretch",
     )
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_date, end_date = date_range
+    if inspection_period == "CUSTOM":
+        custom_date_range = st.date_input(
+            t("自定义日期", "Custom Date Range"),
+            value=(r12m_start, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key=f"{active_scope_key}_custom_date_range",
+        )
+        if isinstance(custom_date_range, tuple) and len(custom_date_range) == 2:
+            start_date, end_date = custom_date_range
+        else:
+            start_date, end_date = r12m_start, max_date
     else:
-        start_date, end_date = default_start, max_date
+        start_date = ytd_start if inspection_period == "YTD" else r12m_start
+        end_date = max_date
 
     stage_options = sorted(finished_all["inspection_stage"].dropna().unique().tolist())
-    selected_stages = st.multiselect(
-        t("检验阶段", "Inspection Stage"),
-        stage_options,
-        default=stage_options,
-    )
+    if active_scope_key == "ZX":
+        zx_source_map = {
+            "factory_end": "End QC / FQC",
+            "factory_online": "Online QC",
+            "jdy_decathlon": t("迪卡侬 FQC", "Decathlon FQC"),
+            "jdy_factory": t("中兴自检", "Zhongxing self-inspection"),
+        }
+        selected_source_keys = st.multiselect(
+            t("检验阶段", "Inspection Sources"),
+            list(zx_source_map),
+            default=list(zx_source_map),
+            format_func=lambda value: zx_source_map[value],
+            key=f"{active_scope_key}_inspection_sources",
+        )
+        selected_stages = []
+        if "factory_end" in selected_source_keys:
+            selected_stages.append("End QC / FQC")
+        if "factory_online" in selected_source_keys:
+            selected_stages.append("Online QC")
+        selected_jdy_owners = []
+        if "jdy_decathlon" in selected_source_keys:
+            selected_jdy_owners.append("Decathlon")
+        if "jdy_factory" in selected_source_keys:
+            selected_jdy_owners.append("ZX Factory")
+    else:
+        selected_stages = st.multiselect(
+            t("检验阶段", "Inspection Stage"),
+            stage_options,
+            default=stage_options,
+        )
     selected_processes: list[str] = []
     product_search = ""
     focused_cc = str(st.session_state.get("focused_cc", "")).strip()
@@ -10371,16 +10712,14 @@ with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
             f"<span class='zx-pareto-chip'>{t('聚焦 CC', 'Focused CC')} · {html.escape(focused_cc)}</span>",
             unsafe_allow_html=True,
         )
-        if clear_col.button(
+        clear_col.button(
             t("取消", "Clear"),
             key="clear_global_cc_focus",
             icon=":material/close:",
             use_container_width=True,
-        ):
-            st.session_state["focused_cc"] = ""
-            st.session_state[GLOBAL_CC_FILTER_STATE_KEY] = ALL_FILTER_VALUE
-            st.session_state[model_filter_key] = ALL_FILTER_VALUE
-            st.rerun()
+            on_click=_clear_global_cc_focus,
+            args=(model_filter_key,),
+        )
 risk_settings = current_risk_settings()
 active_profile_label = risk_profile_label(risk_settings.get("_active_profile", "__default__"))
 supplier_prod_w = effective_weight_pct(risk_settings, "supplier_weights", "production_score")
@@ -10565,6 +10904,9 @@ if active_scope_key != "GENERAL":
             process_summary,
             worker_clusters,
             risk_settings,
+            start_date=start_date,
+            end_date=end_date,
+            jdy_owners=selected_jdy_owners,
         )
     st.stop()
 
