@@ -6393,7 +6393,7 @@ def render_hero(
         else:
             hero_title = t(f"{scope_title} 看板", f"{scope_title} Dashboard")
     hero_title = html.escape(english_display_text(hero_title))
-    hero_kicker = html.escape(t("NEA 质量管理平台", "NEA QUALITY PLATFORM"))
+    hero_kicker = html.escape(t("NEA 质量管理平台", "NEA QUALITY PLATFORM（POC）"))
     supplier_value = (
         t("49425 中兴", "49425 Zhongxing")
         if scope_key == "ZX"
@@ -6646,7 +6646,7 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
     render_kpi_cards(
         [
             {
-                "label": t("工厂检验占比", "Factory Inspection Share"),
+                "label": t("工厂检验占比", "Factory Inspection Ratio"),
                 "value": pct(factory_inspection_share),
                 "note": t(
                     f"有效检验 {effective_factory_inspected_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
@@ -6655,7 +6655,7 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
                 "level": "medium",
             },
             {
-                "label": t("迪卡侬 FQC 抽检率", "Decathlon FQC Sampling Rate"),
+                "label": t("迪卡侬 FQC 抽检率", "Decathlon FQC Sampling Ratio"),
                 "value": pct(fqc_sampling_share),
                 "note": t(
                     f"FQC 抽检 {fqc_sampled_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
@@ -6732,7 +6732,7 @@ def build_data_gap_matrix(
                 "Rework": source_loaded_label(not f_incoming[f_incoming["material_type"].eq("Rework")].empty if not f_incoming.empty else False),
                 t("Machine / Torque", "Machine / Torque"): source_loaded_label(not f_finished[f_finished["inspection_stage"].eq("Online QC")].empty and code == "BME_CMW"),
                 t("Worker / Team", "Worker / Team"): source_loaded_label(not f_finished[f_finished["worker_team"].fillna("").astype(str).str.strip().ne("未记录")].empty if not f_finished.empty else False),
-                t("简道云 API", "Jiandaoyun API"): source_loaded_label(code == "ZX" and (has_jdy_local or has_jdy_api)),
+                t("简道云 API", "API connection"): source_loaded_label(code == "ZX" and (has_jdy_local or has_jdy_api)),
             }
         )
     return pd.DataFrame(rows)
@@ -6798,7 +6798,7 @@ def render_scope_data_map(
         ]:
             if column in access_row:
                 access_row[column] = t("手动 Excel", "Manual Excel")
-        jdy_column = t("简道云 API", "Jiandaoyun API")
+        jdy_column = t("简道云 API", "API connection")
         if jdy_column in access_row:
             # The snapshot is an implementation fallback, not a separate
             # business access method. The source is Jiandaoyun API.
@@ -8068,12 +8068,9 @@ def render_zx_process_risk_by_cc(
     if process_view.empty:
         st.info(t("当前筛选下没有可计算的工序风险。", "No process risk can be calculated for the current selection."))
         return
-    view_mode = st.segmented_control(
-        t("工序分析视角", "Process Analysis View"),
-        options=[t("疵点帕累托", "Defect Pareto"), t("风险分", "Risk Score")],
-        default=t("疵点帕累托", "Defect Pareto"),
-        key=f"zx_process_view_{language_query_code()}",
-    )
+    # The process section intentionally keeps a single Pareto view. The former
+    # risk-score toggle duplicated the prioritization already handled upstream.
+    view_mode = t("疵点帕累托", "Defect Pareto")
     if view_mode == t("疵点帕累托", "Defect Pareto"):
         pareto_view = process_view.sort_values("defect_qty", ascending=False).head(12).copy()
         pareto_total = float(process_view["defect_qty"].sum())
@@ -8104,7 +8101,6 @@ def render_zx_process_risk_by_cc(
                         pareto_view["process"],
                         pareto_view["defect_rate"],
                         pareto_view["qty_inspected"],
-                        pareto_view["risk_score"],
                         pareto_view["top_defect"].fillna("-"),
                     ]
                 ),
@@ -8113,8 +8109,7 @@ def render_zx_process_risk_by_cc(
                     + t("疵点数", "Defects") + " %{y:,.0f}<br>"
                     + t("原始不良率", "Raw defect rate") + " %{customdata[2]:.2%}<br>"
                     + t("检验数", "Inspected") + " %{customdata[3]:,.0f}<br>"
-                    + t("风险分", "Risk score") + " %{customdata[4]:.1f}<br>"
-                    + t("主要疵点", "Top defect") + " %{customdata[5]}<extra></extra>"
+                    + t("主要疵点", "Top defect") + " %{customdata[4]}<extra></extra>"
                 ),
             )
         )
@@ -8732,7 +8727,7 @@ def render_tu_jdy_refresh_control(
         action_col, status_col = st.columns([0.25, 0.75], vertical_alignment="center")
         with action_col:
             refresh_clicked = st.button(
-                t("刷新简道云 API", "Refresh Jiandaoyun API"),
+                t("刷新简道云 API", "Refresh API connection"),
                 key=f"{panel_key}_jdy_refresh_button",
                 icon=":material/refresh:",
                 type="secondary",
@@ -8891,7 +8886,7 @@ def render_tu_jiandaoyun_snapshot() -> None:
         st.session_state.tu_jdy_refresh_token = 0
     if api_key:
         with refresh_cols[0]:
-            if st.button(t("刷新简道云 API", "Refresh Jiandaoyun API"), key="tu_jdy_refresh_api"):
+            if st.button(t("刷新简道云 API", "Refresh API connection"), key="tu_jdy_refresh_api"):
                 st.session_state.tu_jdy_refresh_token += 1
                 load_jiandaoyun_zx_fqc_api.clear()
     else:
@@ -8902,7 +8897,7 @@ def render_tu_jiandaoyun_snapshot() -> None:
         jdy_fqc, jdy_meta, api_error = load_tu_jiandaoyun_fqc(st.session_state.tu_jdy_refresh_token)
 
     if api_error:
-        st.warning(t(f"简道云 API 调用失败，已回退到本地 CSV。错误：{api_error}", f"Jiandaoyun API failed, falling back to local CSV. Error: {api_error}"))
+        st.warning(t(f"简道云 API 调用失败，已回退到本地 CSV。错误：{api_error}", f"API connection failed, falling back to local CSV. Error: {api_error}"))
     if jdy_fqc.empty:
         st.info(
             t(
@@ -9258,7 +9253,7 @@ def build_zx_kpi_cards(
                             )
         elif jdy_fqc.empty:
             value = t("待刷新", "Refresh")
-            note = t("点击刷新简道云 API", "Refresh Jiandaoyun API")
+            note = t("点击刷新简道云 API", "Refresh API connection")
         else:
             value = t("无有效结果", "No valid result")
             note = t("当前归属没有 PASS / FAIL", "No PASS / FAIL for this owner")
@@ -12709,13 +12704,13 @@ with tabs[6]:
     with key_col:
         if jdy_data_mode == api_mode_label and not stored_jdy_key:
             runtime_jdy_key = st.text_input(
-                t("简道云 API Key（仅本次会话）", "Jiandaoyun API Key (session only)"),
+                t("简道云 API Key（仅本次会话）", "API connection key (session only)"),
                 type="password",
                 key="jdy_runtime_api_key",
                 help=t("不会写入代码或Git；多人部署请放到 Streamlit secrets。", "Not written to code or Git; use Streamlit secrets for shared deployment."),
             )
         elif jdy_data_mode == api_mode_label:
-            st.caption(t("已检测到本地或Cloud Secrets中的简道云 API Key。", "Jiandaoyun API Key detected from local or Cloud secrets."))
+            st.caption(t("已检测到本地或Cloud Secrets中的简道云 API Key。", "API connection key detected from local or Cloud secrets."))
         else:
             st.caption(t("使用最近一次导出的本地 CSV，适合离线演示。", "Using the latest exported local CSV, good for offline demo."))
 
