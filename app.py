@@ -8324,22 +8324,34 @@ def render_zx_process_risk_by_cc(
     risk_settings: dict,
 ) -> None:
     benchmark_pct = float(settings_for_factory(risk_settings, "ZX").get("process_benchmark_pct", 5.0))
-    global_cc = str(st.session_state.get(GLOBAL_CC_FILTER_STATE_KEY, ALL_FILTER_VALUE)).strip()
-    selected_cc = "" if global_cc == ALL_FILTER_VALUE else normalize_decathlon_cc(global_cc)
-    by_cc = bool(selected_cc)
+    cc_options = sorted(
+        {
+            cc
+            for cc in finished_df.get("product_code", pd.Series(dtype=object)).map(normalize_decathlon_cc)
+            if cc
+        }
+    )
+    selected_ccs = st.multiselect(
+        t("CC 筛选（留空为工厂整体）", "CC Filter (leave empty for factory overall)"),
+        cc_options,
+        default=[],
+        key=f"zx_process_cc_filter_{language_query_code()}",
+        placeholder=t("搜索并选择一个或多个 CC", "Search and select one or more CCs"),
+    )
+    by_cc = bool(selected_ccs)
     process_source = finished_df.copy()
     if by_cc:
         process_source = process_source[
-            process_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).eq(selected_cc)
+            process_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).isin(selected_ccs)
         ].copy()
     example_source = finished_df[finished_df.get("qty_inspected", pd.Series(0, index=finished_df.index)).gt(0)].copy()
     if by_cc:
         example_source = example_source[
-            example_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).eq(selected_cc)
+            example_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).isin(selected_ccs)
         ].copy()
     example_view = compute_zx_cc_process_summary(example_source, risk_settings, by_cc=by_cc).head(1)
-    scope_unit_cn = "该 CC × 工序" if by_cc else "该工厂 × 工序"
-    scope_unit_en = "the selected CC x process" if by_cc else "the factory x process"
+    scope_unit_cn = "所选 CC × 工序" if by_cc else "该工厂 × 工序"
+    scope_unit_en = "the selected CCs x process" if by_cc else "the factory x process"
     formula_markdown = t(
         f"""
 **公式**
@@ -8361,8 +8373,11 @@ def render_zx_process_risk_by_cc(
     with st.container(key="zx_process_toolbar"):
         filter_col, info_col = st.columns([0.88, 0.12], vertical_alignment="top")
         with filter_col:
+            selected_cc_label = " / ".join(selected_ccs[:3])
+            if len(selected_ccs) > 3:
+                selected_cc_label += f" +{len(selected_ccs) - 3}"
             scope_chip = (
-                t(f"CC 范围 · {selected_cc}", f"CC Scope · {selected_cc}")
+                t(f"CC 范围 · {selected_cc_label}", f"CC Scope · {selected_cc_label}")
                 if by_cc
                 else t("工厂整体 · 全部 CC", "Factory Overall · All CCs")
             )
@@ -8377,8 +8392,8 @@ def render_zx_process_risk_by_cc(
                     )
                     st.info(
                         t(
-                            f"示例：{('CC ' + selected_cc) if by_cc else '工厂整体'} / {example.get('process')}：{example.get('defect_qty', 0):,.0f} 疵点 ÷ {example.get('qty_inspected', 0):,.0f} 检验；收缩后不良率 {shrunk:.2%}，工序风险分 {example.get('risk_score', 0):.1f}（{risk_level_text(example.get('risk_level'))}）。",
-                            f"Example: {('CC ' + selected_cc) if by_cc else 'factory overall'} / {example.get('process')}: {example.get('defect_qty', 0):,.0f} defects / {example.get('qty_inspected', 0):,.0f} inspected; shrunk rate {shrunk:.2%}, process risk {example.get('risk_score', 0):.1f} ({risk_level_text(example.get('risk_level'))}).",
+                            f"示例：{('CC ' + str(example.get('product_code', ''))) if by_cc else '工厂整体'} / {example.get('process')}：{example.get('defect_qty', 0):,.0f} 疵点 ÷ {example.get('qty_inspected', 0):,.0f} 检验；收缩后不良率 {shrunk:.2%}，工序风险分 {example.get('risk_score', 0):.1f}（{risk_level_text(example.get('risk_level'))}）。",
+                            f"Example: {('CC ' + str(example.get('product_code', ''))) if by_cc else 'factory overall'} / {example.get('process')}: {example.get('defect_qty', 0):,.0f} defects / {example.get('qty_inspected', 0):,.0f} inspected; shrunk rate {shrunk:.2%}, process risk {example.get('risk_score', 0):.1f} ({risk_level_text(example.get('risk_level'))}).",
                         )
                     )
     process_view = compute_zx_cc_process_summary(process_source, risk_settings, by_cc=by_cc)
@@ -10181,6 +10196,7 @@ def render_community_cockpit(
     end_date: dt.date | None = None,
     jdy_owners: list[str] | None = None,
     cluster_product_df: pd.DataFrame | None = None,
+    process_filter_df: pd.DataFrame | None = None,
 ):
     source_label = community_source_label(scope_key)
     total_qty = finished_df["qty_inspected"].sum()
@@ -10347,7 +10363,8 @@ def render_community_cockpit(
             )
             if selected_analysis == "process":
                 st.markdown(f"**{t('工序 Pareto', 'Process Pareto')}**")
-                render_zx_process_risk_by_cc(finished_df, product_df, risk_settings)
+                process_chart_source = process_filter_df if process_filter_df is not None else finished_df
+                render_zx_process_risk_by_cc(process_chart_source, product_df, risk_settings)
             elif selected_analysis == "worker":
                 st.markdown(f"**{t('工人技能分类', 'Worker Skill Classification')}**")
                 render_worker_focus(worker_df, source_label)
@@ -11698,6 +11715,10 @@ if product_search.strip():
         finished["product_code"].astype(str).str.lower().str.contains(needle, na=False)
         | finished["product_label"].astype(str).str.lower().str.contains(needle, na=False)
     ]
+# Process Pareto owns its CC selection. Preserve the factory/date/stage scope
+# before the global CC/Model filters are applied so its default remains the
+# true factory-wide process view.
+process_filter_source = finished.copy()
 selected_cc_filter = "" if selected_cc == ALL_FILTER_VALUE else selected_cc
 if selected_cc_filter:
     finished = finished[
@@ -11894,6 +11915,7 @@ if active_scope_key != "GENERAL":
             end_date=end_date,
             jdy_owners=selected_jdy_owners,
             cluster_product_df=cluster_product_summary,
+            process_filter_df=process_filter_source,
         )
     st.stop()
 
