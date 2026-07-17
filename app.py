@@ -7343,8 +7343,16 @@ def render_zx_high_risk_cluster(
         rpm_value = float(example.get("rpm_now")) if pd.notna(example.get("rpm_now")) else 0.0
         iv_value = float(example.get("intern_voice_count")) if pd.notna(example.get("intern_voice_count")) else 0.0
         if bool(example.get("has_production_record", False)):
-            production_step_cn = f"`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {cluster_pseudo_count} 先验样本) = {shrunk_rate:.2%}` → **生产端 {example.get('production_axis', 0):.1f} 分**。"
-            production_step_en = f"`({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} reference defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {cluster_pseudo_count} reference samples) = {shrunk_rate:.2%}` → **production {example.get('production_axis', 0):.1f}**."
+            benchmark_rate = benchmark_pct / 100
+            production_score = float(example.get("production_axis", 0))
+            if shrunk_rate <= benchmark_rate:
+                score_formula_cn = f"因 {shrunk_rate:.2%} ≤ {benchmark_pct:.1f}% 基准，风险分 = `{shrunk_rate:.2%} ÷ {benchmark_pct:.1f}% × 50 = {production_score:.1f}`"
+                score_formula_en = f"Because {shrunk_rate:.2%} ≤ the {benchmark_pct:.1f}% benchmark, risk score = `{shrunk_rate:.2%} / {benchmark_pct:.1f}% x 50 = {production_score:.1f}`"
+            else:
+                score_formula_cn = f"因 {shrunk_rate:.2%} > {benchmark_pct:.1f}% 基准，风险分 = `min(50 + ({shrunk_rate:.2%} − {benchmark_pct:.1f}%) ÷ (2 × {benchmark_pct:.1f}%) × 50, 100) = {production_score:.1f}`"
+                score_formula_en = f"Because {shrunk_rate:.2%} > the {benchmark_pct:.1f}% benchmark, risk score = `min(50 + ({shrunk_rate:.2%} - {benchmark_pct:.1f}%) / (2 x {benchmark_pct:.1f}%) x 50, 100) = {production_score:.1f}`"
+            production_step_cn = f"`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {cluster_pseudo_count} 先验样本) = {shrunk_rate:.2%}`。{score_formula_cn} → **生产端 {production_score:.1f} 分**。其中 {benchmark_pct:.1f}% 对应 50 分，{benchmark_pct * 3:.1f}% 对应 100 分；先验数据仅用于平滑小样本。"
+            production_step_en = f"`({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} prior defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {cluster_pseudo_count} prior samples) = {shrunk_rate:.2%}`. {score_formula_en} → **production {production_score:.1f}**. The {benchmark_pct:.1f}% benchmark maps to 50 and {benchmark_pct * 3:.1f}% maps to 100; prior data only smooths small samples."
         else:
             production_step_cn = "无生产检验记录 → **生产端按 0 分显示**；该 CC 仅用于查看 RPM / IV 客户端信号。"
             production_step_en = "No production inspection record → **production displays as 0**; this CC is included only for its RPM / IV client signal."
@@ -8271,7 +8279,6 @@ def render_process_risk_chart(processes: pd.DataFrame, source_label: str):
 
 def compute_zx_cc_process_summary(
     finished_df: pd.DataFrame,
-    risk_settings: dict,
     by_cc: bool = True,
 ) -> pd.DataFrame:
     if finished_df.empty:
@@ -8293,18 +8300,6 @@ def compute_zx_cc_process_summary(
     if summary.empty:
         return summary
     summary["defect_rate"] = safe_rate(summary["defect_qty"], summary["qty_inspected"])
-    summary["risk_score"] = summary.apply(
-        lambda row: defect_risk_score(
-            shrunk_defect_rate(
-                row["defect_qty"],
-                row["qty_inspected"],
-                settings_for_factory(risk_settings, row["factory_code"]).get("process_benchmark_pct", 5.0),
-            ),
-            settings_for_factory(risk_settings, row["factory_code"]).get("process_benchmark_pct", 5.0),
-        ),
-        axis=1,
-    )
-    summary["risk_level"] = summary["risk_score"].map(risk_level)
     top_defect_keys = ["factory_code"] + (["product_code"] if by_cc else []) + ["process"]
     top_defects = compute_top_defects(finished_df, top_defect_keys)
     summary = summary.merge(top_defects, on=top_defect_keys, how="left")
@@ -8315,15 +8310,12 @@ def compute_zx_cc_process_summary(
         summary["product_code"] = ""
         summary["scope_label"] = summary["factory_name"].astype(str)
         summary["cc_process_view"] = summary["process"].astype(str)
-    return summary.sort_values("risk_score", ascending=False)
+    return summary.sort_values("defect_qty", ascending=False)
 
 
-def render_zx_process_risk_by_cc(
+def render_zx_process_pareto(
     finished_df: pd.DataFrame,
-    products: pd.DataFrame,
-    risk_settings: dict,
 ) -> None:
-    benchmark_pct = float(settings_for_factory(risk_settings, "ZX").get("process_benchmark_pct", 5.0))
     cc_options = sorted(
         {
             cc
@@ -8344,64 +8336,20 @@ def render_zx_process_risk_by_cc(
         process_source = process_source[
             process_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).isin(selected_ccs)
         ].copy()
-    example_source = finished_df[finished_df.get("qty_inspected", pd.Series(0, index=finished_df.index)).gt(0)].copy()
-    if by_cc:
-        example_source = example_source[
-            example_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).isin(selected_ccs)
-        ].copy()
-    example_view = compute_zx_cc_process_summary(example_source, risk_settings, by_cc=by_cc).head(1)
-    scope_unit_cn = "所选 CC × 工序" if by_cc else "该工厂 × 工序"
-    scope_unit_en = "the selected CCs x process" if by_cc else "the factory x process"
-    formula_markdown = t(
-        f"""
-**公式**
-
-1. 原始工序不良率 = {scope_unit_cn}的疵点数 ÷ 检验数。
-2. 收缩后不良率 = `(疵点数 + {benchmark_pct:.1f}% × {SAMPLE_PSEUDO_COUNT}) ÷ (检验数 + {SAMPLE_PSEUDO_COUNT})`。这一步给小样本加入统一先验，避免少量检验因 1 个疵点直接冲到极高风险。
-3. 风险分：收缩后不良率达到 {benchmark_pct:.1f}% 时为 50 分；超过后按区间继续上升，在 {benchmark_pct + 8:.1f}% 时达到 100 分；最终限制在 0–100。
-4. 页面风险等级使用固定阈值：低 `<35`，中 `35–54.9`，高 `55–74.9`，严重 `≥75`。
-""",
-        f"""
-**Formula**
-
-1. Raw process defect rate = defects / inspected quantity for {scope_unit_en}.
-2. Shrunk rate = `(defects + {benchmark_pct:.1f}% x {SAMPLE_PSEUDO_COUNT}) / (inspected + {SAMPLE_PSEUDO_COUNT})`. The common prior prevents a tiny sample with one defect from jumping directly to extreme risk.
-3. Risk score: {benchmark_pct:.1f}% maps to 50; the score rises through the next interval and reaches 100 at {benchmark_pct + 8:.1f}%; the final value is capped at 0-100.
-4. Fixed page levels: Low `<35`, Medium `35-54.9`, High `55-74.9`, Critical `>=75`.
-""",
-    )
     with st.container(key="zx_process_toolbar"):
-        filter_col, info_col = st.columns([0.88, 0.12], vertical_alignment="top")
-        with filter_col:
-            selected_cc_label = " / ".join(selected_ccs[:3])
-            if len(selected_ccs) > 3:
-                selected_cc_label += f" +{len(selected_ccs) - 3}"
-            scope_chip = (
-                t(f"CC 范围 · {selected_cc_label}", f"CC Scope · {selected_cc_label}")
-                if by_cc
-                else t("工厂整体 · 全部 CC", "Factory Overall · All CCs")
-            )
-            st.markdown(f"<span class='zx-pareto-chip'>{scope_chip}</span>", unsafe_allow_html=True)
-        with info_col:
-            with st.popover(t("说明", "Info"), use_container_width=True):
-                st.markdown(formula_markdown)
-                if not example_view.empty:
-                    example = example_view.iloc[0]
-                    shrunk = shrunk_defect_rate(
-                        example.get("defect_qty", 0), example.get("qty_inspected", 0), benchmark_pct
-                    )
-                    st.info(
-                        t(
-                            f"示例：{('CC ' + str(example.get('product_code', ''))) if by_cc else '工厂整体'} / {example.get('process')}：{example.get('defect_qty', 0):,.0f} 疵点 ÷ {example.get('qty_inspected', 0):,.0f} 检验；收缩后不良率 {shrunk:.2%}，工序风险分 {example.get('risk_score', 0):.1f}（{risk_level_text(example.get('risk_level'))}）。",
-                            f"Example: {('CC ' + str(example.get('product_code', ''))) if by_cc else 'factory overall'} / {example.get('process')}: {example.get('defect_qty', 0):,.0f} defects / {example.get('qty_inspected', 0):,.0f} inspected; shrunk rate {shrunk:.2%}, process risk {example.get('risk_score', 0):.1f} ({risk_level_text(example.get('risk_level'))}).",
-                        )
-                    )
-    process_view = compute_zx_cc_process_summary(process_source, risk_settings, by_cc=by_cc)
+        selected_cc_label = " / ".join(selected_ccs[:3])
+        if len(selected_ccs) > 3:
+            selected_cc_label += f" +{len(selected_ccs) - 3}"
+        scope_chip = (
+            t(f"CC 范围 · {selected_cc_label}", f"CC Scope · {selected_cc_label}")
+            if by_cc
+            else t("工厂整体 · 全部 CC", "Factory Overall · All CCs")
+        )
+        st.markdown(f"<span class='zx-pareto-chip'>{scope_chip}</span>", unsafe_allow_html=True)
+    process_view = compute_zx_cc_process_summary(process_source, by_cc=by_cc)
     if process_view.empty:
-        st.info(t("当前筛选下没有可计算的工序风险。", "No process risk can be calculated for the current selection."))
+        st.info(t("当前筛选下没有可展示的工序数据。", "No process data is available for the current selection."))
         return
-    # The process section intentionally keeps a single Pareto view. The former
-    # risk-score toggle duplicated the prioritization already handled upstream.
     view_mode = t("疵点帕累托", "Defect Pareto")
     if view_mode == t("疵点帕累托", "Defect Pareto"):
         positive_processes = process_view[process_view["defect_qty"] > 0].copy()
@@ -8473,38 +8421,6 @@ def render_zx_process_risk_by_cc(
         fig.add_hline(y=0.8, line_dash="dot", line_color="#f59e0b", yref="y2")
         plot_chart(fig, 460)
         return
-
-    plot_view = process_view.head(14).sort_values("risk_score", ascending=True)
-    fig = px.bar(
-        plot_view,
-        x="risk_score",
-        y="cc_process_view",
-        orientation="h",
-        color="risk_level",
-        text=plot_view["risk_score"].round(1),
-        hover_data={
-            "product_code": True,
-            "process": True,
-            "defect_rate": ":.2%",
-            "qty_inspected": ":,.0f",
-            "defect_qty": ":,.0f",
-            "top_defect": True,
-            "worker_team_count": ":,.0f",
-            "work_order_count": ":,.0f",
-            "cc_process_view": False,
-        },
-        labels={
-            "risk_score": t("工序风险分", "Process Risk Score"),
-            "cc_process_view": "CC / " + t("工序", "Process"),
-            "risk_level": t("风险等级", "Risk Level"),
-            "worker_team_count": t("工人 / 班组数", "Worker / Team Count"),
-            "work_order_count": t("工单数", "Work Orders"),
-        },
-        color_discrete_map=LEVEL_COLORS,
-    )
-    fig.update_xaxes(range=[0, 105])
-    fig.update_traces(textposition="outside")
-    plot_chart(fig, 430)
 
 
 def compute_supplier_production_process_distribution(
@@ -10366,7 +10282,7 @@ def render_community_cockpit(
             if selected_analysis == "process":
                 st.markdown(f"**{t('工序 Pareto', 'Process Pareto')}**")
                 process_chart_source = process_filter_df if process_filter_df is not None else finished_df
-                render_zx_process_risk_by_cc(process_chart_source, product_df, risk_settings)
+                render_zx_process_pareto(process_chart_source)
             elif selected_analysis == "worker":
                 st.markdown(f"**{t('工人技能分类', 'Worker Skill Classification')}**")
                 render_worker_focus(worker_df, source_label)
