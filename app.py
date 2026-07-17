@@ -79,8 +79,8 @@ ENGLISH_DISPLAY_EXACT = {
     "不合格": "Nonconforming",
     "中间检验": "In-process inspection",
     "成品检验": "Finished-goods inspection",
-    "主料": "Main material",
-    "辅料": "Auxiliary material",
+    "主料": "Main component",
+    "辅料": "Accessory",
     "ZX成品质量检验数据.xlsx": "ZX finished quality inspection data.xlsx",
     "PQC生产扭力记录表.xlsx": "PQC production torque records.xlsx",
     "返工作业申请书.xlsx": "Rework application records.xlsx",
@@ -164,8 +164,8 @@ ENGLISH_DISPLAY_TOKENS = {
     "班组": "team",
     "车间": "workshop",
     "供应商": "supplier",
-    "主料": "main material",
-    "辅料": "auxiliary material",
+    "主料": "main component",
+    "辅料": "accessory",
     "材料": "material",
     "包装": "packaging",
     "外观": "appearance",
@@ -1560,13 +1560,13 @@ FACTORIES = {
         "supplier": "中兴",
         "location": "ZX",
         "finished": Path("TU database/ZX Database/Factory data/05.7-06.6检验数据.xlsx"),
-        "voice": Path("TU database/ZX Database/Decathlon Customer data/Compare hierarchy (CC).xlsx"),
+        "voice": Path("TU database/ZX Database/Decathlon Customer data/1 - Export (CC) - Compare Hierarchy [All KPIs].csv"),
         "customer_rpm_r12m": Path("TU database/ZX Database/Decathlon Customer data/R12M RPM.csv"),
         "customer_rpm_ytd": Path("TU database/ZX Database/Decathlon Customer data/YTD RPM.csv"),
         "customer_nqc_r12m": Path("TU database/ZX Database/Decathlon Customer data/R12M NQC.csv"),
         # The supplied export is named YDT; it contains the YTD NQC aggregate.
         "customer_nqc_ytd": Path("TU database/ZX Database/Decathlon Customer data/YDT NQC.csv"),
-        "customer_model": Path("TU database/ZX Database/Decathlon Customer data/Compare hierarchy (model).csv"),
+        "customer_model": Path("TU database/ZX Database/Decathlon Customer data/1 - Export (Model) - Compare Hierarchy [All KPIs] (1).csv"),
         "customer_return_location": Path("TU database/ZX Database/Decathlon Customer data/1 - Export - Detailed Table by Location [Defloc - Location].csv"),
         "customer_return_defect": Path("TU database/ZX Database/Decathlon Customer data/2 - Export - Detailed Table by Defect [Defloc - Location].csv"),
         "incoming": Path("TU database/ZX Database/Factory data/2026年原辅料不合格记录.xlsx"),
@@ -3027,6 +3027,76 @@ def load_finished_qc(
     return result
 
 
+def load_zx_customer_all_kpis_csv(
+    path: Path,
+    factory_code: str,
+    cfg: dict,
+    grain: str,
+    cache_version: int = DATA_SCOPE_CACHE_VERSION,
+) -> pd.DataFrame:
+    """Normalize the new tab-separated All KPIs export at CC or Model grain."""
+    if not path.exists() or grain not in {"CC", "Model"}:
+        return pd.DataFrame()
+    raw = pd.read_csv(path, encoding="utf-16", sep="\t", dtype=str)
+    raw.columns = [str(column).strip() for column in raw.columns]
+    key_column = grain
+    if key_column not in raw.columns:
+        return pd.DataFrame()
+
+    key_values = raw[key_column].fillna("").astype(str).str.strip()
+    if grain == "CC":
+        product_code = key_values.map(normalize_decathlon_cc)
+        model_code = pd.Series("", index=raw.index, dtype=object)
+    else:
+        model_code = key_values.map(extract_decathlon_model)
+        product_code = model_code.map(load_zx_production_model_cc_map(cache_version)).fillna("")
+    valid_key = product_code.ne("") if grain == "CC" else model_code.ne("")
+    raw = raw.loc[valid_key].copy()
+    product_code = product_code.loc[raw.index]
+    model_code = model_code.loc[raw.index]
+    product_name = raw.get("Product Name", pd.Series("", index=raw.index)).fillna("").astype(str).str.strip()
+    product_name = product_name.str.replace(r"^\d+\s*", "", regex=True)
+
+    def metric(column: str) -> pd.Series:
+        return clean_numeric_series(raw.get(column, pd.Series(np.nan, index=raw.index)))
+
+    voice = pd.DataFrame(
+        {
+            "factory_code": factory_code,
+            "factory_name": cfg["name"],
+            "supplier": cfg["supplier"],
+            "hierarchy_1": raw.get("Hierarchy 1", ""),
+            "hierarchy_2": raw.get("Hierarchy 2", ""),
+            "product_raw": key_values.loc[raw.index],
+            "product_code": product_code,
+            "product_name": product_name,
+            "model_code": model_code,
+            "avg_score_prev": metric("N-1 Avg score"),
+            "avg_score_now": metric("N0 Avg score"),
+            "delta_avg_score": metric("% delta avg score vs. N-1"),
+            "rpm_prev": metric("N-1 RPM"),
+            "rpm_now": metric("N0 RPM"),
+            "delta_rpm": metric("% delta RPM vs. N-1"),
+            "reviews_prev": metric("N-1 Nb reviews"),
+            "reviews_now": metric("N0 Nb reviews"),
+            "nqc_prev": metric("N-1 NQC"),
+            "nqc_now": metric("N0 NQC"),
+            "returned_prev": metric("N-1 Qty returned"),
+            "returned_now": metric("N0 Qty returned"),
+            "sold_prev": metric("N-1 Qty sold (RPM)"),
+            "sold_now": metric("N0 Qty sold (RPM)"),
+            "intern_voice_count": 0,
+            "intern_voice_prev_count": np.nan,
+            "intern_voice_prev_available": False,
+            "voice_source": "YTD Compare",
+            "customer_grain": grain,
+            "source_file": str(path.relative_to(ROOT)),
+        }
+    )
+    voice["product_key"] = voice["product_code"].map(extract_product_key)
+    return voice.reset_index(drop=True)
+
+
 def load_zx_customer_cc_workbook(path: Path, factory_code: str, cfg: dict) -> pd.DataFrame:
     """Normalize the seven-sheet ZX customer hierarchy export to the voice schema."""
     metric_specs = {
@@ -3185,6 +3255,22 @@ def load_customer_voice(
             continue
         path = ROOT / cfg["voice"]
         if not path.exists():
+            continue
+
+        if factory_code == "ZX":
+            cc_voice = load_zx_customer_all_kpis_csv(path, factory_code, cfg, "CC", cache_version)
+            model_path = ROOT / cfg.get("customer_model", Path(""))
+            model_voice = load_zx_customer_all_kpis_csv(
+                model_path,
+                factory_code,
+                cfg,
+                "Model",
+                cache_version,
+            )
+            if not cc_voice.empty:
+                frames.append(cc_voice)
+            if not model_voice.empty:
+                frames.append(model_voice)
             continue
 
         if path.suffix.lower() in {".xlsx", ".xlsm"}:
@@ -3384,6 +3470,7 @@ def load_customer_voice(
                     "intern_voice_prev_count": intern_summary["intern_voice_prev_count"],
                     "intern_voice_prev_available": intern_summary["intern_voice_prev_available"],
                     "voice_source": "Intern Voice",
+                    "customer_grain": "IV",
                     "source_file": str(intern_source_file or FACTORIES["ZX"]["intern_voice_file"]),
                 }
             )
@@ -3400,6 +3487,9 @@ def load_customer_voice(
     result.loc[zx_rows, "product_code"] = result.loc[zx_rows, "product_code"].map(normalize_decathlon_cc)
     if "model_code" in result.columns:
         result.loc[zx_rows, "model_code"] = result.loc[zx_rows, "model_code"].map(extract_decathlon_model)
+    if "customer_grain" not in result.columns:
+        result["customer_grain"] = "CC"
+    result["customer_grain"] = result["customer_grain"].fillna("CC").astype(str)
     result["product_key"] = result["product_code"].map(extract_product_key)
     return result
 
@@ -8217,8 +8307,12 @@ def render_zx_process_risk_by_cc(
     # risk-score toggle duplicated the prioritization already handled upstream.
     view_mode = t("疵点帕累托", "Defect Pareto")
     if view_mode == t("疵点帕累托", "Defect Pareto"):
-        pareto_view = process_view.sort_values("defect_qty", ascending=False).head(12).copy()
-        pareto_total = float(process_view["defect_qty"].sum())
+        positive_processes = process_view[process_view["defect_qty"] > 0].copy()
+        if positive_processes.empty:
+            st.info(t("当前筛选下没有工序疵点。", "No process defects under the current selection."))
+            return
+        pareto_view = positive_processes.sort_values("defect_qty", ascending=False).head(12).copy()
+        pareto_total = float(positive_processes["defect_qty"].sum())
         pareto_view["defect_share"] = pareto_view["defect_qty"] / pareto_total if pareto_total else 0
         pareto_view["cumulative_share"] = pareto_view["defect_share"].cumsum()
         st.markdown(
@@ -8646,7 +8740,7 @@ def render_material_focus(incoming_df: pd.DataFrame, source_label: str, compact:
         mat_type["size"] = pd.to_numeric(mat_type["size"], errors="coerce").fillna(0).astype(int)
         mat_type["size_label"] = mat_type["size"].map(lambda value: f"{int(value)}")
         mat_type["material_type_display"] = mat_type["material_type"].map(
-            lambda value: {"主料": "Main material", "辅料": "Auxiliary material"}.get(str(value), str(value))
+            lambda value: {"主料": "Main component", "辅料": "Accessory"}.get(str(value), str(value))
             if st.session_state.get("lang") == "English"
             else str(value)
         )
@@ -9740,7 +9834,11 @@ def render_community_cockpit(
 
     if scope_key == "ZX":
         zx_qc_source = "TU database/ZX Database/Factory data/05.7-06.6检验数据.xlsx"
-        zx_client_source = "TU database/ZX Database/Decathlon Customer data/Compare hierarchy (CC).xlsx + TU database/ZX Database/Decathlon Customer data/ZX intervoice.xlsx"
+        zx_client_source = (
+            "TU database/ZX Database/Decathlon Customer data/1 - Export (CC) - Compare Hierarchy [All KPIs].csv + "
+            "TU database/ZX Database/Decathlon Customer data/1 - Export (Model) - Compare Hierarchy [All KPIs] (1).csv + "
+            "TU database/ZX Database/Decathlon Customer data/ZX intervoice.xlsx"
+        )
         zx_risk_source = f"{zx_qc_source} + {zx_client_source}"
         render_zx_high_risk_cluster(product_df, risk_settings, zx_risk_source, "zx")
 
@@ -11168,13 +11266,13 @@ if selected_model != ALL_FILTER_VALUE:
     )
     if not voice_all.empty and "model_code" in voice_all.columns:
         model_ccs.update(
-        voice_all.loc[
-            voice_all["model_code"].fillna("").astype(str).str.strip().eq(selected_model),
-            "product_code",
-        ]
-        .fillna("")
-        .astype(str)
-        .str.replace(r"\.0$", "", regex=True)
+            voice_all.loc[
+                voice_all["model_code"].fillna("").astype(str).str.strip().eq(selected_model),
+                "product_code",
+            ]
+            .fillna("")
+            .astype(str)
+            .str.replace(r"\.0$", "", regex=True)
         )
     if not sidebar_jdy_fqc.empty and {"cc", "model"}.issubset(sidebar_jdy_fqc.columns):
         model_ccs.update(
@@ -11191,6 +11289,8 @@ if selected_model != ALL_FILTER_VALUE:
         finished = finished[
             finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).isin(model_ccs)
         ]
+    else:
+        finished = finished.iloc[0:0].copy()
 focused_cc = selected_cc_filter
 
 voice = (
@@ -11217,6 +11317,17 @@ if selected_model != ALL_FILTER_VALUE and not voice.empty:
         ]
     elif "model_code" in voice.columns:
         voice = voice[voice["model_code"].fillna("").astype(str).str.strip().eq(selected_model)]
+if active_scope_key == "ZX" and not voice.empty:
+    customer_grain = voice.get("customer_grain", pd.Series("CC", index=voice.index)).fillna("CC").astype(str)
+    if selected_model == ALL_FILTER_VALUE:
+        # Default CC analysis must not average the CC export together with its
+        # more granular Model rows.
+        voice = voice[customer_grain.ne("Model")].copy()
+    else:
+        selected_model_rows = customer_grain.eq("Model") & voice.get(
+            "model_code", pd.Series("", index=voice.index)
+        ).fillna("").astype(str).str.strip().eq(selected_model)
+        voice = voice[selected_model_rows | customer_grain.eq("IV")].copy()
 
 incoming = (
     incoming_all[
@@ -11276,6 +11387,8 @@ if selected_model != ALL_FILTER_VALUE and model_ccs:
     pm_finished = pm_finished[
         pm_finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).isin(model_ccs)
     ]
+elif selected_model != ALL_FILTER_VALUE:
+    pm_finished = pm_finished.iloc[0:0].copy()
 pm_incoming = (
     incoming_all[
         (incoming_all["factory_code"].isin(process_material_codes))
