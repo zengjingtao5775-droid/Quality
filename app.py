@@ -10350,15 +10350,17 @@ def render_community_cockpit(
                 "process": t("工序", "Process"),
                 "worker": t("工人", "Worker"),
                 "material": t("原辅料", "Material"),
-                "customer": t("客户评分 / NQC", "Customer Rating / NQC"),
                 "ai": t("AI 总结报告", "AI Summary Report"),
             }
+            analysis_key = f"zx_more_analysis_{language_query_code()}"
+            if st.session_state.get(analysis_key) == "customer":
+                st.session_state[analysis_key] = "process"
             selected_analysis = st.segmented_control(
                 t("分析模块", "Analysis Module"),
                 list(analysis_labels),
                 default="process",
                 format_func=lambda value: analysis_labels[value],
-                key=f"zx_more_analysis_{language_query_code()}",
+                key=analysis_key,
                 width="stretch",
             )
             if selected_analysis == "process":
@@ -10371,9 +10373,6 @@ def render_community_cockpit(
             elif selected_analysis == "material":
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
-            elif selected_analysis == "customer":
-                st.markdown(f"**{t('客户评分与退货损失', 'Customer Rating and Return Loss')}**")
-                render_zx_customer_score_nqc(voice_df)
             elif selected_analysis == "ai":
                 st.markdown(f"**{t('AI 质量结论报告', 'AI Quality Conclusion Report')}**")
                 report_language = st.segmented_control(
