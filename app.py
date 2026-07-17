@@ -1769,8 +1769,8 @@ DEFAULT_RISK_SETTINGS = {
     "qc_benchmark_pct": 4.0,
     "process_benchmark_pct": 5.0,
     "sample_pseudo_count": 200,
-    "rpm_cap": 1500,
-    "intern_voice_cap": 30,
+    "rpm_cap": 646,
+    "intern_voice_cap": 5,
     "incoming_reject_cap": 25,
     "incoming_issue_cap": 120,
 }
@@ -2138,12 +2138,12 @@ def settings_for_factory(settings: dict, factory_code: object) -> dict:
 
 def rpm_risk_score(rpm_value: object, settings: dict) -> float:
     rpm = 0 if pd.isna(rpm_value) else max(float(rpm_value), 0)
-    return min(rpm / max(float(settings.get("rpm_cap", 1500)), 1) * 100, 100)
+    return min(rpm / max(float(settings.get("rpm_cap", DEFAULT_RISK_SETTINGS["rpm_cap"])), 1) * 100, 100)
 
 
 def intern_voice_risk_score(count: object, settings: dict) -> float:
     value = 0 if pd.isna(count) else max(float(count), 0)
-    return min(value / max(float(settings.get("intern_voice_cap", 30)), 1) * 100, 100)
+    return min(value / max(float(settings.get("intern_voice_cap", DEFAULT_RISK_SETTINGS["intern_voice_cap"])), 1) * 100, 100)
 
 
 def load_risk_payload() -> dict:
@@ -2309,7 +2309,7 @@ def render_risk_settings_panel() -> dict:
             format="%.0f",
             key=f"{widget_prefix}_rpm_cap",
         )
-        st.caption(t("高级基准通常不需要频繁调整。Intern Voice 默认 30 次封顶 100 分。", "Advanced benchmarks usually do not need frequent changes. Intern Voice is capped at 100 at 30 cases by default."))
+        st.caption(t("高级基准通常不需要频繁调整。Intern Voice 默认 5 次封顶 100 分。", "Advanced benchmarks usually do not need frequent changes. Intern Voice is capped at 100 at 5 cases by default."))
 
     current_settings = risk_settings_from_widget_state(settings, selected_profile)
     current_settings["supplier_weights"] = {
@@ -3426,15 +3426,17 @@ def load_customer_voice(
             previous_year_available = False
         intern["iv_current_case"] = intern["case_id"].where(current_mask & intern["is_factory_issue"])
         intern["iv_previous_case"] = intern["case_id"].where(previous_mask & intern["is_factory_issue"])
+        # IV is supplied at Model grain. Preserve that grain here, then use the
+        # production Model -> CC bridge for CC roll-ups. Grouping by CC alone
+        # would make a Model filter inherit IV cases from sibling Models.
         intern_summary = (
             intern[intern["product_code"] != ""]
-            .groupby("product_code", as_index=False)
+            .groupby(["product_code", "model_code"], as_index=False)
             .agg(
                 intern_voice_count=("iv_current_case", "nunique"),
                 intern_voice_prev_count=("iv_previous_case", "nunique"),
                 evidence_files=("file_name", lambda s: ", ".join(s.head(3))),
                 product_name=("product_name", lambda s: next((str(v) for v in s if str(v).strip()), "Intern Voice")),
-                model_code=("model_code", summarize_unique_values),
             )
         )
         intern_summary["intern_voice_prev_available"] = previous_year_available
@@ -5722,7 +5724,12 @@ def summarize_unique_values(series: pd.Series, limit: int = 4) -> str:
     return " / ".join(visible) + suffix
 
 
-def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_settings: dict) -> pd.DataFrame:
+def compute_product_summary(
+    finished: pd.DataFrame,
+    voice: pd.DataFrame,
+    risk_settings: dict,
+    include_client_only: bool = False,
+) -> pd.DataFrame:
     qc = pd.DataFrame()
     if not finished.empty:
         qc = (
@@ -5781,14 +5788,20 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
     elif cust.empty:
         product = qc.copy()
     else:
-        # Product analysis is production-led. Client-only CCs (for example a
-        # discontinued style that still has RPM history) must not become a
-        # dashboard product without a current production inspection record.
+        # The standard product analysis remains production-led. The cluster
+        # chart can explicitly request the wider client universe so users may
+        # also inspect CCs that have RPM but no production inspection record.
         product = qc.merge(
             cust,
             on=["factory_code", "factory_name", "supplier", "product_key"],
-            how="left",
+            how="outer" if include_client_only else "left",
         )
+
+    raw_qty_inspected = pd.to_numeric(
+        product.get("qty_inspected", pd.Series(np.nan, index=product.index)),
+        errors="coerce",
+    )
+    product["has_production_record"] = raw_qty_inspected.fillna(0).gt(0)
 
     product["product_code"] = product.get("product_code", pd.Series(index=product.index, dtype=object)).fillna(
         product.get("voice_product_code", pd.Series(index=product.index, dtype=object))
@@ -7070,15 +7083,28 @@ def render_zx_high_risk_cluster(
         "intern_voice_score",
     ]:
         view[column] = pd.to_numeric(view.get(column, np.nan), errors="coerce")
-    # The cluster is actionable only where current production and RPM can be
-    # matched. Intern Voice remains optional and is displayed as zero when no
-    # case exists for an otherwise eligible production CC.
-    view = view[(view["qty_inspected"] > 0) & view["rpm_now"].notna()].copy()
+    view["has_production_record"] = view.get(
+        "has_production_record",
+        view["qty_inspected"].fillna(0).gt(0),
+    ).fillna(False).astype(bool)
+    record_scope_key = f"{widget_key}_cluster_record_scope"
+    record_scope = st.session_state.get(record_scope_key, "production_records")
+    rpm_view = view[view["rpm_now"].notna()].copy()
+    if record_scope == "all_rpm":
+        view = rpm_view
+    else:
+        view = rpm_view[rpm_view["has_production_record"]].copy()
+        if view.empty and not rpm_view.empty:
+            # Keep the control recoverable when the current range contains
+            # only client-side RPM records.
+            record_scope = "all_rpm"
+            st.session_state[record_scope_key] = record_scope
+            view = rpm_view
     if view.empty:
         st.info(
             t(
-                "当前范围没有同时匹配生产检验与 RPM 的 CC。",
-                "No CCs in the current scope have both production inspection and matched RPM data.",
+                "当前范围没有可匹配的 RPM CC。",
+                "No CCs with matched RPM are available in the current scope.",
             )
         )
         return
@@ -7095,7 +7121,7 @@ def render_zx_high_risk_cluster(
     cluster_prior_defects = float(
         st.session_state.get(
             f"{widget_key}_cluster_prior_defects",
-            cluster_qc_benchmark / 100 * default_pseudo_count,
+            9.0 if widget_key == "zx" else cluster_qc_benchmark / 100 * default_pseudo_count,
         )
     )
     cluster_rpm_cap = float(
@@ -7112,15 +7138,19 @@ def render_zx_high_risk_cluster(
     )
     if widget_key == "zx":
         view["production_axis"] = view.apply(
-            lambda row: defect_risk_score(
-                shrunk_defect_rate(
-                    row.get("defect_qty", 0),
-                    row.get("qty_inspected", 0),
+            lambda row: (
+                defect_risk_score(
+                    shrunk_defect_rate(
+                        row.get("defect_qty", 0),
+                        row.get("qty_inspected", 0),
+                        cluster_qc_benchmark,
+                        cluster_pseudo_count,
+                        cluster_prior_defects,
+                    ),
                     cluster_qc_benchmark,
-                    cluster_pseudo_count,
-                    cluster_prior_defects,
-                ),
-                cluster_qc_benchmark,
+                )
+                if bool(row.get("has_production_record", False))
+                else 0.0
             ),
             axis=1,
         ).fillna(0).clip(0, 100)
@@ -7236,9 +7266,9 @@ def render_zx_high_risk_cluster(
 
     view["plot_x"] = (view["production_axis"] + view["product_code"].map(stable_jitter)).clip(0, 100)
     view["plot_y"] = (view["client_signal"] + view["product_code"].map(lambda value: stable_jitter(value, 1.05))).clip(0, 100)
-    # Plotly maps `size` to marker area, so the composite risk score directly
-    # controls visual prominence: a larger circle always means higher risk.
-    view["bubble_size"] = view["cluster_score"].fillna(0).clip(lower=0.1)
+    # Keep every product marker the same size. Risk is already encoded by
+    # position and colour; a third size encoding makes overlapping CCs harder
+    # to read and falsely suggests another quantitative comparison.
     view["product_label_display"] = view["product_label"].map(localize_product_label)
     model_code = view.get("model_code", pd.Series("", index=view.index)).fillna("").astype(str).str.strip()
     model_code = model_code.replace({"-": "", "nan": "", "None": ""})
@@ -7264,23 +7294,32 @@ def render_zx_high_risk_cluster(
         model_code.where(model_code.ne(""), model_fallback),
     )
     view["model_display"] = pd.Series(view["model_display"], index=view.index).replace("", "-")
+    view["production_record_label"] = view["has_production_record"].map(
+        {True: t("有检验记录", "Inspection available"), False: t("无检验记录", "No inspection record")}
+    )
+    view["defect_rate_display"] = view["defect_rate"].map(
+        lambda value: pct(value) if pd.notna(value) else "-"
+    )
     top_label_index = view["cluster_score"].nlargest(min(18, len(view))).index
     view["cc_text"] = ""
     view.loc[top_label_index, "cc_text"] = view.loc[top_label_index, "product_code"].astype(str)
-    view["cluster_risk_formula"] = view.apply(
-        lambda row: (
-            t(
+    def cluster_formula(row: pd.Series) -> str:
+        if has_client_signal and not bool(row.get("has_production_record", False)):
+            return t(
+                f"综合风险={num(row.get('cluster_score'), 1)} = 无检验记录，生产端按0分 x {production_weight}% + 客户端{num(row.get('client_signal'), 1)} x {secondary_weight}%；客户端来自RPM风险{num(row.get('rpm_score'), 1)}和IV风险{num(row.get('intern_voice_score'), 1)}。",
+                f"Combined risk={num(row.get('cluster_score'), 1)} = no inspection record, so production is 0 x {production_weight}% + client {num(row.get('client_signal'), 1)} x {secondary_weight}%; client uses RPM risk {num(row.get('rpm_score'), 1)} and IV risk {num(row.get('intern_voice_score'), 1)}.",
+            )
+        if has_client_signal:
+            return t(
                 f"综合风险={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x {production_weight}% + 客户端{num(row.get('client_signal'), 1)} x {secondary_weight}%；生产端来自QC不良率{pct(row.get('defect_rate'))}，客户端来自RPM风险{num(row.get('rpm_score'), 1)}和IV风险{num(row.get('intern_voice_score'), 1)}。",
                 f"Combined risk={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x {production_weight}% + client {num(row.get('client_signal'), 1)} x {secondary_weight}%; production uses QC defect rate {pct(row.get('defect_rate'))}, client uses RPM risk {num(row.get('rpm_score'), 1)} and IV risk {num(row.get('intern_voice_score'), 1)}.",
             )
-            if has_client_signal
-            else t(
-                f"聚类分={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x {production_weight}% + 检验量强度{num(row.get('client_signal'), 1)} x {secondary_weight}%；生产端来自QC不良率{pct(row.get('defect_rate'))}。",
-                f"Cluster score={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x {production_weight}% + inspection-volume strength {num(row.get('client_signal'), 1)} x {secondary_weight}%; production uses QC defect rate {pct(row.get('defect_rate'))}.",
-            )
-        ),
-        axis=1,
-    )
+        return t(
+            f"聚类分={num(row.get('cluster_score'), 1)} = 生产端{num(row.get('production_axis'), 1)} x {production_weight}% + 检验量强度{num(row.get('client_signal'), 1)} x {secondary_weight}%；生产端来自QC不良率{pct(row.get('defect_rate'))}。",
+            f"Cluster score={num(row.get('cluster_score'), 1)} = production {num(row.get('production_axis'), 1)} x {production_weight}% + inspection-volume strength {num(row.get('client_signal'), 1)} x {secondary_weight}%; production uses QC defect rate {pct(row.get('defect_rate'))}.",
+        )
+
+    view["cluster_risk_formula"] = view.apply(cluster_formula, axis=1)
 
     def render_formula_example() -> None:
         example_options = view.sort_values("cluster_score", ascending=False)["product_code"].astype(str).tolist()
@@ -7303,12 +7342,18 @@ def render_zx_high_risk_cluster(
         )
         rpm_value = float(example.get("rpm_now")) if pd.notna(example.get("rpm_now")) else 0.0
         iv_value = float(example.get("intern_voice_count")) if pd.notna(example.get("intern_voice_count")) else 0.0
+        if bool(example.get("has_production_record", False)):
+            production_step_cn = f"`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {cluster_pseudo_count} 先验样本) = {shrunk_rate:.2%}` → **生产端 {example.get('production_axis', 0):.1f} 分**。"
+            production_step_en = f"`({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} reference defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {cluster_pseudo_count} reference samples) = {shrunk_rate:.2%}` → **production {example.get('production_axis', 0):.1f}**."
+        else:
+            production_step_cn = "无生产检验记录 → **生产端按 0 分显示**；该 CC 仅用于查看 RPM / IV 客户端信号。"
+            production_step_en = "No production inspection record → **production displays as 0**; this CC is included only for its RPM / IV client signal."
         st.markdown(
             t(
                 f"""
 **CC {example_cc} · Model {example.get('model_display', '-')}**
 
-1. 生产端：`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {cluster_pseudo_count} 先验样本) = {shrunk_rate:.2%}` → **生产端 {example.get('production_axis', 0):.1f} 分**。
+1. 生产端：{production_step_cn}
 2. RPM：`min({rpm_value:,.0f} ÷ {example.get('rpm_cap', 1500):,.0f} × 100, 100) = {example.get('rpm_score', 0):.1f}`；IV：`min({iv_value:,.0f} ÷ {example.get('iv_cap', 30):,.0f} × 100, 100) = {example.get('intern_voice_score', 0):.1f}`。
 3. 客户端：`RPM {example.get('rpm_score', 0):.1f} × {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} × {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`。
 4. Risk Score：`生产端 {example.get('production_axis', 0):.1f} × {production_weight}% + 客户端 {example.get('client_signal', 0):.1f} × {secondary_weight}% = {example.get('cluster_score', 0):.1f}`。
@@ -7316,7 +7361,7 @@ def render_zx_high_risk_cluster(
                 f"""
 **CC {example_cc} · Model {example.get('model_display', '-')}**
 
-1. Production: `({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} reference defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {cluster_pseudo_count} reference samples) = {shrunk_rate:.2%}` → **production {example.get('production_axis', 0):.1f}**.
+1. Production: {production_step_en}
 2. RPM: `min({rpm_value:,.0f} / {example.get('rpm_cap', 1500):,.0f} x 100, 100) = {example.get('rpm_score', 0):.1f}`; IV: `min({iv_value:,.0f} / {example.get('iv_cap', 30):,.0f} x 100, 100) = {example.get('intern_voice_score', 0):.1f}`.
 3. Client: `RPM {example.get('rpm_score', 0):.1f} x {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} x {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`.
 4. Risk Score: `production {example.get('production_axis', 0):.1f} x {production_weight}% + client {example.get('client_signal', 0):.1f} x {secondary_weight}% = {example.get('cluster_score', 0):.1f}`.
@@ -7354,25 +7399,31 @@ def render_zx_high_risk_cluster(
                     step=100.0,
                     format="%.0f",
                     key=f"{widget_key}_cluster_rpm_threshold",
-                    help=t("公司规定的 RPM 风险阈值，默认 1500。", "Company-defined RPM risk threshold; default 1500."),
+                    help=t("公司规定的 RPM 风险阈值，默认 646。", "Company-defined RPM risk threshold; default 646."),
                 )
                 st.number_input(
                     t("IV 风险阈值", "IV Risk Threshold"),
                     min_value=1,
                     max_value=500,
                     value=cluster_iv_cap,
-                    step=5,
+                    step=1,
                     key=f"{widget_key}_cluster_iv_threshold",
-                    help=t("Intern Voice 风险阈值，默认 30。", "Intern Voice risk threshold; default 30."),
+                    help=t("Intern Voice 风险阈值，默认 5。", "Intern Voice risk threshold; default 5."),
                 )
                 st.caption(t("修改后立即按当前筛选重新计算。", "Changes immediately recalculate the current filtered view."))
 
     if widget_key == "zx":
+        scope_method_cn = (
+            "默认仅展示有生产检验记录且匹配 RPM 的 CC；可切换为全部有 RPM 的 CC，无检验记录的 CC 以生产端 0 分显示。"
+        )
+        scope_method_en = (
+            "By default, show CCs with production inspection and matched RPM; switch to all RPM CCs when needed. CCs without inspection records display a production score of zero."
+        )
         heading_content = (
             "识别哪些 CC 同时存在生产端质量风险和客户端风险。",
             "Identify CCs with combined production-side and client-side quality risk.",
-            "只展示同时匹配生产检验与 RPM 的 CC，再使用 K-means 按两个风险维度分组。",
-            "Show only CCs matched to both production inspection and RPM, then use K-means to group them by two risk dimensions.",
+            scope_method_cn,
+            scope_method_en,
             "生产端风险来自 QC 不良率；客户端风险来自 RPM 与 Intern Voice；无 IV 案例时按 0 显示。",
             "Production risk comes from QC defect rate; client risk comes from RPM and Intern Voice; IV displays zero when no case exists.",
         )
@@ -7397,7 +7448,7 @@ def render_zx_high_risk_cluster(
 
     risk_filter_options = [t("高风险", "High Risk"), t("中风险", "Medium Risk"), t("低风险", "Low Risk")]
     with st.container(key="zx_cluster_control"):
-        weight_control, filter_control = st.columns([0.18, 0.82], vertical_alignment="center")
+        weight_control, record_control, filter_control = st.columns([0.18, 0.34, 0.48], vertical_alignment="center")
         with weight_control:
             with st.popover(t("权重调整", "Adjust Weights"), use_container_width=True):
                 production_weight = st.slider(
@@ -7410,6 +7461,19 @@ def render_zx_high_risk_cluster(
                 )
                 secondary_weight = 100 - production_weight
                 st.metric(t("客户端 / 检验量权重", "Client / Volume Weight"), f"{secondary_weight}%")
+        with record_control:
+            st.segmented_control(
+                t("生产记录范围", "Production Record Scope"),
+                ["production_records", "all_rpm"],
+                default=record_scope,
+                format_func=lambda value: {
+                    "production_records": t("有检验记录", "Inspected CCs"),
+                    "all_rpm": t("全部 RPM CC", "All RPM CCs"),
+                }[value],
+                key=record_scope_key,
+                width="stretch",
+                label_visibility="collapsed",
+            )
         with filter_control:
             selected_risk_levels = st.multiselect(
                 t("风险筛选（可多选）", "Risk Filter (multi-select)"),
@@ -7429,9 +7493,7 @@ def render_zx_high_risk_cluster(
         x="plot_x",
         y="plot_y",
         color="cluster_risk_level",
-        size="bubble_size",
         text="cc_text",
-        size_max=26,
         color_discrete_map={
             t("高风险", "High Risk"): "#e85d68",
             t("中风险", "Medium Risk"): "#f0a94a",
@@ -7460,6 +7522,8 @@ def render_zx_high_risk_cluster(
             "iv_client_weight_pct",
             "rpm_cap",
             "iv_cap",
+            "production_record_label",
+            "defect_rate_display",
         ],
         labels={
             "plot_x": t("生产端风险分（QC不良率）", "Production Risk Score (QC defect rate)"),
@@ -7477,15 +7541,16 @@ def render_zx_high_risk_cluster(
         f"<b>CC %{{customdata[0]}} · %{{customdata[8]}}</b><br>"
         f"<span style='color:#667085'>Model</span>  %{{customdata[1]}}<br>"
         f"━━━━━━━━━━━━━━━━━━━━<br>"
+        f"{t('生产记录', 'Production record')}  <b>%{{customdata[22]}}</b><br>"
         f"RPM  <b>%{{customdata[2]:,.0f}}</b>　 IV  <b>%{{customdata[3]:,.0f}}</b><br>"
-        f"{t('不良率', 'Defect rate')}  <b>%{{customdata[4]:.2%}}</b>　 Risk Score  <b>%{{customdata[5]:.1f}}</b><br>"
+        f"{t('不良率', 'Defect rate')}  <b>%{{customdata[23]}}</b>　 Risk Score  <b>%{{customdata[5]:.1f}}</b><br>"
         f"{t('检验数', 'Inspected')}  %{{customdata[6]:,.0f}}　 {t('疵点', 'Defects')}  %{{customdata[7]:,.0f}}"
         "<extra></extra>"
     )
     fig.update_traces(
         textposition="top center",
         textfont=dict(size=13, color="#344054"),
-        marker=dict(opacity=0.86, line=dict(color="#ffffff", width=1.4)),
+        marker=dict(size=18, opacity=0.86, line=dict(color="#ffffff", width=1.4)),
         hovertemplate=hover_template,
         cliponaxis=False,
     )
@@ -7858,7 +7923,7 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         st.info(t("当前日期范围没有 CC 趋势数据。", "No CC trend data exists in the current date range."))
         return
     options = sorted(source["product_code"].dropna().astype(str).unique().tolist())
-    default_ccs = pareto_risk_cc_codes(products)
+    default_ccs = [value for value in pareto_risk_cc_codes(products) if value in options]
     selected_ccs = render_cc_search_form(
         options,
         default_ccs,
@@ -7884,10 +7949,16 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
     if trend.empty:
         st.info(t("当前日期范围没有所选 CC 的趋势数据。", "No trend data for the selected CCs in the current date range."))
         return
-    st.markdown(
-        f"<span class='zx-pareto-chip'>{t('当前显示', 'Showing')} · {len(selected_ccs)} {t('个 CC', 'CCs')}</span>",
-        unsafe_allow_html=True,
+    follows_pareto_default = selected_ccs == default_ccs
+    trend_chip = (
+        t(
+            f"默认 Top 20% Pareto · {len(selected_ccs)} 个 CC",
+            f"Default Top 20% Pareto · {len(selected_ccs)} CCs",
+        )
+        if follows_pareto_default
+        else t(f"当前自选 · {len(selected_ccs)} 个 CC", f"Custom Selection · {len(selected_ccs)} CCs")
     )
+    st.markdown(f"<span class='zx-pareto-chip'>{trend_chip}</span>", unsafe_allow_html=True)
     fig = px.line(
         trend,
         x="trend_week",
@@ -8198,14 +8269,19 @@ def render_process_risk_chart(processes: pd.DataFrame, source_label: str):
     )
 
 
-def compute_zx_cc_process_summary(finished_df: pd.DataFrame, risk_settings: dict) -> pd.DataFrame:
+def compute_zx_cc_process_summary(
+    finished_df: pd.DataFrame,
+    risk_settings: dict,
+    by_cc: bool = True,
+) -> pd.DataFrame:
     if finished_df.empty:
         return pd.DataFrame()
+    group_columns = ["factory_code", "factory_name", "supplier"]
+    if by_cc:
+        group_columns.append("product_code")
+    group_columns.append("process")
     summary = (
-        finished_df.groupby(
-            ["factory_code", "factory_name", "supplier", "product_code", "process"],
-            as_index=False,
-        )
+        finished_df.groupby(group_columns, as_index=False)
         .agg(
             qty_inspected=("qty_inspected", "sum"),
             defect_qty=("defect_qty", "sum"),
@@ -8229,9 +8305,16 @@ def compute_zx_cc_process_summary(finished_df: pd.DataFrame, risk_settings: dict
         axis=1,
     )
     summary["risk_level"] = summary["risk_score"].map(risk_level)
-    top_defects = compute_top_defects(finished_df, ["factory_code", "product_code", "process"])
-    summary = summary.merge(top_defects, on=["factory_code", "product_code", "process"], how="left")
-    summary["cc_process_view"] = summary["product_code"].astype(str) + " / " + summary["process"].astype(str)
+    top_defect_keys = ["factory_code"] + (["product_code"] if by_cc else []) + ["process"]
+    top_defects = compute_top_defects(finished_df, top_defect_keys)
+    summary = summary.merge(top_defects, on=top_defect_keys, how="left")
+    if by_cc:
+        summary["scope_label"] = summary["product_code"].astype(str)
+        summary["cc_process_view"] = summary["product_code"].astype(str) + " / " + summary["process"].astype(str)
+    else:
+        summary["product_code"] = ""
+        summary["scope_label"] = summary["factory_name"].astype(str)
+        summary["cc_process_view"] = summary["process"].astype(str)
     return summary.sort_values("risk_score", ascending=False)
 
 
@@ -8241,13 +8324,27 @@ def render_zx_process_risk_by_cc(
     risk_settings: dict,
 ) -> None:
     benchmark_pct = float(settings_for_factory(risk_settings, "ZX").get("process_benchmark_pct", 5.0))
+    global_cc = str(st.session_state.get(GLOBAL_CC_FILTER_STATE_KEY, ALL_FILTER_VALUE)).strip()
+    selected_cc = "" if global_cc == ALL_FILTER_VALUE else normalize_decathlon_cc(global_cc)
+    by_cc = bool(selected_cc)
+    process_source = finished_df.copy()
+    if by_cc:
+        process_source = process_source[
+            process_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).eq(selected_cc)
+        ].copy()
     example_source = finished_df[finished_df.get("qty_inspected", pd.Series(0, index=finished_df.index)).gt(0)].copy()
-    example_view = compute_zx_cc_process_summary(example_source, risk_settings).head(1)
+    if by_cc:
+        example_source = example_source[
+            example_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).eq(selected_cc)
+        ].copy()
+    example_view = compute_zx_cc_process_summary(example_source, risk_settings, by_cc=by_cc).head(1)
+    scope_unit_cn = "该 CC × 工序" if by_cc else "该工厂 × 工序"
+    scope_unit_en = "the selected CC x process" if by_cc else "the factory x process"
     formula_markdown = t(
         f"""
 **公式**
 
-1. 原始工序不良率 = 该 CC × 工序的疵点数 ÷ 检验数。
+1. 原始工序不良率 = {scope_unit_cn}的疵点数 ÷ 检验数。
 2. 收缩后不良率 = `(疵点数 + {benchmark_pct:.1f}% × {SAMPLE_PSEUDO_COUNT}) ÷ (检验数 + {SAMPLE_PSEUDO_COUNT})`。这一步给小样本加入统一先验，避免少量检验因 1 个疵点直接冲到极高风险。
 3. 风险分：收缩后不良率达到 {benchmark_pct:.1f}% 时为 50 分；超过后按区间继续上升，在 {benchmark_pct + 8:.1f}% 时达到 100 分；最终限制在 0–100。
 4. 页面风险等级使用固定阈值：低 `<35`，中 `35–54.9`，高 `55–74.9`，严重 `≥75`。
@@ -8255,32 +8352,21 @@ def render_zx_process_risk_by_cc(
         f"""
 **Formula**
 
-1. Raw process defect rate = defects / inspected quantity for each CC x process.
+1. Raw process defect rate = defects / inspected quantity for {scope_unit_en}.
 2. Shrunk rate = `(defects + {benchmark_pct:.1f}% x {SAMPLE_PSEUDO_COUNT}) / (inspected + {SAMPLE_PSEUDO_COUNT})`. The common prior prevents a tiny sample with one defect from jumping directly to extreme risk.
 3. Risk score: {benchmark_pct:.1f}% maps to 50; the score rises through the next interval and reaches 100 at {benchmark_pct + 8:.1f}%; the final value is capped at 0-100.
 4. Fixed page levels: Low `<35`, Medium `35-54.9`, High `55-74.9`, Critical `>=75`.
 """,
     )
-    options = sorted(
-        value
-        for value in finished_df.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique()
-        if value and value.lower() not in {"nan", "none"}
-    )
-    defaults = pareto_risk_cc_codes(products)
     with st.container(key="zx_process_toolbar"):
         filter_col, info_col = st.columns([0.88, 0.12], vertical_alignment="top")
         with filter_col:
-            selected_ccs = render_cc_search_form(
-                options,
-                defaults,
-                state_key=f"zx_process_cc_selection_{language_query_code()}",
-                form_key=f"zx_process_cc_form_{language_query_code()}",
-                container_key="zx_process_cc_filter",
-                title="",
-                note="",
-                show_header=False,
-                hide_input_label=True,
+            scope_chip = (
+                t(f"CC 范围 · {selected_cc}", f"CC Scope · {selected_cc}")
+                if by_cc
+                else t("工厂整体 · 全部 CC", "Factory Overall · All CCs")
             )
+            st.markdown(f"<span class='zx-pareto-chip'>{scope_chip}</span>", unsafe_allow_html=True)
         with info_col:
             with st.popover(t("说明", "Info"), use_container_width=True):
                 st.markdown(formula_markdown)
@@ -8291,15 +8377,11 @@ def render_zx_process_risk_by_cc(
                     )
                     st.info(
                         t(
-                            f"示例：CC {example.get('product_code')} / {example.get('process')}：{example.get('defect_qty', 0):,.0f} 疵点 ÷ {example.get('qty_inspected', 0):,.0f} 检验；收缩后不良率 {shrunk:.2%}，工序风险分 {example.get('risk_score', 0):.1f}（{risk_level_text(example.get('risk_level'))}）。",
-                            f"Example: CC {example.get('product_code')} / {example.get('process')}: {example.get('defect_qty', 0):,.0f} defects / {example.get('qty_inspected', 0):,.0f} inspected; shrunk rate {shrunk:.2%}, process risk {example.get('risk_score', 0):.1f} ({risk_level_text(example.get('risk_level'))}).",
+                            f"示例：{('CC ' + selected_cc) if by_cc else '工厂整体'} / {example.get('process')}：{example.get('defect_qty', 0):,.0f} 疵点 ÷ {example.get('qty_inspected', 0):,.0f} 检验；收缩后不良率 {shrunk:.2%}，工序风险分 {example.get('risk_score', 0):.1f}（{risk_level_text(example.get('risk_level'))}）。",
+                            f"Example: {('CC ' + selected_cc) if by_cc else 'factory overall'} / {example.get('process')}: {example.get('defect_qty', 0):,.0f} defects / {example.get('qty_inspected', 0):,.0f} inspected; shrunk rate {shrunk:.2%}, process risk {example.get('risk_score', 0):.1f} ({risk_level_text(example.get('risk_level'))}).",
                         )
                     )
-    if not selected_ccs:
-        st.info(t("请至少选择一个 CC。", "Select at least one CC."))
-        return
-    filtered = finished_df[finished_df["product_code"].astype(str).isin(selected_ccs)].copy()
-    process_view = compute_zx_cc_process_summary(filtered, risk_settings)
+    process_view = compute_zx_cc_process_summary(process_source, risk_settings, by_cc=by_cc)
     if process_view.empty:
         st.info(t("当前筛选下没有可计算的工序风险。", "No process risk can be calculated for the current selection."))
         return
@@ -8337,6 +8419,7 @@ def render_zx_process_risk_by_cc(
                 customdata=np.column_stack(
                     [
                         pareto_view["product_code"],
+                        pareto_view["scope_label"],
                         pareto_view["process"],
                         pareto_view["defect_rate"],
                         pareto_view["qty_inspected"],
@@ -8344,11 +8427,11 @@ def render_zx_process_risk_by_cc(
                     ]
                 ),
                 hovertemplate=(
-                    "<b>CC %{customdata[0]} / %{customdata[1]}</b><br>"
+                    f"<b>{t('CC', 'CC') if by_cc else t('工厂', 'Factory')} %{{customdata[1]}} / %{{customdata[2]}}</b><br>"
                     + t("疵点数", "Defects") + " %{y:,.0f}<br>"
-                    + t("原始不良率", "Raw defect rate") + " %{customdata[2]:.2%}<br>"
-                    + t("检验数", "Inspected") + " %{customdata[3]:,.0f}<br>"
-                    + t("主要疵点", "Top defect") + " %{customdata[4]}<extra></extra>"
+                    + t("原始不良率", "Raw defect rate") + " %{customdata[3]:.2%}<br>"
+                    + t("检验数", "Inspected") + " %{customdata[4]:,.0f}<br>"
+                    + t("主要疵点", "Top defect") + " %{customdata[5]}<extra></extra>"
                 ),
             )
         )
@@ -8368,7 +8451,7 @@ def render_zx_process_risk_by_cc(
         fig.update_layout(
             yaxis=dict(title=None),
             yaxis2=dict(title=None, overlaying="y", side="right", tickformat=".0%", range=[0, 1.05]),
-            xaxis=dict(title="CC / " + t("工序", "Process"), tickangle=-28),
+            xaxis=dict(title=("CC / " if by_cc else "") + t("工序", "Process"), tickangle=-28),
             showlegend=False,
             margin=dict(t=34),
         )
@@ -9724,6 +9807,366 @@ def render_zx_customer_360(voice_df: pd.DataFrame, finished_df: pd.DataFrame) ->
             plot_chart(fig, 420)
 
 
+def render_zx_customer_score_nqc(voice_df: pd.DataFrame) -> None:
+    """Analyze customer rating exposure and NQC loss at CC or mapped Model grain."""
+    source_label = (
+        "TU database/ZX Database/Decathlon Customer data/"
+        "1 - Export (CC) - Compare Hierarchy [All KPIs].csv + "
+        "1 - Export (Model) - Compare Hierarchy [All KPIs] (1).csv"
+    )
+    all_customer = load_customer_voice(
+        DATA_SCOPE_CACHE_VERSION,
+        ("ZX",),
+    )
+    if all_customer.empty:
+        st.info(t("当前没有客户评分或 NQC 数据。", "No customer rating or NQC data is available."))
+        return
+    all_customer = all_customer[
+        all_customer.get("voice_source", pd.Series("", index=all_customer.index)).eq("YTD Compare")
+    ].copy()
+    current_scope = voice_df[
+        voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("YTD Compare")
+    ].copy() if not voice_df.empty else pd.DataFrame()
+
+    scope_ccs = set(
+        current_scope.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip()
+    )
+    scope_ccs.discard("")
+    scope_models = set(
+        current_scope.loc[
+            current_scope.get("customer_grain", pd.Series("CC", index=current_scope.index)).eq("Model"),
+            "model_code",
+        ].fillna("").astype(str).str.strip()
+    ) if "model_code" in current_scope.columns else set()
+    scope_models.discard("")
+
+    grain_labels = {
+        "CC": t("CC 总览", "CC Overview"),
+        "Model": t("Model 下钻", "Model Drill-down"),
+    }
+    grain = st.segmented_control(
+        t("分析层级", "Analysis Grain"),
+        list(grain_labels),
+        default="CC",
+        format_func=lambda value: grain_labels[value],
+        key=f"zx_customer_score_nqc_grain_{language_query_code()}",
+    )
+    customer = all_customer[
+        all_customer.get("customer_grain", pd.Series("CC", index=all_customer.index)).eq(grain)
+    ].copy()
+    if scope_ccs:
+        customer = customer[
+            customer["product_code"].fillna("").astype(str).str.strip().isin(scope_ccs)
+        ].copy()
+    if grain == "Model" and scope_models:
+        customer = customer[
+            customer["model_code"].fillna("").astype(str).str.strip().isin(scope_models)
+        ].copy()
+    if customer.empty:
+        st.info(
+            t(
+                "当前筛选范围没有可映射的客户评分或 NQC 数据。",
+                "No mapped customer rating or NQC data is available in the current scope.",
+            )
+        )
+        return
+
+    for column in [
+        "avg_score_now",
+        "avg_score_prev",
+        "reviews_now",
+        "reviews_prev",
+        "nqc_now",
+        "nqc_prev",
+        "returned_now",
+        "rpm_now",
+    ]:
+        customer[column] = pd.to_numeric(customer.get(column), errors="coerce")
+    customer["score_change"] = customer["avg_score_now"] - customer["avg_score_prev"]
+    customer["nqc_change"] = customer["nqc_now"] - customer["nqc_prev"]
+    customer["item_code"] = np.where(
+        grain == "Model",
+        customer["model_code"].fillna("").astype(str),
+        customer["product_code"].fillna("").astype(str),
+    )
+    customer["product_name_display"] = customer["product_name"].fillna("").astype(str).str.replace(
+        r"^\d+\s*", "", regex=True
+    )
+
+    review_weight = customer["reviews_now"].fillna(0).clip(lower=0)
+    valid_rating = customer["avg_score_now"].notna() & review_weight.gt(0)
+    weighted_score = (
+        float((customer.loc[valid_rating, "avg_score_now"] * review_weight[valid_rating]).sum() / review_weight[valid_rating].sum())
+        if valid_rating.any() and review_weight[valid_rating].sum() > 0
+        else np.nan
+    )
+    low_rating_count = int((customer["avg_score_now"].lt(4.5) & review_weight.gt(0)).sum())
+    total_nqc = float(customer["nqc_now"].fillna(0).clip(lower=0).sum())
+    top_loss = customer.sort_values("nqc_now", ascending=False, na_position="last").iloc[0]
+    top_loss_share = float(top_loss.get("nqc_now", 0) / total_nqc) if total_nqc > 0 else np.nan
+    render_kpi_cards(
+        [
+            {
+                "label": t("评价量加权评分", "Review-Weighted Score"),
+                "value": f"{weighted_score:.2f}" if pd.notna(weighted_score) else "N/A",
+                "note": t(f"基于 {review_weight.sum():,.0f} 条评价", f"Based on {review_weight.sum():,.0f} reviews"),
+                "level": "high" if pd.notna(weighted_score) and weighted_score < 4.5 else "medium" if pd.notna(weighted_score) and weighted_score < 4.7 else "low",
+            },
+            {
+                "label": t("评分低于 4.5", "Score Below 4.5"),
+                "value": str(low_rating_count),
+                "note": grain_labels[grain],
+                "level": "high" if low_rating_count else "low",
+            },
+            {
+                "label": t("NQC 退货损失", "NQC Return Loss"),
+                "value": f"€{compact_num(total_nqc)}",
+                "note": t("当前 N0 范围", "Current N0 scope"),
+                "level": "medium",
+            },
+            {
+                "label": t("最大损失款", "Largest Loss Item"),
+                "value": str(top_loss.get("item_code", "-")),
+                "note": t(
+                    f"€{top_loss.get('nqc_now', 0):,.0f} · 占 {top_loss_share:.1%}" if pd.notna(top_loss_share) else "无损失金额",
+                    f"€{top_loss.get('nqc_now', 0):,.0f} · {top_loss_share:.1%} of total" if pd.notna(top_loss_share) else "No loss amount",
+                ),
+                "level": "high" if pd.notna(top_loss_share) and top_loss_share >= 0.30 else "medium",
+            },
+        ]
+    )
+
+    st.markdown(f"**{t('客户评分：低评分 × 高评价量', 'Customer Rating: Low Score × High Review Volume')}**")
+    rating = customer[valid_rating].copy()
+    if rating.empty:
+        st.info(t("当前范围没有带评价量的客户评分。", "No customer score with review volume is available."))
+    else:
+        rating["rating_band"] = pd.cut(
+            rating["avg_score_now"],
+            bins=[-np.inf, 4.5, 4.7, np.inf],
+            labels=[t("优先关注", "Priority"), t("观察", "Watch"), t("稳定", "Healthy")],
+            right=False,
+        ).astype(str)
+        rating["rating_priority"] = (4.7 - rating["avg_score_now"]).clip(lower=0) * np.sqrt(
+            rating["reviews_now"].clip(lower=0)
+        )
+        label_index = rating["rating_priority"].nlargest(min(6, len(rating))).index
+        rating["item_text"] = ""
+        rating.loc[label_index, "item_text"] = rating.loc[label_index, "item_code"]
+        fig = px.scatter(
+            rating,
+            x="avg_score_now",
+            y="reviews_now",
+            color="rating_band",
+            text="item_text",
+            custom_data=["product_code"],
+            hover_data={
+                "item_code": True,
+                "product_name_display": True,
+                "avg_score_prev": ":.2f",
+                "score_change": ":+.2f",
+                "nqc_now": ":,.0f",
+                "rpm_now": ":,.0f",
+                "rating_priority": False,
+                "item_text": False,
+            },
+            labels={
+                "avg_score_now": t("当前平均评分", "Current Average Score"),
+                "reviews_now": t("当前评价量", "Current Review Volume"),
+                "rating_band": t("评分状态", "Rating Status"),
+                "item_code": t("CC / Model", "CC / Model"),
+                "product_name_display": t("产品", "Product"),
+                "avg_score_prev": t("上期评分", "Previous Score"),
+                "score_change": t("评分变化（分）", "Score Change (pts)"),
+                "nqc_now": t("NQC 损失（欧元）", "NQC Loss (EUR)"),
+                "rpm_now": "RPM",
+            },
+            color_discrete_map={
+                t("优先关注", "Priority"): "#c01048",
+                t("观察", "Watch"): "#d99a00",
+                t("稳定", "Healthy"): "#168a5b",
+            },
+        )
+        fig.update_traces(
+            marker=dict(size=14, opacity=0.84, line=dict(color="#ffffff", width=1.2)),
+            textposition="top center",
+        )
+        score_min = max(0.0, float(rating["avg_score_now"].min()) - 0.08)
+        fig.update_xaxes(range=[min(score_min, 4.42), 5.02])
+        fig.add_vline(x=4.5, line_dash="dash", line_color="#c01048", opacity=0.55)
+        fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=0.01,
+            y=0.98,
+            text=t("左上：低评分且评价量大，优先复盘", "Upper-left: low score with high review volume"),
+            showarrow=False,
+            font=dict(size=13, color="#c01048"),
+            bgcolor="rgba(255,255,255,0.75)",
+        )
+        plot_chart(fig, 470, key=f"zx_customer_rating_{grain.lower()}", cc_customdata_index=0)
+        st.caption(
+            t(
+                "平均评分必须结合评价量阅读；虚线 4.5 是当前看板的低评分关注线，评分变化按 N0 - N-1 直接计算。",
+                "Read average score together with review volume; the 4.5 dashed line is the dashboard's low-score threshold, and score change is calculated as N0 minus N-1.",
+            )
+        )
+
+    st.markdown(f"**{t('NQC 退货损失 Pareto', 'NQC Return-Loss Pareto')}**")
+    loss = customer[customer["nqc_now"].fillna(0).gt(0)].copy().sort_values("nqc_now", ascending=False)
+    if loss.empty:
+        st.info(t("当前范围没有大于零的 NQC 损失。", "No positive NQC loss is available in the current scope."))
+    else:
+        loss["loss_share"] = loss["nqc_now"] / loss["nqc_now"].sum()
+        loss["cumulative_share"] = loss["loss_share"].cumsum()
+        pareto = loss.head(10).copy()
+        customdata = np.column_stack(
+            [
+                pareto["product_code"],
+                pareto["model_code"],
+                pareto["product_name_display"],
+                pareto["nqc_prev"],
+                pareto["nqc_change"],
+                pareto["loss_share"],
+                pareto["cumulative_share"],
+                pareto["returned_now"],
+                pareto["rpm_now"],
+            ]
+        )
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(
+                x=pareto["item_code"],
+                y=pareto["nqc_now"],
+                name=t("NQC 损失", "NQC Loss"),
+                marker_color="#3341c4",
+                text=pareto["nqc_now"].map(lambda value: f"€{value:,.0f}"),
+                textposition="outside",
+                customdata=customdata,
+                hovertemplate=(
+                    f"<b>%{{x}}</b><br>{t('产品', 'Product')}  %{{customdata[2]}}<br>"
+                    f"{t('NQC 当前', 'NQC Current')}  <b>€%{{y:,.0f}}</b><br>"
+                    f"{t('NQC 上期', 'NQC Previous')}  €%{{customdata[3]:,.0f}}<br>"
+                    f"{t('金额变化', 'Amount Change')}  €%{{customdata[4]:+,.0f}}<br>"
+                    f"{t('损失占比', 'Loss Share')}  %{{customdata[5]:.1%}}<br>"
+                    f"{t('退货数', 'Returns')}  %{{customdata[7]:,.0f}}　RPM  %{{customdata[8]:,.0f}}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=pareto["item_code"],
+                y=pareto["cumulative_share"],
+                name=t("累计损失占比", "Cumulative Loss Share"),
+                mode="lines+markers+text",
+                line=dict(color="#ef4444", width=3),
+                marker=dict(size=7),
+                text=pareto["cumulative_share"].map(lambda value: f"{value:.0%}"),
+                textposition="top center",
+                yaxis="y2",
+                customdata=customdata,
+                hovertemplate=f"<b>%{{x}}</b><br>{t('累计损失占比', 'Cumulative Loss Share')}  %{{y:.1%}}<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            xaxis=dict(
+                title="CC" if grain == "CC" else "Model",
+                type="category",
+                categoryorder="array",
+                categoryarray=pareto["item_code"].tolist(),
+            ),
+            yaxis=dict(title=t("NQC 损失（欧元）", "NQC Loss (EUR)"), rangemode="tozero"),
+            yaxis2=dict(
+                title=t("累计损失占比", "Cumulative Loss Share"),
+                overlaying="y",
+                side="right",
+                tickformat=".0%",
+                range=[0, 1.08],
+            ),
+            legend=dict(orientation="h", y=1.12, x=0),
+        )
+        fig.add_shape(
+            type="line",
+            xref="paper",
+            x0=0,
+            x1=1,
+            yref="y2",
+            y0=0.8,
+            y1=0.8,
+            line=dict(color="#d99a00", dash="dash", width=1.5),
+        )
+        plot_chart(fig, 500, key=f"zx_customer_nqc_{grain.lower()}", cc_customdata_index=0)
+        st.caption(
+            t(
+                "柱形按 NQC 欧元损失降序排列；折线按全部正损失项目计算累计贡献，虚线为 80%。",
+                "Bars rank NQC loss in EUR; the line uses all positive-loss items for cumulative contribution, with an 80% reference line.",
+            )
+        )
+
+    detail = customer.sort_values("nqc_now", ascending=False, na_position="last").copy()
+    detail["loss_share_pct"] = (
+        detail["nqc_now"].fillna(0).clip(lower=0) / total_nqc * 100 if total_nqc > 0 else 0
+    )
+    detail_columns = ["product_code", "product_name_display"]
+    if grain == "Model":
+        detail_columns.insert(0, "model_code")
+    detail_columns += [
+        "avg_score_now",
+        "avg_score_prev",
+        "score_change",
+        "reviews_now",
+        "nqc_now",
+        "nqc_prev",
+        "nqc_change",
+        "loss_share_pct",
+        "returned_now",
+        "rpm_now",
+    ]
+    detail = detail[detail_columns].rename(
+        columns={
+            "product_code": "CC",
+            "model_code": "Model",
+            "product_name_display": t("产品", "Product"),
+            "avg_score_now": t("当前评分", "Current Score"),
+            "avg_score_prev": t("上期评分", "Previous Score"),
+            "score_change": t("评分变化（分）", "Score Change (pts)"),
+            "reviews_now": t("评价量", "Reviews"),
+            "nqc_now": t("NQC 当前（€）", "NQC Current (€)"),
+            "nqc_prev": t("NQC 上期（€）", "NQC Previous (€)"),
+            "nqc_change": t("NQC 变化（€）", "NQC Change (€)"),
+            "loss_share_pct": t("损失占比", "Loss Share"),
+            "returned_now": t("退货数", "Returns"),
+            "rpm_now": "RPM",
+        }
+    )
+    with st.expander(t("客户评分与 NQC 明细", "Customer Rating and NQC Detail"), expanded=True):
+        dataframe_with_format(
+            detail,
+            column_config={
+                t("当前评分", "Current Score"): st.column_config.NumberColumn(format="%.2f"),
+                t("上期评分", "Previous Score"): st.column_config.NumberColumn(format="%.2f"),
+                t("评分变化（分）", "Score Change (pts)"): st.column_config.NumberColumn(format="%+.2f"),
+                t("评价量", "Reviews"): st.column_config.NumberColumn(format="%,.0f"),
+                t("NQC 当前（€）", "NQC Current (€)"): st.column_config.NumberColumn(format="€%,.0f"),
+                t("NQC 上期（€）", "NQC Previous (€)"): st.column_config.NumberColumn(format="€%,.0f"),
+                t("NQC 变化（€）", "NQC Change (€)"): st.column_config.NumberColumn(format="€%+,.0f"),
+                t("损失占比", "Loss Share"): st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+                t("退货数", "Returns"): st.column_config.NumberColumn(format="%,.0f"),
+                "RPM": st.column_config.NumberColumn(format="%,.0f"),
+            },
+            height=440,
+        )
+    if grain == "Model":
+        st.caption(
+            t(
+                "Model 视图仅包含能通过当前生产数据的 Model→CC 关系可靠映射的型号；CC 总览仍以 CC 文件为权威金额。",
+                "The Model view includes only Models reliably mapped through the current production Model-to-CC bridge; the CC overview remains authoritative for CC totals.",
+            )
+        )
+    st.caption(source_label)
+
+
 def render_community_cockpit(
     scope_key: str,
     finished_df: pd.DataFrame,
@@ -9737,6 +10180,7 @@ def render_community_cockpit(
     start_date: dt.date | None = None,
     end_date: dt.date | None = None,
     jdy_owners: list[str] | None = None,
+    cluster_product_df: pd.DataFrame | None = None,
 ):
     source_label = community_source_label(scope_key)
     total_qty = finished_df["qty_inspected"].sum()
@@ -9840,7 +10284,8 @@ def render_community_cockpit(
             "TU database/ZX Database/Decathlon Customer data/ZX intervoice.xlsx"
         )
         zx_risk_source = f"{zx_qc_source} + {zx_client_source}"
-        render_zx_high_risk_cluster(product_df, risk_settings, zx_risk_source, "zx")
+        zx_cluster_products = cluster_product_df if cluster_product_df is not None else product_df
+        render_zx_high_risk_cluster(zx_cluster_products, risk_settings, zx_risk_source, "zx")
 
         render_chart_heading(
             "Top CC 帕累托",
@@ -9889,6 +10334,7 @@ def render_community_cockpit(
                 "process": t("工序", "Process"),
                 "worker": t("工人", "Worker"),
                 "material": t("原辅料", "Material"),
+                "customer": t("客户评分 / NQC", "Customer Rating / NQC"),
                 "ai": t("AI 总结报告", "AI Summary Report"),
             }
             selected_analysis = st.segmented_control(
@@ -9908,6 +10354,9 @@ def render_community_cockpit(
             elif selected_analysis == "material":
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
+            elif selected_analysis == "customer":
+                st.markdown(f"**{t('客户评分与退货损失', 'Customer Rating and Return Loss')}**")
+                render_zx_customer_score_nqc(voice_df)
             elif selected_analysis == "ai":
                 st.markdown(f"**{t('AI 质量结论报告', 'AI Quality Conclusion Report')}**")
                 report_language = st.segmented_control(
@@ -11324,10 +11773,12 @@ if active_scope_key == "ZX" and not voice.empty:
         # more granular Model rows.
         voice = voice[customer_grain.ne("Model")].copy()
     else:
-        selected_model_rows = customer_grain.eq("Model") & voice.get(
+        selected_model_match = voice.get(
             "model_code", pd.Series("", index=voice.index)
         ).fillna("").astype(str).str.strip().eq(selected_model)
-        voice = voice[selected_model_rows | customer_grain.eq("IV")].copy()
+        selected_model_rows = customer_grain.eq("Model") & selected_model_match
+        selected_iv_rows = customer_grain.eq("IV") & selected_model_match
+        voice = voice[selected_model_rows | selected_iv_rows].copy()
 
 incoming = (
     incoming_all[
@@ -11347,6 +11798,11 @@ if finished.empty:
 
 supplier_summary = compute_supplier_summary(finished, voice, incoming, risk_settings)
 product_summary = compute_product_summary(finished, voice, risk_settings)
+cluster_product_summary = (
+    compute_product_summary(finished, voice, risk_settings, include_client_only=True)
+    if active_scope_key == "ZX"
+    else product_summary
+)
 process_summary = compute_process_summary(finished, risk_settings)
 worker_clusters = compute_worker_clusters(finished)
 defect_pareto = compute_pareto(finished[finished["defect_qty"] > 0], "defect_type", "defect_qty")
@@ -11437,6 +11893,7 @@ if active_scope_key != "GENERAL":
             start_date=start_date,
             end_date=end_date,
             jdy_owners=selected_jdy_owners,
+            cluster_product_df=cluster_product_summary,
         )
     st.stop()
 
