@@ -92,15 +92,43 @@ ENGLISH_DISPLAY_EXACT = {
     "网棉漏车": "Missed stitching on mesh padding",
     "线头": "Loose threads",
     "扭指": "Twisted finger section",
+    "内里扭指": "Twisted lining finger section",
     "明线不匀": "Uneven topstitching",
     "线迹不良": "Poor stitching",
     "网布抽丝": "Mesh fabric snagging",
     "死皱": "Permanent creasing",
     "吃丝不匀": "Uneven gathering",
+    "复棉线外露": "Exposed laminated-padding thread",
+    "千鸟未对齐": "Chevron stitching misalignment",
+    "边町露町尖": "Exposed gusset edge tip",
+    "针密度": "Incorrect stitch density",
+    "指根堆积": "Finger-base bunching",
+    "明线距边不匀": "Uneven topstitch edge distance",
+    "袖口宽窄不匀": "Uneven cuff width",
+    "漏包": "Missed binding",
+    "倒针不良": "Poor backstitching",
+    "织标倾斜": "Skewed woven label",
+    "外连倒回针未打满": "Incomplete outer-seam backstitch",
+    "外连指外壳缝份4mm+1mm不标准": "Outer finger-shell seam allowance out of standard (4 mm + 1 mm)",
+    "外连指条长度7-12mm不标准": "Outer finger-strip length out of standard (7-12 mm)",
+    "净茬不良": "Poor raw-edge trimming",
+    "脏污": "Staining",
+    "袖口拉绳斜": "Skewed cuff drawcord",
+    "町条露町尖": "Exposed gusset-strip tip",
+    "重线不良": "Poor double stitching",
+    "里连防水袋车缝超过内里的一半": "Waterproof-bag seam exceeds half of lining",
+    "双明线距边不匀": "Uneven double-topstitch edge distance",
+    "修剪不齐": "Uneven trimming",
+    "针洞": "Needle hole",
+    "皮残": "Leather blemish",
+    "破洞": "Hole",
+    "打结位置不良": "Incorrect knot position",
     "内里": "Lining",
     "町缝": "Gusset stitching",
     "大指": "Thumb",
     "袖口": "Cuff",
+    "外袖口": "Cuff",
+    "内袖口": "Cuff",
     "手背": "Back of hand",
 }
 
@@ -182,11 +210,10 @@ def english_display_text(value: object) -> str:
     for chinese, english in sorted(ENGLISH_DISPLAY_TOKENS.items(), key=lambda item: len(item[0]), reverse=True):
         text = text.replace(chinese, english)
 
-    def fallback(match: re.Match[str]) -> str:
-        digest = hashlib.sha1(match.group(0).encode("utf-8")).hexdigest()[:6].upper()
-        return f"Source item {digest}"
-
-    return re.sub(r"[\u3400-\u9fff]+", fallback, text)
+    # Keep an unmapped source value traceable instead of inventing an opaque
+    # ``Source item + hash`` label. Current ZX defect and process values are
+    # mapped explicitly above; a future unknown value remains visible verbatim.
+    return text
 
 
 def localize_display_value(value: object) -> object:
@@ -1866,6 +1893,19 @@ def extract_product_key(value: object) -> str:
     return match.group(0) if match else ""
 
 
+def normalize_decathlon_cc(value: object) -> str:
+    text = "" if value is None or pd.isna(value) else str(value).strip()
+    text = re.sub(r"\.0$", "", text)
+    return text if re.fullmatch(r"\d{6}", text) else ""
+
+
+def extract_decathlon_model(value: object) -> str:
+    text = "" if value is None or pd.isna(value) else str(value).strip()
+    text = re.sub(r"\.0$", "", text)
+    match = re.match(r"^(\d{7})(?!\d)", text)
+    return match.group(1) if match else ""
+
+
 def safe_rate(numerator: pd.Series | float, denominator: pd.Series | float) -> pd.Series | float:
     if isinstance(denominator, pd.Series):
         return np.where(denominator > 0, numerator / denominator, 0)
@@ -2500,9 +2540,15 @@ def normalize_finished_qc(canonical: pd.DataFrame) -> pd.DataFrame:
     )
     canonical["product_key"] = canonical["product_code"].map(extract_product_key)
     canonical["product_label"] = canonical["product_label"].fillna("").astype(str)
-    canonical["process"] = canonical["process"].replace("", np.nan).fillna("未记录")
+    canonical["process"] = (
+        canonical["process"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .replace({"外袖口": "袖口", "内袖口": "袖口", "": "未记录"})
+    )
     canonical["worker_team"] = canonical["worker_team"].replace("", np.nan).fillna("未记录")
-    canonical["defect_type"] = canonical["defect_type"].replace("", np.nan)
+    canonical["defect_type"] = canonical["defect_type"].fillna("").astype(str).str.strip().replace("", np.nan)
     canonical["defect_type"] = np.where(
         canonical["defect_qty"] > 0,
         canonical["defect_type"].fillna("未知疵点"),
@@ -3103,6 +3149,27 @@ def load_zx_customer_period_metrics(
 
 
 @st.cache_data(show_spinner=False)
+def load_zx_production_model_cc_map(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> dict[str, str]:
+    """Return unambiguous 7-digit Model -> 6-digit CC links from ZX production data."""
+    _ = cache_version
+    path = ROOT / FACTORIES["ZX"]["finished"]
+    if not path.exists():
+        return {}
+    raw = pd.read_excel(path, usecols=["款式", "颜色"], engine="openpyxl")
+    links = pd.DataFrame(
+        {
+            "cc": raw["款式"].map(normalize_decathlon_cc),
+            "model": raw["颜色"].map(extract_decathlon_model),
+        }
+    )
+    links = links[links["cc"].ne("") & links["model"].ne("")].drop_duplicates()
+    if links.empty:
+        return {}
+    unique_links = links.groupby("model")["cc"].agg(lambda values: sorted(set(values)))
+    return {model: values[0] for model, values in unique_links.items() if len(values) == 1}
+
+
+@st.cache_data(show_spinner=False)
 def load_customer_voice(
     cache_version: int = DATA_SCOPE_CACHE_VERSION,
     factory_codes: tuple[str, ...] | None = None,
@@ -3222,6 +3289,16 @@ def load_customer_voice(
                 "feedback_date": pd.to_datetime(raw_intern.get(date_column, pd.Series(pd.NaT, index=raw_intern.index)), errors="coerce"),
             }
         )
+        intern["model_code"] = intern["model_code"].map(extract_decathlon_model)
+        if current_export:
+            # The current IV export contains Model but no CC. Link Model to CC
+            # through the production file instead of treating a 7-digit Model
+            # as a 6-digit CC.
+            intern["product_code"] = intern["model_code"].map(
+                load_zx_production_model_cc_map(cache_version)
+            ).fillna("")
+        else:
+            intern["product_code"] = intern["product_code"].map(normalize_decathlon_cc)
         fallback_case_id = pd.Series(intern.index.astype(str), index=intern.index)
         intern["case_id"] = intern["iv_no"].replace({"": np.nan, "nan": np.nan}).fillna(fallback_case_id)
         intern["file_name"] = intern["case_id"]
@@ -3319,6 +3396,10 @@ def load_customer_voice(
     result["product_code"] = (
         result["product_code"].fillna("").astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
     )
+    zx_rows = result["factory_code"].astype(str).eq("ZX")
+    result.loc[zx_rows, "product_code"] = result.loc[zx_rows, "product_code"].map(normalize_decathlon_cc)
+    if "model_code" in result.columns:
+        result.loc[zx_rows, "model_code"] = result.loc[zx_rows, "model_code"].map(extract_decathlon_model)
     result["product_key"] = result["product_code"].map(extract_product_key)
     return result
 
@@ -5610,10 +5691,13 @@ def compute_product_summary(finished: pd.DataFrame, voice: pd.DataFrame, risk_se
     elif cust.empty:
         product = qc.copy()
     else:
+        # Product analysis is production-led. Client-only CCs (for example a
+        # discontinued style that still has RPM history) must not become a
+        # dashboard product without a current production inspection record.
         product = qc.merge(
             cust,
             on=["factory_code", "factory_name", "supplier", "product_key"],
-            how="outer",
+            how="left",
         )
 
     product["product_code"] = product.get("product_code", pd.Series(index=product.index, dtype=object)).fillna(
@@ -6825,28 +6909,32 @@ def render_scope_data_map(
     scope_codes = DASHBOARD_SCOPES.get(scope_key, {}).get("factories", [])
     gap_matrix = build_data_gap_matrix(finished_df, voice_df, incoming_df, scope_codes)
     if scope_key == "ZX":
-        gap_matrix = gap_matrix.drop(
-            columns=[t("Machine / Torque", "Machine / Torque"), "Rework"],
-            errors="ignore",
+        community_col = t("Community", "Community")
+        supplier_col = t("Supplier", "Supplier")
+        iqc_col = "IQC"
+        pqc_col = "PQC"
+        rpm_col = "RPM"
+        iv_col = "Intern Voice"
+        api_col = t("简道云 API", "API connection")
+        gap_matrix = gap_matrix.rename(
+            columns={
+                t("IQC / Material", "IQC / Material"): iqc_col,
+                t("QC / FQC / PQC", "QC / FQC / PQC"): pqc_col,
+                t("RPM / YTD", "RPM / YTD"): rpm_col,
+            }
         )
-        jdy_cfg = JIANDAOYUN_SOURCES.get("ZX_FQC", {})
+        ordered_columns = [community_col, supplier_col, iqc_col, pqc_col, rpm_col, iv_col, api_col]
+        gap_matrix = gap_matrix[[column for column in ordered_columns if column in gap_matrix.columns]]
         access_row = {column: "-" for column in gap_matrix.columns}
-        access_row[t("Community", "Community")] = t("加载格式", "Load Format")
-        access_row[t("Supplier", "Supplier")] = t("当前方式", "Current")
-        for column in [
-            t("QC / FQC / PQC", "QC / FQC / PQC"),
-            t("RPM / YTD", "RPM / YTD"),
-            "Intern Voice",
-            t("IQC / Material", "IQC / Material"),
-            t("Worker / Team", "Worker / Team"),
-        ]:
+        access_row[community_col] = t("加载格式", "Load Format")
+        access_row[supplier_col] = t("当前方式", "Current")
+        for column in [iqc_col, pqc_col, rpm_col, iv_col]:
             if column in access_row:
                 access_row[column] = t("手动 Excel", "Manual Excel")
-        jdy_column = t("简道云 API", "API connection")
-        if jdy_column in access_row:
+        if api_col in access_row:
             # The snapshot is an implementation fallback, not a separate
             # business access method. The source is Jiandaoyun API.
-            access_row[jdy_column] = t("API", "API")
+            access_row[api_col] = "API"
         gap_matrix = pd.concat([gap_matrix, pd.DataFrame([access_row])], ignore_index=True)
     jdy_fqc = pd.DataFrame()
     panel_key = "zx_data_map_panel" if scope_key == "ZX" else f"{scope_key.lower()}_data_map_panel"
@@ -6892,6 +6980,19 @@ def render_zx_high_risk_cluster(
         "intern_voice_score",
     ]:
         view[column] = pd.to_numeric(view.get(column, np.nan), errors="coerce")
+    # The cluster is actionable only where current production and RPM can be
+    # matched. Intern Voice remains optional and is displayed as zero when no
+    # case exists for an otherwise eligible production CC.
+    view = view[(view["qty_inspected"] > 0) & view["rpm_now"].notna()].copy()
+    if view.empty:
+        st.info(
+            t(
+                "当前范围没有同时匹配生产检验与 RPM 的 CC。",
+                "No CCs in the current scope have both production inspection and matched RPM data.",
+            )
+        )
+        return
+    view["intern_voice_count"] = view["intern_voice_count"].fillna(0)
     cluster_factory_settings = settings_for_factory(risk_settings, "ZX")
     cluster_qc_benchmark = float(cluster_factory_settings.get("qc_benchmark_pct", 4.0))
     default_pseudo_count = int(cluster_factory_settings.get("sample_pseudo_count", SAMPLE_PSEUDO_COUNT))
@@ -7056,8 +7157,8 @@ def render_zx_high_risk_cluster(
     jdy_model_map: dict[str, str] = {}
     if not jdy_fqc.empty and {"cc", "model"}.issubset(jdy_fqc.columns):
         jdy_models = jdy_fqc[["cc", "model"]].copy()
-        jdy_models["cc"] = jdy_models["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-        jdy_models["model"] = jdy_models["model"].fillna("").astype(str).str.strip()
+        jdy_models["cc"] = jdy_models["cc"].map(normalize_decathlon_cc)
+        jdy_models["model"] = jdy_models["model"].map(extract_decathlon_model)
         jdy_models = jdy_models[jdy_models["cc"].ne("") & jdy_models["model"].ne("")]
         jdy_model_map = (
             jdy_models.groupby("cc")["model"]
@@ -7180,10 +7281,10 @@ def render_zx_high_risk_cluster(
         heading_content = (
             "识别哪些 CC 同时存在生产端质量风险和客户端风险。",
             "Identify CCs with combined production-side and client-side quality risk.",
-            "使用 K-means 将每个 CC 按两个风险维度聚成高 / 中 / 低风险组。",
-            "K-means groups each CC into high / medium / low risk by two risk dimensions.",
-            "生产端风险来自 QC 不良率；客户端风险来自 RPM 与 Intern Voice；综合风险用于排序和颜色判断。",
-            "Production risk comes from QC defect rate; client risk comes from RPM and Intern Voice; combined risk drives ranking and color.",
+            "只展示同时匹配生产检验与 RPM 的 CC，再使用 K-means 按两个风险维度分组。",
+            "Show only CCs matched to both production inspection and RPM, then use K-means to group them by two risk dimensions.",
+            "生产端风险来自 QC 不良率；客户端风险来自 RPM 与 Intern Voice；无 IV 案例时按 0 显示。",
+            "Production risk comes from QC defect rate; client risk comes from RPM and Intern Voice; IV displays zero when no case exists.",
         )
     else:
         heading_content = (
@@ -7821,7 +7922,7 @@ def render_defect_pareto(
         x="defect_qty",
         y="defect_type",
         orientation="h",
-        text=pareto["defect_qty"].round(0),
+        text=pareto["defect_qty"].map(lambda value: f"{value:,.0f}"),
         labels={"defect_qty": t("疵点数", "Defects"), "defect_type": t("疵点类型", "Defect Type")},
         color="focus_group" if focus_mode else None,
         color_discrete_map=(
@@ -7835,7 +7936,7 @@ def render_defect_pareto(
         color_discrete_sequence=None if focus_mode else ["#3341c4"],
     )
     fig.update_yaxes(autorange="reversed")
-    fig.update_traces(textposition="outside")
+    fig.update_traces(textposition="outside", texttemplate="%{text}")
     pareto_height = max(330, min(900, 120 + len(pareto) * 38)) if focus_mode else 330
     plot_chart(fig, pareto_height)
     if show_caption:
@@ -9701,7 +9802,7 @@ def render_community_cockpit(
                 width="stretch",
             )
             if selected_analysis == "process":
-                st.markdown(f"**{t('工序风险 Top', 'Process Risk Top')}**")
+                st.markdown(f"**{t('工序 Pareto', 'Process Pareto')}**")
                 render_zx_process_risk_by_cc(finished_df, product_df, risk_settings)
             elif selected_analysis == "worker":
                 st.markdown(f"**{t('工人技能分类', 'Worker Skill Classification')}**")
@@ -10888,7 +10989,9 @@ with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
     cc_options = sorted(
         value
         for value in cc_option_source["product_code"].fillna("").astype(str).str.strip().unique().tolist()
-        if value and value.lower() not in {"nan", "none"}
+        if value
+        and value.lower() not in {"nan", "none"}
+        and (active_scope_key != "ZX" or normalize_decathlon_cc(value))
     )
     cc_choices = [ALL_FILTER_VALUE, *cc_options]
     if st.session_state.get(GLOBAL_CC_FILTER_STATE_KEY) not in cc_choices:
@@ -10913,17 +11016,33 @@ with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
     model_values = set(
         value
         for value in model_voice_source.get("model_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip().unique().tolist()
-        if value and value.lower() not in {"nan", "none"}
+        if value and re.fullmatch(r"\d{7}", value)
     )
+    if active_scope_key == "ZX":
+        production_model_source = finished_all.copy()
+        if selected_suppliers:
+            production_model_source = production_model_source[
+                production_model_source["supplier"].astype(str).isin(selected_suppliers)
+            ]
+        if selected_cc != ALL_FILTER_VALUE:
+            production_model_source = production_model_source[
+                production_model_source["product_code"].fillna("").astype(str).map(normalize_decathlon_cc).eq(selected_cc)
+            ]
+        model_values.update(
+            value
+            for value in production_model_source["product_label"].map(extract_decathlon_model).unique().tolist()
+            if value
+        )
     jdy_model_source = sidebar_jdy_fqc.copy()
     if not jdy_model_source.empty and {"cc", "model"}.issubset(jdy_model_source.columns):
-        jdy_model_source["cc"] = jdy_model_source["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        jdy_model_source["cc"] = jdy_model_source["cc"].map(normalize_decathlon_cc)
+        jdy_model_source["model"] = jdy_model_source["model"].map(extract_decathlon_model)
         if selected_cc != ALL_FILTER_VALUE:
             jdy_model_source = jdy_model_source[jdy_model_source["cc"].eq(selected_cc)]
         model_values.update(
             value
             for value in jdy_model_source["model"].fillna("").astype(str).str.strip().unique().tolist()
-            if value and value.lower() not in {"nan", "none"}
+            if value
         )
     model_codes = sorted(model_values)
     model_choices = [ALL_FILTER_VALUE, *model_codes]
@@ -11038,6 +11157,15 @@ if selected_cc_filter:
         finished["product_code"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).eq(selected_cc_filter)
     ]
 if selected_model != ALL_FILTER_VALUE:
+    production_models = finished_all.get("product_label", pd.Series("", index=finished_all.index)).map(
+        extract_decathlon_model
+    )
+    model_ccs.update(
+        finished_all.loc[production_models.eq(selected_model), "product_code"]
+        .fillna("")
+        .astype(str)
+        .map(normalize_decathlon_cc)
+    )
     if not voice_all.empty and "model_code" in voice_all.columns:
         model_ccs.update(
         voice_all.loc[
@@ -11051,12 +11179,12 @@ if selected_model != ALL_FILTER_VALUE:
     if not sidebar_jdy_fqc.empty and {"cc", "model"}.issubset(sidebar_jdy_fqc.columns):
         model_ccs.update(
             sidebar_jdy_fqc.loc[
-                sidebar_jdy_fqc["model"].fillna("").astype(str).str.strip().eq(selected_model),
+                sidebar_jdy_fqc["model"].map(extract_decathlon_model).eq(selected_model),
                 "cc",
             ]
             .fillna("")
             .astype(str)
-            .str.replace(r"\.0$", "", regex=True)
+            .map(normalize_decathlon_cc)
         )
     model_ccs.discard("")
     if model_ccs:
