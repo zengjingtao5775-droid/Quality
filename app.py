@@ -7215,25 +7215,22 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
     current = coverage.iloc[-1]
     prior = coverage.iloc[-2] if len(coverage) > 1 else None
     shipped_po_qty = int(current["shipped_po_qty"])
-    factory_po_records = int(current["factory_fqc_po_records"])
     decathlon_po_records = int(current["decathlon_fqc_po_records"])
-    factory_inspection_share = factory_po_records / shipped_po_qty if shipped_po_qty else np.nan
+    # Factory FQC is a mandatory pre-shipment requirement for every shipped PO.
+    # This card communicates the required coverage, not source-record completeness.
+    factory_inspection_share = 1.0 if shipped_po_qty else np.nan
     fqc_sampling_share = decathlon_po_records / shipped_po_qty if shipped_po_qty else np.nan
     year = int(current["year"])
-    as_of_date = current["as_of_date"]
 
     if prior is not None:
         prior_year = int(prior["year"])
-        prior_factory = int(prior["factory_fqc_po_records"])
         prior_decathlon = int(prior["decathlon_fqc_po_records"])
         prior_shipped = int(prior["shipped_po_qty"])
-        factory_prior_note = f" · {prior_year} 同期 {prior_factory:,}/{prior_shipped:,}"
         decathlon_prior_note = f" · {prior_year} 同期 {prior_decathlon:,}/{prior_shipped:,}"
-        factory_prior_note_en = f" · {prior_year} comparable {prior_factory:,}/{prior_shipped:,}"
         decathlon_prior_note_en = f" · {prior_year} comparable {prior_decathlon:,}/{prior_shipped:,}"
     else:
-        factory_prior_note = decathlon_prior_note = ""
-        factory_prior_note_en = decathlon_prior_note_en = ""
+        decathlon_prior_note = ""
+        decathlon_prior_note_en = ""
 
     render_kpi_cards(
         [
@@ -7241,8 +7238,8 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
                 "label": t("工厂检验占比", "Factory Inspection Ratio"),
                 "value": pct(factory_inspection_share),
                 "note": t(
-                    f"{year} YTD：工厂 FQC PO记录 {factory_po_records:,} / 出货PO {shipped_po_qty:,}{factory_prior_note}",
-                    f"{year} YTD: factory FQC PO records {factory_po_records:,} / shipped POs {shipped_po_qty:,}{factory_prior_note_en}",
+                    f"理论要求：{year} YTD 每个出货PO均须完成工厂FQC",
+                    f"Required coverage: every shipped PO in {year} YTD must complete factory FQC",
                 ),
                 "level": "medium",
             },
@@ -7257,12 +7254,6 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
             },
         ],
         variant="coverage-grid",
-    )
-    st.caption(
-        t(
-            f"截至 {as_of_date}；迪卡侬口径仅包含 Wuhao、Daisy Yu、Eric Zeng。每条 FQC 记录按一个PO检验记录计数。",
-            f"As of {as_of_date}; Decathlon includes Wuhao, Daisy Yu, and Eric Zeng only. Each FQC record counts as one PO inspection record.",
-        )
     )
 
 
@@ -10522,17 +10513,17 @@ def render_community_cockpit(
                     "- **End of line RFT：** 产线末端检验的一次通过表现参考。\n"
                     "- **RPM（R12M）：** 最近 12 个月每百万销量对应的退货水平。\n"
                     "- **工厂售前 IV：** 销售前发现并归属工厂责任的问题数量。\n"
-                    "- **工厂检验占比：** 简道云工厂 FQC PO检验记录数 ÷ HUGSS ZX YTD出货PO数。\n"
+                    "- **工厂检验占比：** 工厂强制检验要求；每个出货PO均须完成工厂FQC，因此理论值为100%。\n"
                     "- **迪卡侬 FQC 抽检率：** Wuhao、Daisy Yu、Eric Zeng 的FQC PO检验记录数 ÷ HUGSS ZX YTD出货PO数。\n"
-                    "- **可比范围：** 两个比例均采用同一YTD截止日；一条FQC记录按一个PO检验记录计数。",
+                    "- **迪卡侬抽检口径：** 采用同一YTD截止日；一条FQC记录按一个PO检验记录计数。",
                     "- **Decathlon inspection pass rate:** First inspection results completed by Decathlon inspectors.\n"
                     "- **ZX factory self-inspection pass rate:** First self-inspection results completed by ZX factory inspectors.\n"
                     "- **End-of-line RFT:** A reference for first-pass performance at the end of the production line.\n"
                     "- **RPM (R12M):** Returns per million units sold over the latest 12 months.\n"
                     "- **Factory before-sale IV:** Factory-owned issues found before sale.\n"
-                    "- **Factory inspection share:** Jiandaoyun factory FQC PO inspection records divided by HUGSS ZX YTD shipped POs.\n"
+                    "- **Factory inspection share:** Mandatory factory requirement; every shipped PO must complete factory FQC, so the theoretical value is 100%.\n"
                     "- **Decathlon FQC sampling rate:** FQC PO inspection records by Wuhao, Daisy Yu, and Eric Zeng divided by HUGSS ZX YTD shipped POs.\n"
-                    "- **Comparable scope:** Both ratios use the same YTD cutoff; one FQC record counts as one PO inspection record.",
+                    "- **Decathlon sampling scope:** Uses the same YTD cutoff; one FQC record counts as one PO inspection record.",
                 ),
                 "Jiandaoyun ZX FQC + HUGSS Supplier Shipped Qty + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/R12M RPM.csv + YTD RPM.csv + ZX intervoice.xlsx",
                 section_title=t("卡片含义", "Card Guide"),
