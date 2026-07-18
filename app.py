@@ -1723,6 +1723,16 @@ JIANDAOYUN_SOURCES = {
         "fields_pattern": "ZX_CP_Jiandaoyun_fields_*.json",
         "source_name": "Jiandaoyun ZX Control Plan Database",
     },
+    "ZX_HUGSS_SHIPPED_PO": {
+        "label": "HUGSS supplier shipped PO quantity",
+        "app_id": "6823294a6ff795aa2bf0d60a",
+        "entry_id": "685a06d2fe4d3fb179bcfa5e",
+        "snapshot": Path("TU database/ZX Database/Decathlon PS data/ZX_HUGSS_shipped_po_snapshot.csv"),
+        "source_name": "Jiandaoyun HUGSS Supplier Shipped Qty",
+    },
+    "ZX_PO_COVERAGE": {
+        "snapshot": Path("TU database/ZX Database/Decathlon PS data/ZX_FQC_PO_coverage_snapshot.csv"),
+    },
 }
 JIANDAOYUN_CACHE_VERSION = 5
 DATA_SCOPE_CACHE_VERSION = 15
@@ -1735,6 +1745,15 @@ ZX_DECATHLON_INSPECTOR_PATTERNS = (
     "daisyyu",
     "韩永红",
     "李秀玲",
+)
+
+# This KPI follows the user-confirmed FQC sampling scope. Other third-party
+# inspectors remain outside this numerator even when they are used elsewhere
+# in the dashboard's broader owner classification.
+ZX_DECATHLON_PO_SAMPLING_INSPECTOR_PATTERNS = (
+    "ericzeng",
+    "wuhao",
+    "daisyyu",
 )
 
 
@@ -2520,8 +2539,11 @@ def configured_source_count() -> int:
         ):
             count += 1
     for source in JIANDAOYUN_SOURCES.values():
-        directory = ROOT / source["directory"]
-        if directory.exists() and latest_matching_file(directory, source["flat_pattern"]) is not None:
+        directory = ROOT / source["directory"] if source.get("directory") else None
+        snapshot = ROOT / source["snapshot"] if source.get("snapshot") else None
+        if directory is not None and directory.exists() and latest_matching_file(directory, source["flat_pattern"]) is not None:
+            count += 1
+        elif snapshot is not None and snapshot.exists():
             count += 1
     return count
 
@@ -4090,6 +4112,109 @@ def load_jiandaoyun_zx_cp_api(api_key: str, refresh_token: int = 0) -> tuple[pd.
     return cp, {"records": len(cp), "mode": "live_api", "source_name": source["source_name"]}
 
 
+def normalize_hugss_shipped_po(raw: pd.DataFrame) -> pd.DataFrame:
+    if raw.empty:
+        return pd.DataFrame(columns=["extract_date", "vendor_code", "supplier", "ytd_po_qty"])
+    shipped = pd.DataFrame(
+        {
+            "extract_date": pd.to_datetime(coalesce_columns(raw, ["Extract Date"], pd.NaT), errors="coerce", utc=True).dt.tz_convert(BEIJING_TZ).dt.tz_localize(None),
+            "vendor_code": coalesce_columns(raw, ["VENDOR CODE"], "").astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
+            "supplier": coalesce_columns(raw, ["Suppliers", "supplier-文本"], "").astype(str).str.strip(),
+            "ytd_po_qty": coalesce_numeric(raw, ["YTD-PO QTYs"], 0),
+        }
+    )
+    return shipped[
+        shipped["vendor_code"].eq("49425")
+        | shipped["supplier"].str.contains("ZHONGXING|中兴", case=False, na=False)
+    ].dropna(subset=["extract_date"])
+
+
+def load_zx_hugss_shipped_po_snapshot() -> pd.DataFrame:
+    snapshot = ROOT / JIANDAOYUN_SOURCES["ZX_HUGSS_SHIPPED_PO"]["snapshot"]
+    if not snapshot.exists():
+        return pd.DataFrame(columns=["extract_date", "vendor_code", "supplier", "ytd_po_qty"])
+    shipped = pd.read_csv(snapshot, encoding="utf-8-sig")
+    shipped["extract_date"] = pd.to_datetime(shipped.get("extract_date"), errors="coerce")
+    shipped["vendor_code"] = shipped.get("vendor_code", "").astype(str).str.replace(r"\.0$", "", regex=True)
+    shipped["ytd_po_qty"] = pd.to_numeric(shipped.get("ytd_po_qty", 0), errors="coerce").fillna(0)
+    return shipped
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def load_jiandaoyun_zx_hugss_shipped_po_api(api_key: str, refresh_token: int = 0) -> pd.DataFrame:
+    del refresh_token
+    source = JIANDAOYUN_SOURCES["ZX_HUGSS_SHIPPED_PO"]
+    widgets_res = jdy_api_post(api_key, "/api/v5/app/entry/widget/list", {"app_id": source["app_id"], "entry_id": source["entry_id"]})
+    widgets = widgets_res.get("widgets") or []
+    frames: list[pd.DataFrame] = []
+    last_data_id = None
+    while True:
+        payload = {"app_id": source["app_id"], "entry_id": source["entry_id"], "filter": {}, "limit": 100}
+        if last_data_id:
+            payload["data_id"] = last_data_id
+        response = jdy_api_post(api_key, "/api/v5/app/entry/data/list", payload)
+        batch = response.get("data") or []
+        if not batch:
+            break
+        frames.append(flatten_jdy_records(batch, widgets))
+        if len(batch) < 100:
+            break
+        last_data_id = batch[-1].get("_id")
+        if not last_data_id:
+            break
+    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return normalize_hugss_shipped_po(raw)
+
+
+def build_zx_fqc_po_coverage(fqc: pd.DataFrame, shipped: pd.DataFrame) -> pd.DataFrame:
+    if fqc.empty or shipped.empty:
+        return pd.DataFrame()
+    shipped = shipped.copy().dropna(subset=["extract_date"])
+    shipped["year"] = shipped["extract_date"].dt.year
+    latest_by_year = shipped.sort_values("extract_date").groupby("year", as_index=False).tail(1)
+    latest_by_year = latest_by_year[latest_by_year["ytd_po_qty"] > 0].copy()
+    if latest_by_year.empty:
+        return pd.DataFrame()
+
+    view = fqc.copy()
+    view["date"] = pd.to_datetime(view.get("date", pd.NaT), errors="coerce", utc=True).dt.tz_convert(BEIJING_TZ).dt.tz_localize(None)
+    view = view.dropna(subset=["date"])
+    view["inspector_norm"] = view.get("inspector", pd.Series("", index=view.index)).map(normalize_zx_inspector_name)
+    view["is_decathlon_sampling"] = view["inspector_norm"].map(
+        lambda name: any(pattern in name for pattern in ZX_DECATHLON_PO_SAMPLING_INSPECTOR_PATTERNS)
+    )
+
+    rows = []
+    for _, shipped_row in latest_by_year.sort_values("year").iterrows():
+        year = int(shipped_row["year"])
+        cutoff = pd.Timestamp(shipped_row["extract_date"])
+        year_view = view[(view["date"].dt.year == year) & (view["date"] <= cutoff + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1))]
+        factory_records = int((~year_view["is_decathlon_sampling"]).sum())
+        decathlon_records = int(year_view["is_decathlon_sampling"].sum())
+        shipped_po_qty = int(float(shipped_row["ytd_po_qty"]))
+        rows.append(
+            {
+                "year": year,
+                "as_of_date": cutoff.date(),
+                "factory_fqc_po_records": factory_records,
+                "decathlon_fqc_po_records": decathlon_records,
+                "shipped_po_qty": shipped_po_qty,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def load_zx_fqc_po_coverage_snapshot() -> pd.DataFrame:
+    snapshot = ROOT / JIANDAOYUN_SOURCES["ZX_PO_COVERAGE"]["snapshot"]
+    if not snapshot.exists():
+        return pd.DataFrame()
+    coverage = pd.read_csv(snapshot, encoding="utf-8-sig")
+    coverage["as_of_date"] = pd.to_datetime(coverage.get("as_of_date"), errors="coerce").dt.date
+    for column in ["year", "factory_fqc_po_records", "decathlon_fqc_po_records", "shipped_po_qty"]:
+        coverage[column] = pd.to_numeric(coverage.get(column, 0), errors="coerce").fillna(0).astype(int)
+    return coverage
+
+
 TU_COMMUNITY_AI_PROMPT_VERSION = "tu-community-qm-v6-guardrailed"
 
 
@@ -4272,6 +4397,7 @@ def build_tu_community_ai_fact_pack(
                 "fqc_valid_records": valid_records,
                 "fqc_first_pass": pass_count,
                 "fqc_fail": fail_count,
+                "fqc_rft": finite_number(pass_count / valid_records if valid_records else None),
                 "fqc_sampled": finite_number(sampling),
                 "fqc_defects": finite_number(fqc_defects),
                 "latest_fqc_date": latest_date,
@@ -4424,13 +4550,13 @@ def build_qwen_quality_prompt(report_scope: str, language: str, prompt_profile: 
         )
         fixed_schema = (
             "Use exactly these localized sections and tables: "
-            "(1) '## 1. 高风险 CC Top 5' with columns '优先级 | CC | Model | 主要疵点 | DPU（疵点数/检验数） | RPM | 退货数'; "
-            "(2) '## 2. PS 已做行动' with columns 'CC | 已走 CP | DKL FQC 次数 | DKL 抽检量 | 首次通过 / 未通过 | 最近 FQC'; "
+            "(1) '## 1. 高风险 CC Top 5' with columns '优先级 | CC | Model | 主要疵点 | DPU（疵点数/检验数） | RPM | Intern Voice'; "
+            "(2) '## 2. PS 已做行动' with columns 'CC | CP 匹配记录 | DKL FQC 记录 | DKL 抽检量 | 首次 RFT（PASS/有效记录） | 未通过（FAIL/NG/重验）记录 | 最近 FQC'; "
             "(3) '## 3. 三项行动计划' with columns '序号 | 行动 | 重点 CC | 完成标准'."
             if language == "中文"
             else "Use exactly these sections and tables: "
-            "(1) '## 1. Top 5 High-Risk CCs' with columns 'Priority | CC | Model | Top Defect | DPU (defect points / inspected) | RPM | Returns'; "
-            "(2) '## 2. Completed PS Actions' with columns 'CC | CP Completed | DKL FQC Runs | DKL Sampled Qty | First Pass / Failed | Latest FQC'; "
+            "(1) '## 1. Top 5 High-Risk CCs' with columns 'Priority | CC | Model | Top Defect | DPU (defect points / inspected) | RPM | Intern Voice'; "
+            "(2) '## 2. Completed PS Actions' with columns 'CC | Matched CP Records | DKL FQC Records | DKL Sampled Qty | First-Pass RFT (PASS/valid) | Not Passed (FAIL/NG/recheck) | Latest FQC'; "
             "(3) '## 3. Three-Action Plan' with columns 'No. | Action | Priority CCs | Completion Standard'."
         )
         return (
@@ -4438,7 +4564,7 @@ def build_qwen_quality_prompt(report_scope: str, language: str, prompt_profile: 
             "Use only the supplied JSON. The Chinese and English versions must be translations of the same report: use the first five product_risks in their supplied order, the same rows, the same metrics, and the same three-section structure. "
             "Return Markdown only. Do not write a report title, audience line, byline, subtitle, preface, or text such as 'For TU Community Quality Manager'; the application adds the canonical title. "
             f"{fixed_schema} "
-            "Section 2 must show CP records linked to each CC and DKL FQC runs, sampled quantity, first-pass and failed counts. Section 3 must contain exactly three concise actions tied to the Top 5 CCs, each with a clear completion standard. "
+            "Do not add an executive summary. Section 2 must show CP records linked to each CC and DKL FQC records, sampled quantity, first-pass RFT and failed counts. Section 3 must contain exactly three concise actions tied to the Top 5 CCs, each with a clear completion standard. "
             "Do not include evidence IDs, audit language, governance language, dynamic AQL, root-cause speculation, or compliance wording. "
             "If CP cannot be linked to a CC, show a dash per CC and one short note with the loaded overall CP count. "
             "Keep the result concise, visual, and fully localized. " + language_rule,
@@ -4808,31 +4934,12 @@ def zx_conclusion_has_canonical_scope(content: str, facts_json: str, language: s
     return all(token in content for token in required) and all(cc in content for cc in expected_ccs if cc)
 
 
-ZX_CONCLUSION_AI_PROMPT_VERSION = "zx-conclusion-v4-deterministic-facts"
+ZX_CONCLUSION_AI_PROMPT_VERSION = "zx-conclusion-v5-actions-only"
 
 
 def default_zx_conclusion_narrative(facts_json: str, language: str) -> dict:
-    facts = json.loads(facts_json)
-    products = facts.get("product_risks", [])[:5]
-    priority_ccs = [str(item.get("cc") or "-") for item in products]
-    cc_text = "、".join(priority_ccs) if language == "中文" else ", ".join(priority_ccs)
-    if language == "中文":
-        return {
-            "summary": [
-                f"当前报告按看板风险排序聚焦 {cc_text or '暂无可排序 CC'}；事实数字以其后的系统表格为准。",
-                "生产端使用 DPU 表示单位产品的疵点数，客户端信号通过 RPM 和退货数分别呈现。",
-                "PS 执行情况单独展示 CP 与 DKL FQC 记录，缺少关联字段时不会把总体记录分摊到单个 CC。",
-            ],
-            "actions": [],
-        }
-    return {
-        "summary": [
-            f"The report follows the dashboard risk ranking and focuses on {cc_text or 'no currently rankable CCs'}; the system-generated tables below are the source of truth for all figures.",
-            "Production quality is expressed as DPU, or defect points per inspected unit, while RPM and returns are shown separately as customer signals.",
-            "PS execution is shown separately through CP and DKL FQC records; overall records are not allocated to a CC when a usable linkage field is missing.",
-        ],
-        "actions": [],
-    }
+    del facts_json, language
+    return {"actions": []}
 
 
 def clean_zx_narrative_cell(value: object, max_length: int = 220) -> str:
@@ -4846,7 +4953,6 @@ def validated_zx_narrative(payload: object, facts_json: str, language: str) -> d
         return fallback
     facts = json.loads(facts_json)
     allowed_ccs = {str(item.get("cc") or "").strip() for item in facts.get("product_risks", [])[:5]}
-    summaries = [clean_zx_narrative_cell(item) for item in payload.get("summary", []) if clean_zx_narrative_cell(item)]
     actions = []
     for item in payload.get("actions", []):
         if not isinstance(item, dict):
@@ -4859,9 +4965,9 @@ def validated_zx_narrative(payload: object, facts_json: str, language: str) -> d
         priority_ccs = [str(cc).strip() for cc in requested_ccs if str(cc).strip() in allowed_ccs]
         if action and standard:
             actions.append({"action": action, "priority_ccs": priority_ccs, "completion_standard": standard})
-    if len(summaries) < 2 or len(actions) != 3:
+    if len(actions) != 3:
         return fallback
-    return {"summary": summaries[:4], "actions": actions}
+    return {"actions": actions}
 
 
 def build_zx_bilingual_narrative_prompt() -> str:
@@ -4870,13 +4976,11 @@ You are writing the narrative layer for a ZX Textile Unit quality conclusion rep
 Use only the supplied JSON fact pack. Return one JSON object only, with no Markdown fence and no extra text:
 {
   "zh": {
-    "summary": ["2 to 4 concise Simplified Chinese executive-summary bullets"],
     "actions": [
       {"action": "建议行动", "priority_ccs": ["CC from the supplied Top 5"], "completion_standard": "可验证的完成标准"}
     ]
   },
   "en": {
-    "summary": ["Exact English translations of the Chinese bullets"],
     "actions": [
       {"action": "Exact English translation", "priority_ccs": ["same CCs in the same order"], "completion_standard": "Exact English translation"}
     ]
@@ -4886,7 +4990,7 @@ Use only the supplied JSON fact pack. Return one JSON object only, with no Markd
 Rules:
 1. Produce exactly three action objects in each language, in the same order and with the same priority_ccs.
 2. Chinese and English must be translations of the same conclusions, not independent analyses.
-3. Do not reproduce any report title, table, metric value, percentage, count, date, score, formula, or calculated result. The application renders every fact and number deterministically.
+3. Do not produce an executive summary. Do not reproduce any report title, table, metric value, percentage, count, date, score, formula, or calculated result. The application renders every fact and number deterministically.
 4. Refer to evidence qualitatively and direct the reader to the system tables. CC identifiers may be used only when they appear in the first five product_risks.
 5. Do not invent causes, targets, owners, events, or completed work. Actions are recommendations, not claims that work is already completed.
 6. Completion standards must be observable and must not invent a numeric target.
@@ -4914,25 +5018,28 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
             risk_rows.append(
                 f"| {index} | {cc} | {item.get('model') or '-'} | {item.get('top_defect') or '-'} | "
                 f"{number(item.get('defects'))} / {number(item.get('inspected'))} = {number((item.get('defect_rate') or 0) * 100, 2)}% | "
-                f"{number(item.get('rpm'))} | {number(item.get('returns'))} |"
+                f"{number(item.get('rpm'))} | {number(item.get('iv_cases'))} |"
             )
             action = actions_by_cc.get(cc, {})
             cp_text = number(action.get("cp_records")) if action.get("cp_linked") else "—"
+            rft_text = (
+                f"{number(float(action.get('fqc_rft')) * 100, 1)}% ({number(action.get('fqc_first_pass'))}/{number(action.get('fqc_valid_records'))})"
+                if action.get("fqc_rft") is not None else "—"
+            )
             action_rows.append(
                 f"| {cc} | {cp_text} | {number(action.get('fqc_records'))} | {number(action.get('fqc_sampled'))} | "
-                f"{number(action.get('fqc_first_pass'))} / {number(action.get('fqc_fail'))} | {action.get('latest_fqc_date') or '-'} |"
+                f"{rft_text} | {number(action.get('fqc_fail'))} | {action.get('latest_fqc_date') or '-'} |"
             )
         cp_note = (
             "简道云 CP 已包含 CC 字段，表内按 CC 汇总。"
             if cp_context.get("cc_model_link_available")
-            else f"简道云当前载入 {number(cp_context.get('records'))} 条 CP；现有表单没有可用 CC 字段，因此本次不把总数分摊到单个 CC。"
+            else f"已核对简道云全部 {number(cp_context.get('records'))} 条 CP：正式字段只有制程、管控点、管控文件、管控要求和风险等级，没有 CC 字段，记录内容中也没有六位 CC 编码，因此当前不能按 CC 匹配。"
         )
         priority_ccs = "、".join(str(item.get("cc") or "-") for item in products)
         failed_ccs = "、".join(
             cc for cc, action in actions_by_cc.items()
             if cc in {str(item.get("cc")) for item in products} and float(action.get("fqc_fail") or 0) > 0
         ) or "Top 5 CC"
-        summary_bullets = "\n".join(f"- {item}" for item in narrative["summary"])
         recommended_actions = narrative.get("actions", [])
         if recommended_actions:
             action_plan_rows = "\n".join(
@@ -4941,28 +5048,27 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
             )
         else:
             action_plan_rows = (
-                f"| 1 | DKL FQC 跟进 | {failed_ccs} | 完成下一轮 FQC，并在报告中更新抽检量及首次通过 / 未通过结果 |\n"
+                f"| 1 | DKL FQC 跟进 | {failed_ccs} | 完成下一轮 FQC，并在报告中更新抽检量、首次RFT及FAIL记录 |\n"
                 f"| 2 | CP 与 CC 关联 | {priority_ccs or '-'} | 简道云 CP 补齐可用 CC 字段，报告能够按 CC 自动汇总已走 CP 数量 |\n"
                 f"| 3 | 周度 Top 5 复盘 | {priority_ccs or '-'} | 每周更新 DPU、RPM、DKL FQC 和 CP 状态，并关闭已完成事项 |"
             )
         return f"""# {zx_conclusion_title(facts, language)}
 
-## 执行摘要
-{summary_bullets}
-
 ## 1. 高风险 CC Top 5
-| 优先级 | CC | Model | 主要疵点 | DPU（疵点数/检验数） | RPM | 退货数 |
+| 优先级 | CC | Model | 主要疵点 | DPU（疵点数/检验数） | RPM | Intern Voice |
 |---:|---|---|---|---:|---:|---:|
 {chr(10).join(risk_rows) or '| - | 暂无数据 | - | - | - | - | - |'}
 
 Top 5 沿用当前看板的风险排序；DPU 表示单位产品疵点数，不等同于不良品概率。
 
 ## 2. PS 已做行动
-| CC | 已走 CP | DKL FQC 次数 | DKL 抽检量 | 首次通过 / 未通过 | 最近 FQC |
-|---|---:|---:|---:|---:|---|
-{chr(10).join(action_rows) or '| 暂无数据 | - | - | - | - | - |'}
+| CC | CP 匹配记录 | DKL FQC 记录 | DKL 抽检量 | 首次 RFT（PASS/有效记录） | 未通过（FAIL/NG/重验）记录 | 最近 FQC |
+|---|---:|---:|---:|---:|---:|---|
+{chr(10).join(action_rows) or '| 暂无数据 | - | - | - | - | - | - |'}
 
 {cp_note}
+
+“未通过”只统计结果被标记为 FAIL、NG、不合格、拒绝或重验的 FQC 记录；没有有效结果的记录不进入 RFT 分母。
 
 ## 3. 三项行动计划
 | 序号 | 行动 | 重点 CC | 完成标准 |
@@ -4977,25 +5083,28 @@ Top 5 沿用当前看板的风险排序；DPU 表示单位产品疵点数，不�
         risk_rows.append(
             f"| {index} | {cc} | {item.get('model') or '-'} | {item.get('top_defect') or '-'} | "
             f"{number(item.get('defects'))} / {number(item.get('inspected'))} = {number((item.get('defect_rate') or 0) * 100, 2)}% | "
-            f"{number(item.get('rpm'))} | {number(item.get('returns'))} |"
+            f"{number(item.get('rpm'))} | {number(item.get('iv_cases'))} |"
         )
         action = actions_by_cc.get(cc, {})
         cp_text = number(action.get("cp_records")) if action.get("cp_linked") else "—"
+        rft_text = (
+            f"{number(float(action.get('fqc_rft')) * 100, 1)}% ({number(action.get('fqc_first_pass'))}/{number(action.get('fqc_valid_records'))})"
+            if action.get("fqc_rft") is not None else "—"
+        )
         action_rows.append(
             f"| {cc} | {cp_text} | {number(action.get('fqc_records'))} | {number(action.get('fqc_sampled'))} | "
-            f"{number(action.get('fqc_first_pass'))} / {number(action.get('fqc_fail'))} | {action.get('latest_fqc_date') or '-'} |"
+            f"{rft_text} | {number(action.get('fqc_fail'))} | {action.get('latest_fqc_date') or '-'} |"
         )
     cp_note = (
         "Jiandaoyun CP includes a CC field, so the table is summarized by CC."
         if cp_context.get("cc_model_link_available")
-        else f"{number(cp_context.get('records'))} CP records are currently loaded from Jiandaoyun. The form has no usable CC field, so the total is not allocated to individual CCs."
+        else f"All {number(cp_context.get('records'))} Jiandaoyun CP records were checked. The official fields cover process, control point, control document, requirement, and risk level only; there is no CC field or six-digit CC code in the record content, so CP cannot currently be matched by CC."
     )
     priority_ccs = ", ".join(str(item.get("cc") or "-") for item in products)
     failed_ccs = ", ".join(
         cc for cc, action in actions_by_cc.items()
         if cc in {str(item.get("cc")) for item in products} and float(action.get("fqc_fail") or 0) > 0
     ) or "Top 5 CCs"
-    summary_bullets = "\n".join(f"- {item}" for item in narrative["summary"])
     recommended_actions = narrative.get("actions", [])
     if recommended_actions:
         action_plan_rows = "\n".join(
@@ -5004,28 +5113,27 @@ Top 5 沿用当前看板的风险排序；DPU 表示单位产品疵点数，不�
         )
     else:
         action_plan_rows = (
-            f"| 1 | DKL FQC follow-up | {failed_ccs} | Complete the next FQC round and update sampled quantity and first-pass / failed results |\n"
+            f"| 1 | DKL FQC follow-up | {failed_ccs} | Complete the next FQC round and update sampled quantity, first-pass RFT, and FAIL records |\n"
             f"| 2 | Link CP to CC | {priority_ccs or '-'} | Add a usable CC field to Jiandaoyun CP so completed CP counts aggregate automatically by CC |\n"
             f"| 3 | Weekly Top 5 review | {priority_ccs or '-'} | Refresh DPU, RPM, DKL FQC and CP status weekly and close completed items |"
         )
     return f"""# {zx_conclusion_title(facts, language)}
 
-## Executive Summary
-{summary_bullets}
-
 ## 1. Top 5 High-Risk CCs
-| Priority | CC | Model | Top Defect | DPU (defect points / inspected) | RPM | Returns |
+| Priority | CC | Model | Top Defect | DPU (defect points / inspected) | RPM | Intern Voice |
 |---:|---|---|---|---:|---:|---:|
 {chr(10).join(risk_rows) or '| - | No data | - | - | - | - | - |'}
 
 The Top 5 follow the dashboard risk ranking. DPU means defect points per inspected unit and is not a defective-unit probability.
 
 ## 2. Completed PS Actions
-| CC | CP Completed | DKL FQC Runs | DKL Sampled Qty | First Pass / Failed | Latest FQC |
-|---|---:|---:|---:|---:|---|
-{chr(10).join(action_rows) or '| No data | - | - | - | - | - |'}
+| CC | Matched CP Records | DKL FQC Records | DKL Sampled Qty | First-Pass RFT (PASS/valid) | Not Passed (FAIL/NG/recheck) | Latest FQC |
+|---|---:|---:|---:|---:|---:|---|
+{chr(10).join(action_rows) or '| No data | - | - | - | - | - | - |'}
 
 {cp_note}
+
+"Not passed" counts only FQC records marked FAIL, NG, not qualified, rejected, or recheck. Records without a valid result are excluded from the RFT denominator.
 
 ## 3. Three-Action Plan
 | No. | Action | Priority CCs | Completion Standard |
@@ -5062,8 +5170,6 @@ def parse_json_object_response(content: str) -> dict:
 def zx_bilingual_narrative_is_aligned(zh: dict, en: dict, facts_json: str) -> bool:
     facts = json.loads(facts_json)
     allowed_ccs = {str(item.get("cc") or "").strip() for item in facts.get("product_risks", [])[:5]}
-    if len(zh.get("summary", [])) != len(en.get("summary", [])):
-        return False
     zh_actions = zh.get("actions", [])
     en_actions = en.get("actions", [])
     if len(zh_actions) != 3 or len(en_actions) != 3:
@@ -5197,9 +5303,9 @@ def render_qwen_summary_panel(
         active_language = report_language or st.session_state.lang
         hero_title = "质量结论报告" if active_language == "中文" else "Quality Conclusion Report"
         hero_subtitle = (
-            "聚焦高风险 CC Top 5、DKL 已完成的 CP / FQC，以及三项行动计划。"
+            "聚焦高风险 CC Top 5、CP / FQC 记录，以及三项行动计划。"
             if active_language == "中文"
-            else "Focused on the Top 5 high-risk CCs, completed DKL CP/FQC work, and a three-action plan."
+            else "Focused on the Top 5 high-risk CCs, CP/FQC records, and a three-action plan."
         )
         hero_kicker = "TEXTILE UNIT · 智能结论" if active_language == "中文" else "TEXTILE UNIT · SMART CONCLUSION"
         st.markdown(
@@ -5321,9 +5427,9 @@ def render_qwen_summary_panel(
             )
         if prompt_profile == "zx_conclusion":
             st.caption(
-                f"模型生成时间：{report['generated_at']}（北京时间） · 模型：通义千问 {report['model']} · 数字与表格由系统计算，模型仅生成摘要与行动建议 · 中英文版本使用同一数据快照。"
+                f"模型生成时间：{report['generated_at']}（北京时间） · 模型：通义千问 {report['model']} · 数字与表格由系统计算，模型仅生成行动建议 · 中英文版本使用同一数据快照。"
                 if active_language == "中文"
-                else f"Model generated: {report['generated_at']} (Beijing time) · Model: Qwen {report['model']} · Figures and tables are system-generated; the model writes only the summary and action recommendations · Chinese and English use the same data snapshot."
+                else f"Model generated: {report['generated_at']} (Beijing time) · Model: Qwen {report['model']} · Figures and tables are system-generated; the model writes only action recommendations · Chinese and English use the same data snapshot."
             )
     elif prompt_profile == "zx_conclusion":
         with st.container(key="zx_ai_report_result"):
@@ -7099,59 +7205,35 @@ def inspection_coverage_metrics(finished_df: pd.DataFrame) -> tuple[float, float
 
 
 def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.DataFrame) -> None:
-    if finished_df.empty:
+    del finished_df, jdy_fqc
+    coverage = st.session_state.get("zx_panel_jdy_po_coverage")
+    if not isinstance(coverage, pd.DataFrame) or coverage.empty:
+        coverage = load_zx_fqc_po_coverage_snapshot()
+    if coverage.empty:
         return
-    source = finished_df.copy()
-    source["qty_ordered"] = pd.to_numeric(source.get("qty_ordered", 0), errors="coerce").fillna(0)
-    source["qty_inspected"] = pd.to_numeric(source.get("qty_inspected", 0), errors="coerce").fillna(0)
-    source["work_order_key"] = source.get("work_order", pd.Series("", index=source.index)).fillna("").astype(str).str.strip()
+    coverage = coverage.sort_values("year")
+    current = coverage.iloc[-1]
+    prior = coverage.iloc[-2] if len(coverage) > 1 else None
+    shipped_po_qty = int(current["shipped_po_qty"])
+    factory_po_records = int(current["factory_fqc_po_records"])
+    decathlon_po_records = int(current["decathlon_fqc_po_records"])
+    factory_inspection_share = factory_po_records / shipped_po_qty if shipped_po_qty else np.nan
+    fqc_sampling_share = decathlon_po_records / shipped_po_qty if shipped_po_qty else np.nan
+    year = int(current["year"])
+    as_of_date = current["as_of_date"]
 
-    keyed_orders = source[source["work_order_key"].ne("")].copy()
-    keyed_orders = (
-        keyed_orders.groupby("work_order_key", as_index=False)
-        .agg(order_qty=("qty_ordered", "max"), inspected_qty=("qty_inspected", "sum"))
-    )
-    keyed_orders = keyed_orders[keyed_orders["order_qty"] > 0].copy()
-    keyed_orders["effective_inspected_qty"] = np.minimum(
-        keyed_orders["inspected_qty"], keyed_orders["order_qty"]
-    )
-
-    unkeyed_orders = source[(source["work_order_key"].eq("")) & (source["qty_ordered"] > 0)].copy()
-    if not unkeyed_orders.empty:
-        unkeyed_orders = (
-            unkeyed_orders.groupby(["product_code", "qty_ordered"], as_index=False)["qty_inspected"].sum()
-            .rename(columns={"qty_ordered": "order_qty", "qty_inspected": "inspected_qty"})
-        )
-        unkeyed_orders["effective_inspected_qty"] = np.minimum(
-            unkeyed_orders["inspected_qty"], unkeyed_orders["order_qty"]
-        )
-
-    order_reference_qty = float(keyed_orders["order_qty"].sum())
-    effective_factory_inspected_qty = float(keyed_orders["effective_inspected_qty"].sum())
-    if not unkeyed_orders.empty:
-        order_reference_qty += float(unkeyed_orders["order_qty"].sum())
-        effective_factory_inspected_qty += float(unkeyed_orders["effective_inspected_qty"].sum())
-
-    fqc_view = jdy_fqc.copy() if isinstance(jdy_fqc, pd.DataFrame) else pd.DataFrame()
-    if not fqc_view.empty:
-        if "inspector_owner" not in fqc_view.columns:
-            fqc_view["inspector_owner"] = fqc_view.get("inspector", pd.Series("", index=fqc_view.index)).map(zx_inspector_owner)
-        fqc_view = fqc_view[fqc_view["inspector_owner"].eq("Decathlon")].copy()
-        fqc_view["date"] = pd.to_datetime(fqc_view.get("date", pd.NaT), errors="coerce", utc=True).dt.tz_convert(None)
-        source_dates = pd.to_datetime(source.get("date", pd.NaT), errors="coerce").dropna()
-        if not source_dates.empty:
-            fqc_view = fqc_view[
-                fqc_view["date"].between(source_dates.min().normalize(), source_dates.max().normalize() + pd.Timedelta(days=1))
-            ]
-        selected_ccs = set(source.get("product_code", pd.Series(dtype=object)).fillna("").astype(str).str.strip())
-        selected_ccs.discard("")
-        if selected_ccs and "cc" in fqc_view.columns:
-            fqc_view = fqc_view[fqc_view["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).isin(selected_ccs)]
-    fqc_sampled_qty = float(
-        pd.to_numeric(fqc_view.get("sampling_size", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
-    )
-    factory_inspection_share = effective_factory_inspected_qty / order_reference_qty if order_reference_qty else np.nan
-    fqc_sampling_share = fqc_sampled_qty / order_reference_qty if order_reference_qty else np.nan
+    if prior is not None:
+        prior_year = int(prior["year"])
+        prior_factory = int(prior["factory_fqc_po_records"])
+        prior_decathlon = int(prior["decathlon_fqc_po_records"])
+        prior_shipped = int(prior["shipped_po_qty"])
+        factory_prior_note = f" · {prior_year} 同期 {prior_factory:,}/{prior_shipped:,}"
+        decathlon_prior_note = f" · {prior_year} 同期 {prior_decathlon:,}/{prior_shipped:,}"
+        factory_prior_note_en = f" · {prior_year} comparable {prior_factory:,}/{prior_shipped:,}"
+        decathlon_prior_note_en = f" · {prior_year} comparable {prior_decathlon:,}/{prior_shipped:,}"
+    else:
+        factory_prior_note = decathlon_prior_note = ""
+        factory_prior_note_en = decathlon_prior_note_en = ""
 
     render_kpi_cards(
         [
@@ -7159,8 +7241,8 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
                 "label": t("工厂检验占比", "Factory Inspection Ratio"),
                 "value": pct(factory_inspection_share),
                 "note": t(
-                    f"有效检验 {effective_factory_inspected_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
-                    f"Effectively inspected {effective_factory_inspected_qty:,.0f} / order {order_reference_qty:,.0f}",
+                    f"{year} YTD：工厂 FQC PO记录 {factory_po_records:,} / 出货PO {shipped_po_qty:,}{factory_prior_note}",
+                    f"{year} YTD: factory FQC PO records {factory_po_records:,} / shipped POs {shipped_po_qty:,}{factory_prior_note_en}",
                 ),
                 "level": "medium",
             },
@@ -7168,13 +7250,19 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
                 "label": t("迪卡侬 FQC 抽检率", "Decathlon FQC Sampling Ratio"),
                 "value": pct(fqc_sampling_share),
                 "note": t(
-                    f"FQC 抽检 {fqc_sampled_qty:,.0f} / 订单参考量 {order_reference_qty:,.0f}",
-                    f"FQC sampled {fqc_sampled_qty:,.0f} / order {order_reference_qty:,.0f}",
+                    f"{year} YTD：迪卡侬 FQC PO记录 {decathlon_po_records:,} / 出货PO {shipped_po_qty:,}{decathlon_prior_note}",
+                    f"{year} YTD: Decathlon FQC PO records {decathlon_po_records:,} / shipped POs {shipped_po_qty:,}{decathlon_prior_note_en}",
                 ),
                 "level": "low",
             },
         ],
         variant="coverage-grid",
+    )
+    st.caption(
+        t(
+            f"截至 {as_of_date}；迪卡侬口径仅包含 Wuhao、Daisy Yu、Eric Zeng。每条 FQC 记录按一个PO检验记录计数。",
+            f"As of {as_of_date}; Decathlon includes Wuhao, Daisy Yu, and Eric Zeng only. Each FQC record counts as one PO inspection record.",
+        )
     )
 
 
@@ -9250,6 +9338,7 @@ def render_tu_jdy_refresh_control(
     data_state_key = f"{panel_key}_jdy_live_fqc"
     meta_state_key = f"{panel_key}_jdy_live_meta"
     cp_state_key = f"{panel_key}_jdy_live_cp"
+    coverage_state_key = f"{panel_key}_jdy_po_coverage"
     error_state_key = f"{panel_key}_jdy_refresh_error"
     token_state_key = f"{panel_key}_jdy_refresh_token"
 
@@ -9277,11 +9366,15 @@ def render_tu_jdy_refresh_control(
                     token,
                     JIANDAOYUN_CACHE_VERSION,
                 )
+                live_shipped_po = load_jiandaoyun_zx_hugss_shipped_po_api(api_key, token)
+                live_po_coverage = build_zx_fqc_po_coverage(live_fqc, live_shipped_po)
                 live_cp = pd.DataFrame()
                 if include_cp:
                     live_cp, _ = load_jiandaoyun_zx_cp_api(api_key, token)
             st.session_state[data_state_key] = live_fqc
             st.session_state[meta_state_key] = live_meta
+            if not live_po_coverage.empty:
+                st.session_state[coverage_state_key] = live_po_coverage
             if include_cp:
                 st.session_state[cp_state_key] = live_cp
             st.session_state[error_state_key] = ""
@@ -9293,6 +9386,8 @@ def render_tu_jdy_refresh_control(
     current_fqc = live_fqc.copy() if using_live else local_fqc
     current_meta = dict(st.session_state.get(meta_state_key, {})) if using_live else local_meta
     current_error = str(st.session_state.get(error_state_key, ""))
+    if coverage_state_key not in st.session_state:
+        st.session_state[coverage_state_key] = load_zx_fqc_po_coverage_snapshot()
     mode = t("本次会话实时数据", "Live data in this session") if using_live else t("本地缓存数据量", "Local cached records")
     updated_at = current_meta.get("pulled_at", "")
     status_text = t(
@@ -10427,21 +10522,19 @@ def render_community_cockpit(
                     "- **End of line RFT：** 产线末端检验的一次通过表现参考。\n"
                     "- **RPM（R12M）：** 最近 12 个月每百万销量对应的退货水平。\n"
                     "- **工厂售前 IV：** 销售前发现并归属工厂责任的问题数量。\n"
-                    "- **有效检验量：** 去重并限制不超过订单数量后的实际检验覆盖量。\n"
-                    "- **订单参考量：** 生产通知单中的订单数量汇总，是覆盖率和抽检率的参考分母。\n"
-                    "- **工厂检验占比：** 工厂有效检验覆盖订单参考量的比例。\n"
-                    "- **迪卡侬 FQC 抽检率：** 迪卡侬人员抽样数量占订单参考量的比例。",
+                    "- **工厂检验占比：** 简道云工厂 FQC PO检验记录数 ÷ HUGSS ZX YTD出货PO数。\n"
+                    "- **迪卡侬 FQC 抽检率：** Wuhao、Daisy Yu、Eric Zeng 的FQC PO检验记录数 ÷ HUGSS ZX YTD出货PO数。\n"
+                    "- **可比范围：** 两个比例均采用同一YTD截止日；一条FQC记录按一个PO检验记录计数。",
                     "- **Decathlon inspection pass rate:** First inspection results completed by Decathlon inspectors.\n"
                     "- **ZX factory self-inspection pass rate:** First self-inspection results completed by ZX factory inspectors.\n"
                     "- **End-of-line RFT:** A reference for first-pass performance at the end of the production line.\n"
                     "- **RPM (R12M):** Returns per million units sold over the latest 12 months.\n"
                     "- **Factory before-sale IV:** Factory-owned issues found before sale.\n"
-                    "- **Effective inspected quantity:** Actual inspection coverage after deduplication and order-quantity capping.\n"
-                    "- **Order quantity:** Total order quantity on production notices, used as the denominator for coverage and sampling.\n"
-                    "- **Factory inspection share:** Factory effective inspection coverage as a share of order quantity.\n"
-                    "- **Decathlon FQC sampling rate:** Decathlon sampled quantity as a share of order quantity.",
+                    "- **Factory inspection share:** Jiandaoyun factory FQC PO inspection records divided by HUGSS ZX YTD shipped POs.\n"
+                    "- **Decathlon FQC sampling rate:** FQC PO inspection records by Wuhao, Daisy Yu, and Eric Zeng divided by HUGSS ZX YTD shipped POs.\n"
+                    "- **Comparable scope:** Both ratios use the same YTD cutoff; one FQC record counts as one PO inspection record.",
                 ),
-                "Decathlon PS data/ZX_FQC_normalized_snapshot.csv + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/R12M RPM.csv + YTD RPM.csv + R12M NQC.csv + YDT NQC.csv + ZX intervoice.xlsx",
+                "Jiandaoyun ZX FQC + HUGSS Supplier Shipped Qty + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/R12M RPM.csv + YTD RPM.csv + ZX intervoice.xlsx",
                 section_title=t("卡片含义", "Card Guide"),
             )
         render_kpi_cards(
