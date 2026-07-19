@@ -7422,10 +7422,10 @@ def render_zx_high_risk_cluster(
     risk_settings: dict,
     source_label: str,
     widget_key: str,
-) -> None:
+) -> pd.DataFrame:
     if products.empty:
         st.info(t("当前范围暂无可聚类的 CC 数据。", "No CC data available for clustering under current scope."))
-        return
+        return pd.DataFrame()
 
     view = products.copy()
     for column in [
@@ -7465,7 +7465,7 @@ def render_zx_high_risk_cluster(
                 "No CCs with matched RPM are available in the current scope.",
             )
         )
-        return
+        return pd.DataFrame()
     view["intern_voice_count"] = view["intern_voice_count"].fillna(0)
     cluster_factory_settings = settings_for_factory(risk_settings, "ZX")
     cluster_qc_benchmark = float(cluster_factory_settings.get("qc_benchmark_pct", 4.0))
@@ -7852,7 +7852,7 @@ def render_zx_high_risk_cluster(
     plot_view = view[view["cluster_risk_level"].isin(selected_risk_levels)].copy() if selected_risk_levels else view.iloc[0:0].copy()
     if plot_view.empty:
         st.info(t("当前筛选下没有对应风险等级的 CC。", "No CCs match the selected risk level."))
-        return
+        return view
 
     fig = px.scatter(
         plot_view.sort_values("cluster_score", ascending=False),
@@ -7964,6 +7964,7 @@ def render_zx_high_risk_cluster(
             cc_customdata_index=0,
             enable_box_zoom=True,
         )
+    return view
 
 
 def community_source_label(scope_key: str) -> str:
@@ -8157,10 +8158,20 @@ def prepare_fixed_product_risk(products: pd.DataFrame) -> pd.DataFrame:
         "intern_voice_count",
     ]:
         view[column] = pd.to_numeric(view.get(column, pd.Series(np.nan, index=view.index)), errors="coerce")
-    fallback_production = view["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
-    view["production_score_fixed"] = view["production_score"].fillna(fallback_production).fillna(0).clip(0, 100)
-    view["client_score_fixed"] = view["client_score"].fillna(0).clip(0, 100)
-    view["risk_score_fixed"] = (view["production_score_fixed"] * 0.70 + view["client_score_fixed"] * 0.30).clip(0, 100)
+    cluster_aligned = {"production_axis", "client_signal", "cluster_score"}.issubset(view.columns)
+    if cluster_aligned:
+        # Top CC Pareto must rank the exact same rows and already-computed
+        # scores shown by High-Risk Product Cluster Analysis. Reusing these
+        # columns prevents the prior, RPM/IV mix, scope, or UI weights from
+        # drifting between the two charts.
+        view["production_score_fixed"] = pd.to_numeric(view["production_axis"], errors="coerce").fillna(0).clip(0, 100)
+        view["client_score_fixed"] = pd.to_numeric(view["client_signal"], errors="coerce").fillna(0).clip(0, 100)
+        view["risk_score_fixed"] = pd.to_numeric(view["cluster_score"], errors="coerce").fillna(0).clip(0, 100)
+    else:
+        fallback_production = view["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
+        view["production_score_fixed"] = view["production_score"].fillna(fallback_production).fillna(0).clip(0, 100)
+        view["client_score_fixed"] = view["client_score"].fillna(0).clip(0, 100)
+        view["risk_score_fixed"] = (view["production_score_fixed"] * 0.70 + view["client_score_fixed"] * 0.30).clip(0, 100)
     view["risk_level_fixed"] = view["risk_score_fixed"].map(risk_level)
     view["product_view"] = view["factory_code"].astype(str) + " / " + view["product_code"].astype(str)
     view["product_label_display"] = view["product_label"].map(localize_product_label)
@@ -8511,21 +8522,25 @@ def render_product_priority(
         view["focus_group"] = view["product_code"].astype(str).map(
             lambda code: t("Top 20% CC", "Top 20% CC") if code in focus_codes else t("其他 CC", "Other CC")
         )
-    view["risk_formula"] = view.apply(
-        lambda row: t(
+    def product_risk_formula(row: pd.Series) -> str:
+        raw_production_weight = pd.to_numeric(row.get("production_weight_pct", 70), errors="coerce")
+        production_weight = 70.0 if pd.isna(raw_production_weight) else float(raw_production_weight)
+        raw_client_weight = pd.to_numeric(row.get("secondary_weight_pct", 100 - production_weight), errors="coerce")
+        client_weight = 100 - production_weight if pd.isna(raw_client_weight) else float(raw_client_weight)
+        return t(
             "风险分 = "
-            f"生产端{num(row.get('production_score_fixed'), 1)} x 70% + "
-            f"客户端{num(row.get('client_score_fixed'), 1)} x 30%；"
+            f"生产端{num(row.get('production_score_fixed'), 1)} x {production_weight:.0f}% + "
+            f"客户端{num(row.get('client_score_fixed'), 1)} x {client_weight:.0f}%；"
             f"生产端来自QC不良率{pct(row.get('defect_rate'))}，检验{num(row.get('qty_inspected'), 0)}，疵点{num(row.get('defect_qty'), 0)}；"
             f"客户端来自RPM {num(row.get('rpm_now'), 0)} + Intern Voice {num(row.get('intern_voice_count'), 0)}。",
             "Risk score = "
-            f"production {num(row.get('production_score_fixed'), 1)} x 70% + "
-            f"client {num(row.get('client_score_fixed'), 1)} x 30%; "
+            f"production {num(row.get('production_score_fixed'), 1)} x {production_weight:.0f}% + "
+            f"client {num(row.get('client_score_fixed'), 1)} x {client_weight:.0f}%; "
             f"production uses QC defect rate {pct(row.get('defect_rate'))}, inspected {num(row.get('qty_inspected'), 0)}, defects {num(row.get('defect_qty'), 0)}; "
             f"client uses RPM {num(row.get('rpm_now'), 0)} + Intern Voice {num(row.get('intern_voice_count'), 0)}.",
-        ),
-        axis=1,
-    )
+        )
+
+    view["risk_formula"] = view.apply(product_risk_formula, axis=1)
     sorted_view = view.sort_values("risk_score_fixed", ascending=True)
     model_code = sorted_view.get("model_code", pd.Series("", index=sorted_view.index)).fillna("").astype(str).str.strip()
     model_name = sorted_view["product_label_display"].fillna("").astype(str).str.strip()
@@ -8599,8 +8614,8 @@ def render_product_priority(
     if show_caption:
         st.caption(
             t(
-                "产品综合风险 = 生产端风险 × 70% + 客户端风险 × 30%；生产端风险来自贝叶斯收缩后的 QC 不良率。",
-                "Product risk = production risk x 70% + client risk x 30%; production risk uses Bayesian-shrunk QC defect rate.",
+                "产品综合风险与高风险产品聚类分析共用同一产品范围、参数和计算结果。",
+                "Product risk reuses the same product scope, parameters, and calculated scores as High-Risk Product Cluster Analysis.",
             )
         )
 
@@ -10580,21 +10595,32 @@ def render_community_cockpit(
         )
         zx_risk_source = f"{zx_qc_source} + {zx_client_source}"
         zx_cluster_products = cluster_product_df if cluster_product_df is not None else product_df
-        render_zx_high_risk_cluster(zx_cluster_products, risk_settings, zx_risk_source, "zx")
+        zx_cluster_risk_view = render_zx_high_risk_cluster(
+            zx_cluster_products,
+            risk_settings,
+            zx_risk_source,
+            "zx",
+        )
 
         render_chart_heading(
             "Top CC 帕累托",
             "Top CC Pareto",
             "把最需要优先复盘的 CC 排在前面。",
             "Rank the CCs that need review first.",
-            "按产品风险分排序，仅保留综合风险排名前 20% 的 CC，并显示其实际风险贡献。",
-            "Rank by product risk, retain only the top 20% of CCs, and show their actual risk contribution.",
-            "产品风险 = 生产端 70% + 客户端 30%；Top 20% 按综合风险分降序选取，不假设它们必然贡献 80%。",
-            "Product risk = 70% production + 30% client; the top 20% are selected by descending risk without assuming they necessarily contribute 80%.",
+            "直接沿用高风险产品聚类分析的产品范围和风险分，默认展示综合风险排名前 20% 的 CC。",
+            "Reuse the product scope and risk scores from High-Risk Product Cluster Analysis, showing the top 20% of CCs by default.",
+            "生产端收缩参数、RPM / IV 阈值、RPM / IV 等权重、生产端 / 客户端权重及记录范围均与聚类图一致。",
+            "Production shrinkage parameters, RPM / IV thresholds, equal RPM / IV weighting, production / client weighting, and record scope all match the cluster chart.",
             zx_risk_source,
             "zx_product",
         )
-        render_product_priority(product_df, zx_risk_source, risk_settings, pareto_mode=True, show_caption=False)
+        render_product_priority(
+            zx_cluster_risk_view,
+            zx_risk_source,
+            risk_settings,
+            pareto_mode=True,
+            show_caption=False,
+        )
 
         render_chart_heading(
             "Top 疵点类型 Pareto",
