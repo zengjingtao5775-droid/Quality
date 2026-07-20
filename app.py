@@ -1462,6 +1462,64 @@ st.markdown(
         font-weight: 850;
         white-space: nowrap;
     }
+    .st-key-zx_ai_report_result .zx-action-plan-wrap {
+        width: 100%;
+        overflow: hidden;
+        border: 1px solid #d8dfed;
+        border-radius: 12px;
+    }
+    .st-key-zx_ai_report_result .zx-action-plan-table {
+        width: 100%;
+        margin: 0;
+        table-layout: fixed;
+        border: 0;
+        border-collapse: collapse;
+        border-radius: 0;
+    }
+    .st-key-zx_ai_report_result .zx-action-plan-table th {
+        padding: 0.72rem 0.68rem;
+        color: #192a6b;
+        background: #e8edf8;
+        border-right: 1px solid #d8dfed;
+        border-bottom: 1px solid #d8dfed;
+        text-align: left !important;
+        white-space: normal;
+        line-height: 1.3;
+    }
+    .st-key-zx_ai_report_result .zx-action-plan-table td {
+        height: auto;
+        min-height: 52px;
+        padding: 0.76rem 0.68rem;
+        color: #172033;
+        background: #f8faff;
+        border-right: 1px solid #e1e6ef;
+        border-bottom: 1px solid #e1e6ef;
+        text-align: left !important;
+        vertical-align: top;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: normal;
+        line-height: 1.5;
+    }
+    .st-key-zx_ai_report_result .zx-action-plan-table th:last-child,
+    .st-key-zx_ai_report_result .zx-action-plan-table td:last-child {
+        border-right: 0;
+    }
+    .st-key-zx_ai_report_result .zx-action-plan-table tbody tr:last-child td {
+        border-bottom: 0;
+    }
+    .st-key-zx_ai_report_result .zx-action-plan-table th:nth-child(1),
+    .st-key-zx_ai_report_result .zx-action-plan-table th:nth-child(2),
+    .st-key-zx_ai_report_result .zx-action-plan-table th:nth-child(5),
+    .st-key-zx_ai_report_result .zx-action-plan-table td:nth-child(1),
+    .st-key-zx_ai_report_result .zx-action-plan-table td:nth-child(2),
+    .st-key-zx_ai_report_result .zx-action-plan-table td:nth-child(5) {
+        text-align: center !important;
+        vertical-align: middle;
+    }
+    .st-key-zx_ai_report_result .zx-action-plan-table td:nth-child(5) {
+        background: #eef8f2;
+    }
     section[data-testid="stSidebar"] .zx-pareto-chip {
         color: #172033 !important;
         background: #ffffff !important;
@@ -5496,6 +5554,32 @@ def build_zx_action_plan_frame(facts_json: str, language: str, narrative: dict |
     return pd.DataFrame(rows)
 
 
+def render_zx_action_plan_table(action_plan: pd.DataFrame) -> str:
+    column_widths = ["7%", "10%", "28%", "40%", "15%"]
+    columns = list(action_plan.columns)
+    header_html = "".join(f"<th>{html.escape(str(column))}</th>" for column in columns)
+    rows_html: list[str] = []
+    for _, row in action_plan.iterrows():
+        cells: list[str] = []
+        for index, column in enumerate(columns):
+            value = html.escape(str(row.get(column, "/") or "/")).replace("\n", "<br>")
+            if index == 4 and value != "/":
+                value = f"<span class='zx-aql-standard'>{value}</span>"
+            cells.append(f"<td>{value}</td>")
+        rows_html.append(f"<tr>{''.join(cells)}</tr>")
+    if not rows_html:
+        rows_html.append(f"<tr><td colspan='{len(columns)}'>/</td></tr>")
+    colgroup = "".join(f"<col style='width:{width}'>" for width in column_widths[: len(columns)])
+    return (
+        "<div class='zx-action-plan-wrap'>"
+        "<table class='zx-action-plan-table'>"
+        f"<colgroup>{colgroup}</colgroup>"
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody>"
+        "</table></div>"
+    )
+
+
 def tu_report_passes_guardrails(content: str, language: str) -> bool:
     if language == "中文":
         forbidden = r"高于|低于|偏高|偏低|较高|较低|显著|严重|理想|阈值|系统性|可能.{0,12}(导致|源于|引发|存在)|设备|工艺参数|操作员|材料问题|包装|物流|运输|使用场景|设计问题|追责|≥|≤"
@@ -5784,36 +5868,11 @@ def render_qwen_summary_panel(
                         active_language,
                         report.get("narrative"),
                     )
-                    aql_column = "建议 AQL 动态标准" if active_language == "中文" else "Recommended Dynamic AQL Standard"
-                    focus_column = "建议关注点" if active_language == "中文" else "Recommended Focus"
-                    cp_column = "相关 CP / 工序标准" if active_language == "中文" else "Related CP / Process Standard"
-                    styled_action_plan = (
-                        action_plan.style
-                        .set_properties(**{"color": "#172033", "background-color": "#f8faff"})
-                        .set_properties(
-                            subset=[aql_column],
-                            **{"color": "#217346", "background-color": "#e6f4ec", "font-weight": "800"},
-                        )
-                    )
-                    st.dataframe(
-                        styled_action_plan,
-                        width="stretch",
-                        height="auto",
-                        hide_index=True,
-                        row_height=112,
-                        column_config={
-                            action_plan.columns[0]: st.column_config.NumberColumn(width="small"),
-                            "CC": st.column_config.TextColumn(width="small"),
-                            focus_column: st.column_config.TextColumn(width="large"),
-                            cp_column: st.column_config.TextColumn(width="large"),
-                            aql_column: st.column_config.TextColumn(width="medium"),
-                        },
-                        key=f"{key}_{active_language}_action_plan",
-                    )
+                    st.markdown(render_zx_action_plan_table(action_plan), unsafe_allow_html=True)
                     st.caption(
-                        "可拖动表头之间的分隔线，自定义每一列的宽度。建议 AQL 动态标准仅为推荐等级，最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。"
+                        "表格列宽固定响应页面，行高随内容自动调整。建议 AQL 动态标准仅为推荐等级，最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。"
                         if active_language == "中文"
-                        else "Drag the separators between column headers to resize each column. The recommended dynamic AQL standard is a recommendation only; final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table."
+                        else "Column widths respond to the page and row heights adapt to their content. The recommended dynamic AQL standard is a recommendation only; final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table."
                     )
                 else:
                     st.markdown(display_content, unsafe_allow_html=True)
