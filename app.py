@@ -1402,7 +1402,7 @@ st.markdown(
         margin-top: 1.15rem;
         padding-bottom: 0.45rem;
         border-bottom: 1px solid #dfe4fb;
-        font-size: 1.28rem;
+        font-size: 1.48rem;
         color: #2434a7;
         text-align: center;
     }
@@ -4352,7 +4352,7 @@ def build_tu_community_ai_fact_pack(
             .to_dict()
         )
     if not product_df.empty:
-        ranked_products = product_df.sort_values("risk_score", ascending=False).head(10)
+        ranked_products = prepare_fixed_product_risk(product_df).head(10)
         for index, (_, row) in enumerate(ranked_products.iterrows(), start=1):
             product_facts.append(
                 {
@@ -4361,8 +4361,8 @@ def build_tu_community_ai_fact_pack(
                     "supplier_code": clean_ai_fact_text(row.get("supplier_code")),
                     "cc": clean_ai_fact_text(row.get("product_code")),
                     "model": jdy_models_by_cc.get(str(row.get("product_code")), "") or clean_ai_fact_text(row.get("product_label")) or clean_ai_fact_text(row.get("voice_product_name")),
-                    "risk_score": finite_number(row.get("risk_score")),
-                    "risk_level": clean_ai_fact_text(row.get("risk_level")),
+                    "risk_score": finite_number(row.get("risk_score_fixed")),
+                    "risk_level": clean_ai_fact_text(row.get("risk_level_fixed")),
                     "inspected": finite_number(row.get("qty_inspected")),
                     "defects": finite_number(row.get("defect_qty")),
                     "defect_rate": finite_number(row.get("defect_rate")),
@@ -5337,14 +5337,17 @@ def render_qwen_summary_panel(
         )
     api_key = get_qwen_api_key()
     configured_model = get_secret_value(["QWEN_MODEL"], default="qwen-flash")
-    model_options = list(dict.fromkeys([configured_model, "qwen-flash", "qwen-turbo", "qwen-plus", "qwen-max"]))
-    model = st.selectbox(
-        t("AI 模型", "AI Model"),
-        model_options,
-        index=0,
-        key=f"{key}_model",
-        help=t("Flash 速度最快；Plus / Max 更适合复杂管理总结，但响应更慢、成本更高。", "Flash is fastest; Plus / Max are better for complex management summaries but are slower and costlier."),
-    )
+    if prompt_profile == "zx_conclusion":
+        model = configured_model
+    else:
+        model_options = list(dict.fromkeys([configured_model, "qwen-flash", "qwen-turbo", "qwen-plus", "qwen-max"]))
+        model = st.selectbox(
+            t("AI 模型", "AI Model"),
+            model_options,
+            index=0,
+            key=f"{key}_model",
+            help=t("Flash 速度最快；Plus / Max 更适合复杂管理总结，但响应更慢、成本更高。", "Flash is fastest; Plus / Max are better for complex management summaries but are slower and costlier."),
+        )
     prompt_version = (
         TU_COMMUNITY_AI_PROMPT_VERSION
         if prompt_profile == "tu_community"
@@ -5433,8 +5436,7 @@ def render_qwen_summary_panel(
             st.error(t(f"AI 总结生成失败：{exc}", f"AI summary failed: {exc}"))
     if report:
         if prompt_profile == "zx_conclusion":
-            report_facts_json = str(report.get("facts_json") or current_facts_json())
-            display_content = build_zx_conclusion_report(report_facts_json, active_language, report.get("narrative"))
+            display_content = build_zx_conclusion_report(current_facts_json(), active_language, report.get("narrative"))
             with st.container(key="zx_ai_report_result"):
                 st.markdown(display_content)
         else:
@@ -7932,18 +7934,18 @@ def render_zx_high_risk_cluster(
             namelength=-1,
         ),
     )
-    # Keep the zero and focus-limit lines inside the plotting area so bubbles
-    # and labels at the boundaries are not clipped in half.
+    # Risk axes are normalized to 0–100. Keep the full score space visible so
+    # boundary points such as CC 335330 at client risk 100 are not clipped.
     fig.update_xaxes(
-        range=[-4, 54],
+        range=[-4, 104],
         tickmode="array",
-        tickvals=[0, 10, 20, 30, 40, 50],
+        tickvals=[0, 20, 40, 60, 80, 100],
         constrain="domain",
     )
     fig.update_yaxes(
-        range=[-5, 65],
+        range=[-5, 108],
         tickmode="array",
-        tickvals=[0, 10, 20, 30, 40, 50, 60],
+        tickvals=[0, 20, 40, 60, 80, 100],
         constrain="domain",
     )
     fig.add_vline(x=50, line_dash="dash", line_color="#8b96b8", opacity=0.45)
@@ -8303,11 +8305,12 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         return
     options = sorted(source["product_code"].dropna().astype(str).unique().tolist())
     default_ccs = [value for value in pareto_risk_cc_codes(products) if value in options]
+    default_signature = hashlib.sha1("|".join(default_ccs).encode("utf-8")).hexdigest()[:8]
     selected_ccs = render_cc_search_form(
         options,
         default_ccs,
-        state_key=f"zx_defect_trend_cc_selection_{language_query_code()}",
-        form_key=f"zx_defect_trend_cc_form_{language_query_code()}",
+        state_key=f"zx_defect_trend_cc_selection_{language_query_code()}_{default_signature}",
+        form_key=f"zx_defect_trend_cc_form_{language_query_code()}_{default_signature}",
         container_key="zx_cc_search",
         title="",
         note="",
@@ -8443,6 +8446,7 @@ def render_defect_pareto(
                 "all": t("全部疵点类型", "All Defect Types"),
             }[value],
             key=f"defect_pareto_view_{language_query_code()}_{source_label}",
+            label_visibility="collapsed",
         )
         pareto = all_defects.head(top_count).copy() if view_mode == "top" else all_defects.copy()
         pareto["focus_group"] = pareto["defect_type"].astype(str).map(
@@ -8507,6 +8511,7 @@ def render_product_priority(
                 "all": t("全部 CC", "All CCs"),
             }[value],
             key=f"product_risk_view_{language_query_code()}_{product_view_key}",
+            label_visibility="collapsed",
         )
         view = pareto_products.copy() if view_mode == "top" else all_products.copy()
     else:
@@ -8517,7 +8522,7 @@ def render_product_priority(
     if pareto_mode:
         achieved_share = float(pareto_products.get("cumulative_risk_share", pd.Series(0, index=pareto_products.index)).max())
         st.markdown(
-            f"<span class='zx-pareto-chip'>80/20 · Top 20% · {len(pareto_products)} {t('个 CC 贡献', 'CCs contribute')} {achieved_share:.0%} {t('的风险分', 'of Risk Score')}</span>",
+            f"<span class='zx-pareto-chip'>Top 20% · {len(pareto_products)} {t('个 CC 贡献', 'CCs contribute')} {achieved_share:.0%} {t('的风险分', 'of Risk Score')}</span>",
             unsafe_allow_html=True,
         )
         focus_codes = set(pareto_products["product_code"].astype(str))
@@ -10625,8 +10630,8 @@ def render_community_cockpit(
         )
 
         render_chart_heading(
-            "Top CC 帕累托",
-            "Top CC Pareto",
+            "Top 风险 CC 帕累托",
+            "Top Risk CC Pareto",
             "把最需要优先复盘的 CC 排在前面。",
             "Rank the CCs that need review first.",
             "直接沿用高风险产品聚类分析的产品范围和风险分，默认展示综合风险排名前 20% 的 CC。",
@@ -10644,19 +10649,31 @@ def render_community_cockpit(
             show_caption=False,
         )
 
+        top_risk_ccs = pareto_risk_cc_codes(zx_cluster_risk_view)
+        top_risk_finished_df = finished_df[
+            finished_df.get("product_code", pd.Series("", index=finished_df.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .isin(top_risk_ccs)
+        ].copy()
         render_chart_heading(
             "Top 疵点类型 Pareto",
             "Top Defect Type Pareto",
-            "找出当前范围内贡献最大的疵点类型。",
-            "Find the defect types contributing most in the current scope.",
-            "按疵点数量做 Pareto 排序。",
-            "Pareto ranking by defect quantity.",
-            "同一疵点类型的疵点数求和，取 Top 项展示。",
-            "Sum defect quantity by defect type and show the top contributors.",
+            "找出 Top 风险 CC 中贡献最大的疵点类型。",
+            "Find the defect types contributing most within the top-risk CCs.",
+            "先沿用 Top Risk CC Pareto 的 Top 20% CC，再按疵点数量做 Pareto 排序。",
+            "Reuse the Top 20% CCs from Top Risk CC Pareto, then rank defect types by defect quantity.",
+            "同一疵点类型的疵点数仅在这些 Top 风险 CC 内求和。",
+            "Sum each defect type only within those top-risk CCs.",
             zx_qc_source,
             "zx_pareto",
         )
-        render_defect_pareto(finished_df, zx_qc_source, show_caption=False, focus_mode=True)
+        st.markdown(
+            f"<span class='zx-pareto-chip'>{t('范围', 'Scope')} · Top Risk CC Pareto · {len(top_risk_ccs)} {t('个 CC', 'CCs')}</span>",
+            unsafe_allow_html=True,
+        )
+        render_defect_pareto(top_risk_finished_df, zx_qc_source, show_caption=False, focus_mode=True)
 
         render_chart_heading(
             "CC 不良率趋势",
@@ -10670,7 +10687,7 @@ def render_community_cockpit(
             zx_qc_source,
             "zx_trend",
         )
-        render_zx_cc_defect_rate_trend_v1(finished_df, product_df)
+        render_zx_cc_defect_rate_trend_v1(finished_df, zx_cluster_risk_view)
 
         with st.expander(t("更多分析", "More Analysis"), expanded=True):
             analysis_labels = {
@@ -10717,7 +10734,7 @@ def render_community_cockpit(
                         finished_df,
                         voice_df,
                         incoming_df,
-                        product_df,
+                        zx_cluster_risk_view,
                         process_df,
                         risk_settings,
                     ),
@@ -10730,8 +10747,8 @@ def render_community_cockpit(
     render_zx_high_risk_cluster(product_df, risk_settings, source_label, scope_key.lower())
 
     render_chart_heading(
-        "Top CC 帕累托",
-        "Top CC Pareto",
+        "Top 风险 CC 帕累托",
+        "Top Risk CC Pareto",
         "把最需要优先复盘的产品 / 款号排在前面。",
         "Rank the products/styles that need review first.",
         "按产品风险分排序，默认显示 Top 20% CC，也可切换查看全部 CC。",
@@ -11293,8 +11310,8 @@ def render_zx_management_dashboard_v2(
     if active_page == "product":
         st.subheader(t("产品风险", "Product Risk"))
         render_chart_heading(
-            "Top CC 帕累托",
-            "Top CC Pareto",
+            "Top 风险 CC 帕累托",
+            "Top Risk CC Pareto",
             "优先查看综合风险最高的 CC。",
             "Prioritize CCs with the highest combined risk.",
             "按产品风险分排序，默认显示 Top 20%，也可查看全部。",
