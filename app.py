@@ -1408,13 +1408,52 @@ st.markdown(
     }
     .st-key-zx_ai_report_result table {
         width: 100%;
+        border: 1px solid #d8def2;
+        border-collapse: separate;
+        border-spacing: 0;
         border-radius: 12px;
         overflow: hidden;
+        box-shadow: 0 6px 18px rgba(35, 52, 153, 0.06);
     }
     .st-key-zx_ai_report_result th,
     .st-key-zx_ai_report_result td {
+        padding: 0.72rem 0.78rem !important;
         text-align: center !important;
         vertical-align: middle;
+        border-color: #e1e6f4 !important;
+    }
+    .st-key-zx_ai_report_result thead th {
+        color: #18317d;
+        background: #e9eefc;
+        font-weight: 850;
+    }
+    .st-key-zx_ai_report_result tbody tr:nth-child(odd) td {
+        background: #fffdf5;
+    }
+    .st-key-zx_ai_report_result tbody tr:nth-child(even) td {
+        background: #f7f9ff;
+    }
+    .st-key-zx_ai_report_result table:nth-of-type(3) thead th {
+        color: #ffffff;
+        background: linear-gradient(135deg, #2439a8, #5265dd);
+    }
+    .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(3),
+    .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(4),
+    .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(6) {
+        text-align: left !important;
+        vertical-align: top;
+        line-height: 1.55;
+    }
+    .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(3) {
+        background: #fffaf0;
+    }
+    .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(4) {
+        background: #f0f5ff;
+    }
+    .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(5) {
+        color: #1c378e;
+        background: #edf7f1;
+        font-weight: 850;
     }
     section[data-testid="stSidebar"] .zx-pareto-chip {
         color: #172033 !important;
@@ -4183,9 +4222,7 @@ def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_versi
 def load_jiandaoyun_zx_cp_api(api_key: str, refresh_token: int = 0) -> tuple[pd.DataFrame, dict]:
     del refresh_token
     source = JIANDAOYUN_SOURCES["ZX_CP"]
-    widgets_res = jdy_api_post(api_key, "/api/v5/app/entry/widget/list", {"app_id": source["app_id"], "entry_id": source["entry_id"]})
-    widgets = widgets_res.get("widgets") or []
-    frames: list[pd.DataFrame] = []
+    records: list[dict] = []
     last_data_id = None
     while True:
         payload = {"app_id": source["app_id"], "entry_id": source["entry_id"], "filter": {}, "limit": 100}
@@ -4195,27 +4232,42 @@ def load_jiandaoyun_zx_cp_api(api_key: str, refresh_token: int = 0) -> tuple[pd.
         batch = response.get("data") or []
         if not batch:
             break
-        frames.append(flatten_jdy_records(batch, widgets))
+        records.extend(batch)
         if len(batch) < 100:
             break
         last_data_id = batch[-1].get("_id")
         if not last_data_id:
             break
-    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    if raw.empty:
-        return raw, {"records": 0, "mode": "live_api"}
-    cp = pd.DataFrame(
-        {
-            "cc": coalesce_columns(raw, ["CC", "产品编码 CC", "产品代码 CC", "款号 CC"], "").astype(str).str.replace(r"\.0$", "", regex=True).str.strip(),
-            "model": coalesce_columns(raw, ["Model", "型号 Model", "产品名称 Model"], "").astype(str).str.strip(),
-            "process": coalesce_columns(raw, ["制程 Process"], "").astype(str),
-            "control_point": coalesce_columns(raw, ["管控点 Control Point"], "").astype(str),
-            "control_method": coalesce_columns(raw, ["参考管控文件 Control Method"], "").astype(str),
-            "requirement": coalesce_columns(raw, ["管控要求 Control Requirement"], "").astype(str),
-            "risk_level": coalesce_columns(raw, ["风险等级 Risk Level"], "").astype(str),
-            "updated_at": pd.to_datetime(coalesce_columns(raw, ["更新时间"], pd.NaT), errors="coerce"),
-        }
-    )
+    rows: list[dict[str, object]] = []
+    for record in records:
+        cc_rows = record.get("_widget_1713757689304") or []
+        control_rows = record.get("_widget_1694497704842") or []
+        cc_values = [
+            re.sub(r"\.0$", "", str(item.get("_widget_1713757689306") or "")).strip()
+            for item in cc_rows
+            if isinstance(item, dict)
+        ]
+        cc_values = [value for value in cc_values if value]
+        for cc in cc_values:
+            for control in control_rows:
+                if not isinstance(control, dict):
+                    continue
+                rows.append(
+                    {
+                        "cc": cc,
+                        "model": "",
+                        "process": str(control.get("_widget_1703048174409") or "").strip(),
+                        "control_point": str(control.get("_widget_1703048174410") or "").strip(),
+                        "control_method": str(control.get("_widget_1703048174411") or "").strip(),
+                        "requirement": str(control.get("_widget_1703048174412") or "").strip(),
+                        "risk_level": str(control.get("_widget_1703048174413") or "").strip(),
+                        "inspection_result": str(control.get("_widget_1694497704845") or "").strip(),
+                        "updated_at": pd.to_datetime(record.get("updateTime"), errors="coerce"),
+                    }
+                )
+    cp = pd.DataFrame(rows)
+    if cp.empty:
+        return cp, {"records": 0, "mode": "live_api", "source_name": source["source_name"]}
     return cp, {"records": len(cp), "mode": "live_api", "source_name": source["source_name"]}
 
 
@@ -4335,6 +4387,61 @@ def clean_ai_fact_text(value: object) -> str | None:
         pass
     text = re.sub(r"\s+", " ", str(value)).strip()
     return None if not text or text.lower() in {"nan", "none", "null", "-"} else text
+
+
+def match_cp_rows_to_defect(cp_rows: pd.DataFrame, defect: object, limit: int = 2) -> pd.DataFrame:
+    if cp_rows.empty:
+        return cp_rows
+    defect_text = str(defect or "").casefold()
+    keyword_groups = [
+        (
+            ("缝份不均", "uneven seam", "seam allowance", "止口"),
+            ("seam allowance", "车缝止口", "止口", "dcs 111", "seam density", "针密度"),
+        ),
+        (
+            ("针洞", "needle hole"),
+            ("needle", "针", "seam density", "针密度", "dcs 111"),
+        ),
+        (
+            ("内里爆口", "lining burst", "liner burst"),
+            ("内里翻口", "爆口", "seam allowance", "车缝止口", "dcs 111"),
+        ),
+        (
+            ("扭指", "twisted finger", "finger twist"),
+            ("finger", "手指", "车缝", "seam"),
+        ),
+        (
+            ("车缝", "seam", "stitch"),
+            ("车缝", "seam", "stitch", "dcs"),
+        ),
+    ]
+    preferred_terms: tuple[str, ...] = ()
+    for triggers, terms in keyword_groups:
+        if any(trigger in defect_text for trigger in triggers):
+            preferred_terms = terms
+            break
+    generic_terms = tuple(
+        token
+        for token in re.findall(r"[a-z]{3,}|[\u4e00-\u9fff]{2,}", defect_text)
+        if token not in {"defect", "issue", "不均", "问题"}
+    )
+    terms = tuple(dict.fromkeys((*preferred_terms, *generic_terms)))
+    ranked = cp_rows.copy()
+    searchable = (
+        ranked.get("process", pd.Series("", index=ranked.index)).fillna("").astype(str)
+        + " "
+        + ranked.get("control_point", pd.Series("", index=ranked.index)).fillna("").astype(str)
+        + " "
+        + ranked.get("control_method", pd.Series("", index=ranked.index)).fillna("").astype(str)
+        + " "
+        + ranked.get("requirement", pd.Series("", index=ranked.index)).fillna("").astype(str)
+    ).str.casefold()
+    ranked["_match_score"] = searchable.map(
+        lambda text: sum(3 if term in {"dcs 111", "seam allowance", "车缝止口"} else 1 for term in terms if term in text)
+    )
+    ranked = ranked.sort_values(["_match_score", "updated_at"], ascending=[False, False])
+    matched = ranked[ranked["_match_score"].gt(0)]
+    return (matched if not matched.empty else ranked).head(limit).drop(columns="_match_score")
 
 
 def build_tu_community_ai_fact_pack(
@@ -4493,6 +4600,7 @@ def build_tu_community_ai_fact_pack(
             cp_for_cc = cp[
                 cp["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip().eq(cc)
             ].copy()
+        matched_cp = match_cp_rows_to_defect(cp_for_cc, product.get("top_defect"), limit=2)
         pass_count = fail_count = valid_records = 0
         if not cc_fqc.empty:
             metrics = jdy_fqc_rft_metrics(cc_fqc)
@@ -4528,6 +4636,27 @@ def build_tu_community_ai_fact_pack(
             if not cp_for_cc.empty
             else ""
         )
+        cp_focus_points: list[str] = []
+        cp_requirements: list[str] = []
+        cp_matches: list[dict[str, str]] = []
+        for _, cp_row in matched_cp.iterrows():
+            process = clean_ai_fact_text(cp_row.get("process"))
+            control_point = clean_ai_fact_text(cp_row.get("control_point"))
+            control_method = clean_ai_fact_text(cp_row.get("control_method"))
+            requirement = clean_ai_fact_text(cp_row.get("requirement"))
+            focus = " / ".join(value for value in [process, control_point, control_method] if value)
+            if focus:
+                cp_focus_points.append(focus[:220])
+            if requirement:
+                requirement_label = f"{control_point}: {requirement}" if control_point else requirement
+                cp_requirements.append(requirement_label[:320])
+            if focus:
+                cp_matches.append(
+                    {
+                        "focus": focus[:220],
+                        "requirement": (requirement or "")[:320],
+                    }
+                )
         ps_action_facts.append(
             {
                 "fact_id": f"PSA{index:02d}",
@@ -4547,6 +4676,9 @@ def build_tu_community_ai_fact_pack(
                 "cp_linked": bool(not cp_for_cc.empty),
                 "cp_processes": cp_processes,
                 "cp_control_points": cp_control_points,
+                "cp_focus_points": cp_focus_points,
+                "cp_requirements": cp_requirements,
+                "cp_matches": cp_matches,
             }
         )
         risk_level_value = str(product.get("risk_level") or "Medium")
@@ -4696,12 +4828,12 @@ def build_qwen_quality_prompt(report_scope: str, language: str, prompt_profile: 
             "Use exactly these localized sections and tables: "
             "(1) '## 1. 高风险 CC Top 5' with columns '优先级 | CC | Model | 主要疵点 | DPU（疵点数/检验数） | RPM | Intern Voice'; "
             "(2) '## 2. Decathlon & 工厂已做行动' with columns 'CC | Decathlon FQC 记录 | 工厂 FQC 记录 | 首次 RFT（PASS/有效记录） | 最近 FQC'; "
-            "(3) '## 3. 推荐行动计划' with columns '优先级 | CC | 建议关注点 | 相关 CP / 工序建议 | 动态 AQL 建议 | 完成标准'."
+            "(3) '## 3. 推荐行动计划' with columns '优先级 | CC | 建议关注点 | 相关 CP / 工序建议 | AQL 标准 | 完成标准'."
             if language == "中文"
             else "Use exactly these sections and tables: "
             "(1) '## 1. Top 5 High-Risk CCs' with columns 'Priority | CC | Model | Top Defect | DPU (defect quantity / inspected) | RPM | Intern Voice'; "
             "(2) '## 2. Completed Decathlon & Factory Actions' with columns 'CC | Decathlon FQC Records | Factory FQC Records | First-Pass RFT (PASS/valid) | Latest FQC'; "
-            "(3) '## 3. Recommended Action Plan' with columns 'Priority | CC | Recommended Focus | Related CP / Process Recommendation | Dynamic AQL Recommendation | Completion Standard'."
+            "(3) '## 3. Recommended Action Plan' with columns 'Priority | CC | Recommended Focus | Related CP / Process Recommendation | AQL Standard | Completion Standard'."
         )
         return (
             f"You are writing a polished {output_language} conclusion report for the ZX Textile Unit dashboard. "
@@ -5058,14 +5190,14 @@ def zx_conclusion_has_canonical_scope(content: str, facts_json: str, language: s
     facts = json.loads(facts_json)
     expected_ccs = [str(item.get("cc") or "").strip() for item in facts.get("product_risks", [])[:5]]
     required = (
-        ["高风险 CC Top 5", "Decathlon & 工厂已做行动", "推荐行动计划", "动态 AQL 建议", "DPU（疵点数/检验数）"]
+        ["高风险 CC Top 5", "Decathlon & 工厂已做行动", "推荐行动计划", "AQL 标准", "DPU（疵点数/检验数）"]
         if language == "中文"
-        else ["Top 5 High-Risk CCs", "Completed Decathlon & Factory Actions", "Recommended Action Plan", "Dynamic AQL Recommendation", "DPU (defect quantity / inspected)"]
+        else ["Top 5 High-Risk CCs", "Completed Decathlon & Factory Actions", "Recommended Action Plan", "AQL Standard", "DPU (defect quantity / inspected)"]
     )
     return all(token in content for token in required) and all(cc in content for cc in expected_ccs if cc)
 
 
-ZX_CONCLUSION_AI_PROMPT_VERSION = "zx-conclusion-v7-dynamic-aql"
+ZX_CONCLUSION_AI_PROMPT_VERSION = "zx-conclusion-v8-cp-recommendations"
 
 
 def default_zx_conclusion_narrative(facts_json: str, language: str) -> dict:
@@ -5163,12 +5295,46 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
     def localized_aql(cc: str) -> str:
         recommendation = str(aql_by_cc.get(cc, {}).get("recommendation") or "")
         if "1.0" in recommendation:
-            return "加严检验候选 · AQL 1.0" if language == "中文" else "Tightened inspection candidate · AQL 1.0"
+            return "AQL 1.0"
         if "1.5" in recommendation:
-            return "正常检验候选 · AQL 1.5" if language == "中文" else "Normal inspection candidate · AQL 1.5"
+            return "AQL 1.5"
         if "2.5" in recommendation:
-            return "稳定后正常/放宽候选 · AQL 2.5" if language == "中文" else "Normal/reduced candidate after stable evidence · AQL 2.5"
-        return "维持正常检验，待补充证据" if language == "中文" else "Maintain normal inspection pending evidence"
+            return "AQL 2.5"
+        return "-"
+
+    def report_cell(value: object, max_length: int = 520) -> str:
+        text = str(value or "-").replace("|", "/")[:max_length]
+        return html.escape(text).replace("\n", "<br>")
+
+    def cp_action_cells(action: dict, top_defect: object) -> tuple[str, str]:
+        cp_matches = action.get("cp_matches") or []
+        focus_lines = [f"主要疵点：{top_defect or '待确认'}" if language == "中文" else f"Top defect: {report_text(top_defect)}"]
+        recommendation_lines: list[str] = []
+        for match in cp_matches[:2]:
+            if not isinstance(match, dict):
+                continue
+            focus = str(match.get("focus") or "").strip()
+            requirement = str(match.get("requirement") or "").strip()
+            if language == "English":
+                focus = report_text(focus)
+                requirement = report_text(requirement)
+            if focus:
+                focus_lines.append(focus)
+                requirement_label = "要求：" if language == "中文" else "Requirement: "
+                recommendation_lines.append(
+                    f"{focus}<br><b>{requirement_label}</b>{requirement or ('按 CP 原始要求现场确认' if language == '中文' else 'Verify against the source CP requirement')}"
+                )
+        if not recommendation_lines:
+            fallback = (
+                f"未找到该 CC 的匹配 CP；补充 {top_defect or '主要疵点'} 与工序、DCS/DPR 的关联"
+                if language == "中文"
+                else f"No matched CP for this CC; link {report_text(top_defect)} to its process and DCS/DPR"
+            )
+            recommendation_lines.append(fallback)
+        return "<br>".join(report_cell(line) for line in focus_lines), "<br><br>".join(
+            report_cell(line).replace("&lt;br&gt;", "<br>").replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+            for line in recommendation_lines
+        )
 
     if language == "中文":
         risk_rows = []
@@ -5194,26 +5360,15 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
             cc = str(item.get("cc") or "-")
             action = actions_by_cc.get(cc, {})
             narrative_action = narrative_for_cc(cc)
-            focus_parts = [str(item.get("top_defect") or "主要疵点待确认")]
+            focus_text, cp_recommendation = cp_action_cells(action, item.get("top_defect"))
             if narrative_action.get("action"):
-                focus_parts.append(str(narrative_action["action"]))
-            cp_processes = str(action.get("cp_processes") or "").strip()
-            cp_points = str(action.get("cp_control_points") or "").strip()
-            if cp_processes or cp_points:
-                cp_recommendation = "；".join(
-                    part for part in [
-                        f"工序：{cp_processes}" if cp_processes else "",
-                        f"管控点：{cp_points}" if cp_points else "",
-                    ] if part
-                )
-            else:
-                cp_recommendation = f"围绕 {item.get('top_defect') or '主要疵点'} 补充对应工序与 CP 关联"
+                focus_text += f"<br><b>行动：</b>{report_cell(narrative_action['action'])}"
             completion_standard = (
                 narrative_action.get("completion_standard")
-                or "完成下一轮 FQC，更新首次 RFT，并记录关注疵点与 CP 验证结果"
+                or "下一轮 FQC 逐项核对上述 CP 要求，记录结果、首次 RFT 与未符合项关闭证据"
             )
             action_plan_rows.append(
-                f"| {index} | {cc} | {'；'.join(focus_parts)} | {cp_recommendation} | {localized_aql(cc)} | {completion_standard} |"
+                f"| {index} | {cc} | {focus_text} | {cp_recommendation} | {localized_aql(cc)} | {report_cell(completion_standard)} |"
             )
         return f"""## 1. 高风险 CC Top 5
 | 优先级 | CC | Model | 主要疵点 | DPU（疵点数/检验数） | RPM | Intern Voice |
@@ -5228,11 +5383,11 @@ Top 5 沿用当前看板的风险排序；DPU 表示单位产品疵点数，不�
 {chr(10).join(action_rows) or '| 暂无数据 | - | - | - | - |'}
 
 ## 3. 推荐行动计划
-| 优先级 | CC | 建议关注点 | 相关 CP / 工序建议 | 动态 AQL 建议 | 完成标准 |
+| 优先级 | CC | 建议关注点 | 相关 CP / 工序建议 | AQL 标准 | 完成标准 |
 |---:|---|---|---|---|---|
 {chr(10).join(action_plan_rows) or '| - | 暂无数据 | - | - | - | - |'}
 
-动态 AQL 仅为风险驱动的检验候选；最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。
+AQL 标准为风险驱动的推荐等级；最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。
 """
 
     risk_rows = []
@@ -5258,26 +5413,15 @@ Top 5 沿用当前看板的风险排序；DPU 表示单位产品疵点数，不�
         cc = str(item.get("cc") or "-")
         action = actions_by_cc.get(cc, {})
         narrative_action = narrative_for_cc(cc)
-        focus_parts = [report_text(item.get("top_defect"))]
+        focus_text, cp_recommendation = cp_action_cells(action, item.get("top_defect"))
         if narrative_action.get("action"):
-            focus_parts.append(str(narrative_action["action"]))
-        cp_processes = report_text(action.get("cp_processes")) if action.get("cp_processes") else ""
-        cp_points = report_text(action.get("cp_control_points")) if action.get("cp_control_points") else ""
-        if cp_processes or cp_points:
-            cp_recommendation = "; ".join(
-                part for part in [
-                    f"Process: {cp_processes}" if cp_processes else "",
-                    f"Control point: {cp_points}" if cp_points else "",
-                ] if part
-            )
-        else:
-            cp_recommendation = f"Link the relevant process and CP to {report_text(item.get('top_defect'))}"
+            focus_text += f"<br><b>Action:</b> {report_cell(narrative_action['action'])}"
         completion_standard = (
             narrative_action.get("completion_standard")
-            or "Complete the next FQC round, update first-pass RFT, and record defect-focus and CP verification results"
+            or "Check every listed CP requirement in the next FQC round and record the result, first-pass RFT, and closure evidence for nonconformities"
         )
         action_plan_rows.append(
-            f"| {index} | {cc} | {'; '.join(focus_parts)} | {cp_recommendation} | {localized_aql(cc)} | {completion_standard} |"
+            f"| {index} | {cc} | {focus_text} | {cp_recommendation} | {localized_aql(cc)} | {report_cell(completion_standard)} |"
         )
     return f"""## 1. Top 5 High-Risk CCs
 | Priority | CC | Model | Top Defect | DPU (defect quantity / inspected) | RPM | Intern Voice |
@@ -5292,11 +5436,11 @@ The Top 5 follow the dashboard risk ranking. DPU means defect quantity per inspe
 {chr(10).join(action_rows) or '| No data | - | - | - | - |'}
 
 ## 3. Recommended Action Plan
-| Priority | CC | Recommended Focus | Related CP / Process Recommendation | Dynamic AQL Recommendation | Completion Standard |
+| Priority | CC | Recommended Focus | Related CP / Process Recommendation | AQL Standard | Completion Standard |
 |---:|---|---|---|---|---|
 {chr(10).join(action_plan_rows) or '| - | No data | - | - | - | - |'}
 
-Dynamic AQL is a risk-based inspection candidate only. Final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table.
+The AQL standard is the risk-based recommended level. Final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table.
 """
 
 
@@ -5577,7 +5721,7 @@ def render_qwen_summary_panel(
                     report.get("narrative"),
                 )
             with st.container(key="zx_ai_report_result"):
-                st.markdown(display_content)
+                st.markdown(display_content, unsafe_allow_html=True)
         else:
             st.markdown(report["content"])
             st.caption(t(f"通义千问 {report['model']} · {report['generated_at']}。数字来自当前看板事实，根因仍需现场验证。", f"Qwen {report['model']} · {report['generated_at']}. Numbers come from dashboard facts; root causes still require on-site validation."))
