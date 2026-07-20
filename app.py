@@ -833,9 +833,11 @@ st.markdown(
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .coverage-grid .kpi-card {
-        min-height: 126px;
+        min-height: 0;
+        padding: 14px 17px;
         background: linear-gradient(145deg, rgba(255,255,255,0.98), rgba(246,248,255,0.94));
     }
+    .coverage-grid .kpi-note:empty {display: none;}
     .kpi-label {
         color: #667085;
         font-size: 0.86rem;
@@ -7639,7 +7641,8 @@ def render_zx_high_risk_cluster(
     view["defect_rate_display"] = view["defect_rate"].map(
         lambda value: pct(value) if pd.notna(value) else "-"
     )
-    top_label_codes = set(select_pareto_risk_products(view)["product_code"].astype(str))
+    pareto_top = select_pareto_risk_products(view)
+    top_label_codes = set(pareto_top["product_code"].astype(str))
     view["cc_text"] = ""
     top_label_mask = view["product_code"].astype(str).isin(top_label_codes)
     view.loc[top_label_mask, "cc_text"] = view.loc[top_label_mask, "product_code"].astype(str)
@@ -7945,6 +7948,17 @@ def render_zx_high_risk_cluster(
             key=f"{widget_key}_cluster_plot",
             cc_customdata_index=0,
             enable_box_zoom=True,
+        )
+    if widget_key == "zx" and not pareto_top.empty:
+        top_three = " · ".join(
+            f"{row['product_code']}（{row['risk_score_fixed']:.1f}）"
+            for _, row in pareto_top.head(3).iterrows()
+        )
+        st.caption(
+            t(
+                f"圆点颜色仅表示 K-means 高 / 中 / 低风险分组；带 CC 标签的点才是与 Top CC Pareto 完全相同的 Risk Score Top 20%。当前前 3：{top_three}。",
+                f"Dot colours show K-means high / medium / low groups only. CC labels mark the same Risk Score Top 20% as Top CC Pareto. Current top 3: {top_three}.",
+            )
         )
     return view
 
