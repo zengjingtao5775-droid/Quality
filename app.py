@@ -211,6 +211,11 @@ def english_display_text(value: object) -> str:
     text = str(value if value is not None else "")
     if st.session_state.get("lang") != "English" or not re.search(r"[\u3400-\u9fff]", text):
         return text
+    return english_source_text(text)
+
+
+def english_source_text(value: object) -> str:
+    text = str(value if value is not None else "")
     if text in ENGLISH_DISPLAY_EXACT:
         return ENGLISH_DISPLAY_EXACT[text]
     for chinese, english in sorted(ENGLISH_DISPLAY_EXACT.items(), key=lambda item: len(item[0]), reverse=True):
@@ -1378,17 +1383,28 @@ st.markdown(
         background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247,249,255,0.96));
         box-shadow: 0 14px 36px rgba(36, 52, 167, 0.09);
     }
-    .st-key-zx_ai_report_result h1 {font-size: 1.38rem; color: #172033;}
+    .st-key-zx_ai_report_result h1 {
+        font-size: 1.38rem;
+        color: #172033;
+        text-align: center;
+    }
     .st-key-zx_ai_report_result h2 {
         margin-top: 1.15rem;
         padding-bottom: 0.45rem;
         border-bottom: 1px solid #dfe4fb;
         font-size: 1.08rem;
         color: #2434a7;
+        text-align: center;
     }
     .st-key-zx_ai_report_result table {
+        width: 100%;
         border-radius: 12px;
         overflow: hidden;
+    }
+    .st-key-zx_ai_report_result th,
+    .st-key-zx_ai_report_result td {
+        text-align: center !important;
+        vertical-align: middle;
     }
     section[data-testid="stSidebar"] .zx-pareto-chip {
         color: #172033 !important;
@@ -1716,14 +1732,14 @@ JIANDAOYUN_SOURCES = {
         "source_name": "Jiandaoyun Gloves / ZX FQC",
     },
     "ZX_CP": {
-        "label": "ZX 控制计划数据库",
+        "label": "ZX 控制计划发起",
         "app_id": "660389615b25f1d03168b4c9",
-        "entry_id": "656fdd73a2f2c0d7a773db5e",
+        "entry_id": "656fdd57acadc0695350af8c",
         "directory": Path("POC_Raw_Data/04_Gloves/ZX_CP"),
         "flat_pattern": "ZX_CP_Jiandaoyun_flat_*.csv",
         "raw_pattern": "ZX_CP_Jiandaoyun_raw_*.json",
         "fields_pattern": "ZX_CP_Jiandaoyun_fields_*.json",
-        "source_name": "Jiandaoyun ZX Control Plan Database",
+        "source_name": "Jiandaoyun ZX Control Plan Initiation",
     },
     "ZX_HUGSS_SHIPPED_PO": {
         "label": "HUGSS supplier shipped PO quantity",
@@ -4557,7 +4573,7 @@ def build_qwen_quality_prompt(report_scope: str, language: str, prompt_profile: 
             "(3) '## 3. 三项行动计划' with columns '序号 | 行动 | 重点 CC | 完成标准'."
             if language == "中文"
             else "Use exactly these sections and tables: "
-            "(1) '## 1. Top 5 High-Risk CCs' with columns 'Priority | CC | Model | Top Defect | DPU (defect points / inspected) | RPM | Intern Voice'; "
+            "(1) '## 1. Top 5 High-Risk CCs' with columns 'Priority | CC | Model | Top Defect | DPU (defect quantity / inspected) | RPM | Intern Voice'; "
             "(2) '## 2. Completed PS Actions' with columns 'CC | Matched CP Records | DKL FQC Records | DKL Sampled Qty | First-Pass RFT (PASS/valid) | Not Passed (FAIL/NG/recheck) | Latest FQC'; "
             "(3) '## 3. Three-Action Plan' with columns 'No. | Action | Priority CCs | Completion Standard'."
         )
@@ -4905,10 +4921,8 @@ def zx_conclusion_period(facts: dict) -> str:
 
 
 def zx_conclusion_title(facts: dict, language: str) -> str:
-    period = zx_conclusion_period(facts)
-    if language == "中文":
-        return f"质量结论报告：ZX Textile Unit Dashboard（{period}）"
-    return f"Conclusion Report: ZX Textile Unit Dashboard ({period})"
+    del facts, language
+    return "AI Quality Conclusion Report (ZX-R12M)"
 
 
 def normalize_zx_conclusion_content(content: str, facts_json: str, language: str) -> str:
@@ -4931,7 +4945,7 @@ def zx_conclusion_has_canonical_scope(content: str, facts_json: str, language: s
     required = (
         ["高风险 CC Top 5", "PS 已做行动", "三项行动计划", "DPU（疵点数/检验数）"]
         if language == "中文"
-        else ["Top 5 High-Risk CCs", "Completed PS Actions", "Three-Action Plan", "DPU (defect points / inspected)"]
+        else ["Top 5 High-Risk CCs", "Completed PS Actions", "Three-Action Plan", "DPU (defect quantity / inspected)"]
     )
     return all(token in content for token in required) and all(cc in content for cc in expected_ccs if cc)
 
@@ -4996,7 +5010,7 @@ Rules:
 4. Refer to evidence qualitatively and direct the reader to the system tables. CC identifiers may be used only when they appear in the first five product_risks.
 5. Do not invent causes, targets, owners, events, or completed work. Actions are recommendations, not claims that work is already completed.
 6. Completion standards must be observable and must not invent a numeric target.
-7. DPU means defect points per inspected unit and is not a defective-unit probability.
+7. DPU means defect quantity per inspected unit and is not a defective-unit probability.
 """.strip()
 
 
@@ -5011,6 +5025,19 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
         if value is None:
             return "-"
         return f"{float(value):,.{digits}f}"
+
+    def report_text(value: object, *, product_label: bool = False) -> str:
+        text = str(value or "-")
+        if language != "English":
+            return text
+        text = english_source_text(text)
+        if product_label:
+            for source, translated in EN_COLOR_REPLACEMENTS:
+                text = text.replace(source, translated)
+            text = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", text)
+            text = text.replace("/", " / ").replace("+", " + ")
+            text = re.sub(r"\s+", " ", text).strip()
+        return text
 
     if language == "中文":
         risk_rows = []
@@ -5083,7 +5110,7 @@ Top 5 沿用当前看板的风险排序；DPU 表示单位产品疵点数，不�
     for index, item in enumerate(products, start=1):
         cc = str(item.get("cc") or "-")
         risk_rows.append(
-            f"| {index} | {cc} | {item.get('model') or '-'} | {item.get('top_defect') or '-'} | "
+            f"| {index} | {cc} | {report_text(item.get('model'), product_label=True)} | {report_text(item.get('top_defect'))} | "
             f"{number(item.get('defects'))} / {number(item.get('inspected'))} = {number((item.get('defect_rate') or 0) * 100, 2)}% | "
             f"{number(item.get('rpm'))} | {number(item.get('iv_cases'))} |"
         )
@@ -5122,11 +5149,11 @@ Top 5 沿用当前看板的风险排序；DPU 表示单位产品疵点数，不�
     return f"""# {zx_conclusion_title(facts, language)}
 
 ## 1. Top 5 High-Risk CCs
-| Priority | CC | Model | Top Defect | DPU (defect points / inspected) | RPM | Intern Voice |
+| Priority | CC | Model | Top Defect | DPU (defect quantity / inspected) | RPM | Intern Voice |
 |---:|---|---|---|---:|---:|---:|
 {chr(10).join(risk_rows) or '| - | No data | - | - | - | - | - |'}
 
-The Top 5 follow the dashboard risk ranking. DPU means defect points per inspected unit and is not a defective-unit probability.
+The Top 5 follow the dashboard risk ranking. DPU means defect quantity per inspected unit and is not a defective-unit probability.
 
 ## 2. Completed PS Actions
 | CC | Matched CP Records | DKL FQC Records | DKL Sampled Qty | First-Pass RFT (PASS/valid) | Not Passed (FAIL/NG/recheck) | Latest FQC |
@@ -5303,7 +5330,7 @@ def render_qwen_summary_panel(
         st.markdown(f"### {title}")
     if prompt_profile == "zx_conclusion":
         active_language = report_language or st.session_state.lang
-        hero_title = "质量结论报告" if active_language == "中文" else "Quality Conclusion Report"
+        hero_title = "AI Quality Conclusion Report (ZX-R12M)"
         hero_subtitle = (
             "聚焦高风险 CC Top 5、CP / FQC 记录，以及三项行动计划。"
             if active_language == "中文"
@@ -10673,7 +10700,7 @@ def render_community_cockpit(
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
             elif selected_analysis == "ai":
-                st.markdown(f"**{t('AI 质量结论报告', 'AI Quality Conclusion Report')}**")
+                st.markdown("**AI Quality Conclusion Report (ZX-R12M)**")
                 report_language = st.segmented_control(
                     t("报告语言", "Report Language"),
                     ["中文", "English"],
@@ -10682,7 +10709,7 @@ def render_community_cockpit(
                 )
                 render_qwen_summary_panel(
                     "zx_dashboard1_conclusion",
-                    "质量结论报告" if report_language == "中文" else "Quality Conclusion Report",
+                    "AI Quality Conclusion Report (ZX-R12M)",
                     lambda: build_tu_community_ai_fact_pack(
                         finished_df,
                         voice_df,
