@@ -7213,43 +7213,24 @@ def render_inspection_volume_comparison(finished_df: pd.DataFrame, jdy_fqc: pd.D
         return
     coverage = coverage.sort_values("year")
     current = coverage.iloc[-1]
-    prior = coverage.iloc[-2] if len(coverage) > 1 else None
     shipped_po_qty = int(current["shipped_po_qty"])
     decathlon_po_records = int(current["decathlon_fqc_po_records"])
     # Factory FQC is a mandatory pre-shipment requirement for every shipped PO.
     # This card communicates the required coverage, not source-record completeness.
     factory_inspection_share = 1.0 if shipped_po_qty else np.nan
     fqc_sampling_share = decathlon_po_records / shipped_po_qty if shipped_po_qty else np.nan
-    year = int(current["year"])
-
-    if prior is not None:
-        prior_year = int(prior["year"])
-        prior_decathlon = int(prior["decathlon_fqc_po_records"])
-        prior_shipped = int(prior["shipped_po_qty"])
-        decathlon_prior_note = f" · {prior_year} 同期 {prior_decathlon:,}/{prior_shipped:,}"
-        decathlon_prior_note_en = f" · {prior_year} comparable {prior_decathlon:,}/{prior_shipped:,}"
-    else:
-        decathlon_prior_note = ""
-        decathlon_prior_note_en = ""
-
     render_kpi_cards(
         [
             {
                 "label": t("工厂检验占比", "Factory Inspection Ratio"),
                 "value": pct(factory_inspection_share),
-                "note": t(
-                    f"理论要求：{year} YTD 每个出货PO均须完成工厂FQC",
-                    f"Required coverage: every shipped PO in {year} YTD must complete factory FQC",
-                ),
+                "note": "",
                 "level": "medium",
             },
             {
                 "label": t("迪卡侬 FQC 抽检率", "Decathlon FQC Sampling Ratio"),
                 "value": pct(fqc_sampling_share),
-                "note": t(
-                    f"{year} YTD：迪卡侬 FQC PO记录 {decathlon_po_records:,} / 出货PO {shipped_po_qty:,}{decathlon_prior_note}",
-                    f"{year} YTD: Decathlon FQC PO records {decathlon_po_records:,} / shipped POs {shipped_po_qty:,}{decathlon_prior_note_en}",
-                ),
+                "note": "",
                 "level": "low",
             },
         ],
@@ -7658,9 +7639,10 @@ def render_zx_high_risk_cluster(
     view["defect_rate_display"] = view["defect_rate"].map(
         lambda value: pct(value) if pd.notna(value) else "-"
     )
-    top_label_index = view["cluster_score"].nlargest(min(18, len(view))).index
+    top_label_codes = set(select_pareto_risk_products(view)["product_code"].astype(str))
     view["cc_text"] = ""
-    view.loc[top_label_index, "cc_text"] = view.loc[top_label_index, "product_code"].astype(str)
+    top_label_mask = view["product_code"].astype(str).isin(top_label_codes)
+    view.loc[top_label_mask, "cc_text"] = view.loc[top_label_mask, "product_code"].astype(str)
     def cluster_formula(row: pd.Series) -> str:
         if has_client_signal and not bool(row.get("has_production_record", False)):
             return t(
@@ -8450,7 +8432,7 @@ def render_defect_pareto(
         )
         top_share = float(all_defects.head(top_count)["share"].sum())
         st.markdown(
-            f"<span class='zx-pareto-chip'>Top 20% · {top_count} {t('类疵点贡献', 'defect types contribute')} {top_share:.0%}</span>",
+            f"<span class='zx-pareto-chip'>Top 20% · {top_count} {t('类疵点贡献', 'defect types contribute')} {top_share:.0%} {t('的疵点数量', 'of defect quantity')}</span>",
             unsafe_allow_html=True,
         )
     else:
@@ -10528,17 +10510,15 @@ def render_community_cockpit(
                     "- **End of line RFT：** 产线末端检验的一次通过表现参考。\n"
                     "- **RPM（R12M）：** 最近 12 个月每百万销量对应的退货水平。\n"
                     "- **工厂售前 IV：** 销售前发现并归属工厂责任的问题数量。\n"
-                    "- **工厂检验占比：** 工厂强制检验要求；每个出货PO均须完成工厂FQC，因此理论值为100%。\n"
-                    "- **迪卡侬 FQC 抽检率：** Wuhao、Daisy Yu、Eric Zeng 的FQC PO检验记录数 ÷ HUGSS ZX YTD出货PO数。\n"
-                    "- **迪卡侬抽检口径：** 采用同一YTD截止日；一条FQC记录按一个PO检验记录计数。",
+                    "- **工厂检验占比：** 工厂强制检验要求；每个出货PO均须完成工厂FQC，因此按 YTD 出货 PO 计算的理论覆盖率固定为 100%，不代表简道云记录完整率。\n"
+                    "- **迪卡侬 FQC 抽检率：** `Wuhao、Daisy Yu、Eric Zeng 的 FQC PO 检验记录数 ÷ HUGSS ZX YTD 出货 PO 数`。分子和分母使用同一 YTD 截止日；一条 FQC 记录按一个 PO 检验记录计数。",
                     "- **Decathlon inspection pass rate:** First inspection results completed by Decathlon inspectors.\n"
                     "- **ZX factory self-inspection pass rate:** First self-inspection results completed by ZX factory inspectors.\n"
                     "- **End-of-line RFT:** A reference for first-pass performance at the end of the production line.\n"
                     "- **RPM (R12M):** Returns per million units sold over the latest 12 months.\n"
                     "- **Factory before-sale IV:** Factory-owned issues found before sale.\n"
-                    "- **Factory inspection share:** Mandatory factory requirement; every shipped PO must complete factory FQC, so the theoretical value is 100%.\n"
-                    "- **Decathlon FQC sampling rate:** FQC PO inspection records by Wuhao, Daisy Yu, and Eric Zeng divided by HUGSS ZX YTD shipped POs.\n"
-                    "- **Decathlon sampling scope:** Uses the same YTD cutoff; one FQC record counts as one PO inspection record.",
+                    "- **Factory inspection share:** Factory FQC is mandatory for every shipped PO, so its theoretical coverage is fixed at 100% of YTD shipped POs. It does not measure Jiandaoyun record completeness.\n"
+                    "- **Decathlon FQC sampling rate:** `FQC PO inspection records by Wuhao, Daisy Yu, and Eric Zeng ÷ HUGSS ZX YTD shipped POs`. Numerator and denominator use the same YTD cutoff; one FQC record counts as one PO inspection record.",
                 ),
                 "Jiandaoyun ZX FQC + HUGSS Supplier Shipped Qty + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/R12M RPM.csv + YTD RPM.csv + ZX intervoice.xlsx",
                 section_title=t("卡片含义", "Card Guide"),
