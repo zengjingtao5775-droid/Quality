@@ -1829,10 +1829,13 @@ DEFAULT_RISK_SETTINGS = {
         "intern_voice_score": 40,
     },
     "qc_benchmark_pct": 4.0,
+    "qc_critical_pct": 8.0,
     "process_benchmark_pct": 5.0,
     "sample_pseudo_count": 200,
     "rpm_cap": 646,
+    "rpm_critical": 1292,
     "intern_voice_cap": 5,
+    "intern_voice_critical": 10,
     "incoming_reject_cap": 25,
     "incoming_issue_cap": 120,
 }
@@ -2046,20 +2049,27 @@ def weighted_score(row: pd.Series, weights: dict[str, float]) -> float:
 SAMPLE_PSEUDO_COUNT = 200
 
 
-def defect_risk_score(defect_rate: object, benchmark_pct: object) -> float:
-    """把不良率换算成 0-100 风险分（分段线性）。
-
-    基准线 benchmark_pct = 50 分（告警线，落在 Medium）；3× 基准 = 100 分。
-    基准以上仍按差距线性拉开，避免旧版 min(rate/benchmark*100, 100) 在基准以上一律封顶 100、
-    把所有高风险对象抹平成同一档。
-    """
-    if pd.isna(defect_rate):
+def threshold_risk_score(value: object, warning_threshold: object, critical_threshold: object) -> float:
+    """Map a value to 0-100 using configurable 50-point and 100-point thresholds."""
+    if pd.isna(value):
         return np.nan
-    rate = max(float(defect_rate), 0.0)
-    benchmark = max(float(benchmark_pct) / 100, 0.0001)
-    if rate <= benchmark:
-        return rate / benchmark * 50
-    return min(50 + (rate - benchmark) / (2 * benchmark) * 50, 100)
+    clean_value = max(float(value), 0.0)
+    warning = max(float(warning_threshold), 0.0001)
+    critical = max(float(critical_threshold), warning + 0.0001)
+    if clean_value <= warning:
+        return clean_value / warning * 50
+    return min(50 + (clean_value - warning) / (critical - warning) * 50, 100)
+
+
+def defect_risk_score(
+    defect_rate: object,
+    benchmark_pct: object,
+    critical_pct: object | None = None,
+) -> float:
+    """Map a defect rate to 0-100 using configurable warning and critical thresholds."""
+    benchmark = max(float(benchmark_pct), 0.0001)
+    critical = benchmark * 2 if critical_pct is None else float(critical_pct)
+    return threshold_risk_score(defect_rate, benchmark / 100, critical / 100)
 
 
 def shrunk_defect_rate(
@@ -2109,10 +2119,13 @@ def merge_risk_settings(raw: dict | None) -> dict:
                     settings[section][key] = value
     for key in [
         "qc_benchmark_pct",
+        "qc_critical_pct",
         "process_benchmark_pct",
         "sample_pseudo_count",
         "rpm_cap",
+        "rpm_critical",
         "intern_voice_cap",
+        "intern_voice_critical",
         "incoming_reject_cap",
         "incoming_issue_cap",
     ]:
@@ -2200,12 +2213,20 @@ def settings_for_factory(settings: dict, factory_code: object) -> dict:
 
 def rpm_risk_score(rpm_value: object, settings: dict) -> float:
     rpm = 0 if pd.isna(rpm_value) else max(float(rpm_value), 0)
-    return min(rpm / max(float(settings.get("rpm_cap", DEFAULT_RISK_SETTINGS["rpm_cap"])), 1) * 100, 100)
+    return threshold_risk_score(
+        rpm,
+        settings.get("rpm_cap", DEFAULT_RISK_SETTINGS["rpm_cap"]),
+        settings.get("rpm_critical", DEFAULT_RISK_SETTINGS["rpm_critical"]),
+    )
 
 
 def intern_voice_risk_score(count: object, settings: dict) -> float:
     value = 0 if pd.isna(count) else max(float(count), 0)
-    return min(value / max(float(settings.get("intern_voice_cap", DEFAULT_RISK_SETTINGS["intern_voice_cap"])), 1) * 100, 100)
+    return threshold_risk_score(
+        value,
+        settings.get("intern_voice_cap", DEFAULT_RISK_SETTINGS["intern_voice_cap"]),
+        settings.get("intern_voice_critical", DEFAULT_RISK_SETTINGS["intern_voice_critical"]),
+    )
 
 
 def load_risk_payload() -> dict:
@@ -2267,10 +2288,13 @@ def risk_settings_from_widget_state(settings: dict, profile: str) -> dict:
             "intern_voice_score": 100 - get_number("client_rpm_weight", settings["client_weights"]["rpm_score"], int),
         },
         "qc_benchmark_pct": get_number("qc_benchmark_pct", settings["qc_benchmark_pct"], float),
+        "qc_critical_pct": get_number("qc_critical_pct", settings["qc_critical_pct"], float),
         "process_benchmark_pct": get_number("process_benchmark_pct", settings["process_benchmark_pct"], float),
         "sample_pseudo_count": get_number("sample_pseudo_count", settings["sample_pseudo_count"], int),
         "rpm_cap": get_number("rpm_cap", settings["rpm_cap"], float),
+        "rpm_critical": get_number("rpm_critical", settings["rpm_critical"], float),
         "intern_voice_cap": get_number("intern_voice_cap", settings["intern_voice_cap"], int),
+        "intern_voice_critical": get_number("intern_voice_critical", settings["intern_voice_critical"], int),
         "incoming_reject_cap": get_number("incoming_reject_cap", settings["incoming_reject_cap"], int),
         "incoming_issue_cap": get_number("incoming_issue_cap", settings["incoming_issue_cap"], int),
     }
@@ -2343,9 +2367,9 @@ def render_risk_settings_panel() -> dict:
     client_iv = 100 - int(client_rpm)
 
     with st.popover(t("高级评分基准", "Advanced scoring benchmarks"), icon=":material/tune:"):
-        b1, b2, b3 = st.columns(3)
-        qc_benchmark_pct = b1.number_input(
-            t("QC 风险基准（%）", "QC risk benchmark (%)"),
+        qc_cols = st.columns(2)
+        qc_benchmark_pct = qc_cols[0].number_input(
+            t("QC 50分警戒线（%）", "QC warning threshold at 50 (%)"),
             min_value=0.5,
             max_value=20.0,
             value=float(settings["qc_benchmark_pct"]),
@@ -2353,7 +2377,52 @@ def render_risk_settings_panel() -> dict:
             format="%.1f",
             key=f"{widget_prefix}_qc_benchmark_pct",
         )
-        process_benchmark_pct = b2.number_input(
+        qc_critical_pct = qc_cols[1].number_input(
+            t("QC 100分严重线（%）", "QC critical threshold at 100 (%)"),
+            min_value=1.0,
+            max_value=50.0,
+            value=float(settings["qc_critical_pct"]),
+            step=0.5,
+            format="%.1f",
+            key=f"{widget_prefix}_qc_critical_pct",
+        )
+        rpm_cols = st.columns(2)
+        rpm_cap = rpm_cols[0].number_input(
+            t("RPM 50分警戒线", "RPM warning threshold at 50"),
+            min_value=100.0,
+            max_value=10000.0,
+            value=float(settings["rpm_cap"]),
+            step=100.0,
+            format="%.0f",
+            key=f"{widget_prefix}_rpm_cap",
+        )
+        rpm_critical = rpm_cols[1].number_input(
+            t("RPM 100分严重线", "RPM critical threshold at 100"),
+            min_value=200.0,
+            max_value=30000.0,
+            value=float(settings["rpm_critical"]),
+            step=100.0,
+            format="%.0f",
+            key=f"{widget_prefix}_rpm_critical",
+        )
+        iv_cols = st.columns(2)
+        intern_voice_cap = iv_cols[0].number_input(
+            t("IV 50分警戒线", "IV warning threshold at 50"),
+            min_value=1,
+            max_value=500,
+            value=int(settings["intern_voice_cap"]),
+            step=1,
+            key=f"{widget_prefix}_intern_voice_cap",
+        )
+        intern_voice_critical = iv_cols[1].number_input(
+            t("IV 100分严重线", "IV critical threshold at 100"),
+            min_value=2,
+            max_value=1000,
+            value=int(settings["intern_voice_critical"]),
+            step=1,
+            key=f"{widget_prefix}_intern_voice_critical",
+        )
+        process_benchmark_pct = st.number_input(
             t("工序风险基准（%）", "Process risk benchmark (%)"),
             min_value=0.5,
             max_value=30.0,
@@ -2362,16 +2431,12 @@ def render_risk_settings_panel() -> dict:
             format="%.1f",
             key=f"{widget_prefix}_process_benchmark_pct",
         )
-        rpm_cap = b3.number_input(
-            t("RPM 100分阈值", "RPM threshold for 100"),
-            min_value=100.0,
-            max_value=10000.0,
-            value=float(settings["rpm_cap"]),
-            step=100.0,
-            format="%.0f",
-            key=f"{widget_prefix}_rpm_cap",
+        st.caption(
+            t(
+                "警戒线对应50分，严重线对应100分；严重线必须高于警戒线。",
+                "The warning threshold maps to 50 and the critical threshold maps to 100; critical must exceed warning.",
+            )
         )
-        st.caption(t("高级基准通常不需要频繁调整。Intern Voice 默认 5 次封顶 100 分。", "Advanced benchmarks usually do not need frequent changes. Intern Voice is capped at 100 at 5 cases by default."))
 
     current_settings = risk_settings_from_widget_state(settings, selected_profile)
     current_settings["supplier_weights"] = {
@@ -2387,8 +2452,12 @@ def render_risk_settings_panel() -> dict:
         "intern_voice_score": int(client_iv),
     }
     current_settings["qc_benchmark_pct"] = float(qc_benchmark_pct)
+    current_settings["qc_critical_pct"] = max(float(qc_critical_pct), float(qc_benchmark_pct) + 0.1)
     current_settings["process_benchmark_pct"] = float(process_benchmark_pct)
     current_settings["rpm_cap"] = float(rpm_cap)
+    current_settings["rpm_critical"] = max(float(rpm_critical), float(rpm_cap) + 1)
+    current_settings["intern_voice_cap"] = int(intern_voice_cap)
+    current_settings["intern_voice_critical"] = max(int(intern_voice_critical), int(intern_voice_cap) + 1)
     runtime_payload = merge_risk_payload(payload)
     runtime_payload["active_profile"] = selected_profile
     runtime_payload["profiles"][selected_profile] = current_settings
@@ -2425,10 +2494,13 @@ def render_risk_settings_panel() -> dict:
             f"{widget_prefix}_client_rpm_weight",
             f"{widget_prefix}_client_iv_weight",
             f"{widget_prefix}_qc_benchmark_pct",
+            f"{widget_prefix}_qc_critical_pct",
             f"{widget_prefix}_process_benchmark_pct",
             f"{widget_prefix}_sample_pseudo_count",
             f"{widget_prefix}_rpm_cap",
+            f"{widget_prefix}_rpm_critical",
             f"{widget_prefix}_intern_voice_cap",
+            f"{widget_prefix}_intern_voice_critical",
         ]:
             st.session_state.pop(key, None)
         st.rerun()
@@ -6027,6 +6099,7 @@ def compute_supplier_summary(
                 settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
             ),
             settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
+            settings_for_factory(risk_settings, row["factory_code"]).get("qc_critical_pct", 8.0),
         ),
         axis=1,
     )
@@ -6249,6 +6322,7 @@ def compute_product_summary(
                 settings_for_factory(risk_settings, row["factory_code"]).get("sample_pseudo_count", SAMPLE_PSEUDO_COUNT),
             ),
             settings_for_factory(risk_settings, row["factory_code"]).get("qc_benchmark_pct", 4.0),
+            settings_for_factory(risk_settings, row["factory_code"]).get("qc_critical_pct", 8.0),
         ),
         axis=1,
     )
@@ -7472,7 +7546,18 @@ def render_zx_high_risk_cluster(
         return pd.DataFrame()
     view["intern_voice_count"] = view["intern_voice_count"].fillna(0)
     cluster_factory_settings = settings_for_factory(risk_settings, "ZX")
-    cluster_qc_benchmark = float(cluster_factory_settings.get("qc_benchmark_pct", 4.0))
+    cluster_qc_benchmark = float(
+        st.session_state.get(
+            f"{widget_key}_cluster_qc_warning_threshold",
+            cluster_factory_settings.get("qc_benchmark_pct", 4.0),
+        )
+    )
+    cluster_qc_critical = float(
+        st.session_state.get(
+            f"{widget_key}_cluster_qc_critical_threshold",
+            cluster_factory_settings.get("qc_critical_pct", cluster_qc_benchmark * 2),
+        )
+    )
     default_pseudo_count = int(cluster_factory_settings.get("sample_pseudo_count", SAMPLE_PSEUDO_COUNT))
     cluster_pseudo_count = int(
         st.session_state.get(
@@ -7492,10 +7577,22 @@ def render_zx_high_risk_cluster(
             cluster_factory_settings.get("rpm_cap", 1500),
         )
     )
+    cluster_rpm_critical = float(
+        st.session_state.get(
+            f"{widget_key}_cluster_rpm_critical_threshold",
+            cluster_factory_settings.get("rpm_critical", cluster_rpm_cap * 2),
+        )
+    )
     cluster_iv_cap = int(
         st.session_state.get(
             f"{widget_key}_cluster_iv_threshold",
             cluster_factory_settings.get("intern_voice_cap", 30),
+        )
+    )
+    cluster_iv_critical = int(
+        st.session_state.get(
+            f"{widget_key}_cluster_iv_critical_threshold",
+            cluster_factory_settings.get("intern_voice_critical", cluster_iv_cap * 2),
         )
     )
     if widget_key == "zx":
@@ -7510,6 +7607,7 @@ def render_zx_high_risk_cluster(
                         cluster_prior_defects,
                     ),
                     cluster_qc_benchmark,
+                    cluster_qc_critical,
                 )
                 if bool(row.get("has_production_record", False))
                 else 0.0
@@ -7517,10 +7615,18 @@ def render_zx_high_risk_cluster(
             axis=1,
         ).fillna(0).clip(0, 100)
         view["rpm_score"] = view["rpm_now"].map(
-            lambda value: np.nan if pd.isna(value) else min(max(float(value), 0) / max(cluster_rpm_cap, 1) * 100, 100)
+            lambda value: (
+                np.nan
+                if pd.isna(value)
+                else threshold_risk_score(value, cluster_rpm_cap, cluster_rpm_critical)
+            )
         )
         view["intern_voice_score"] = view["intern_voice_count"].map(
-            lambda value: min((0 if pd.isna(value) else max(float(value), 0)) / max(cluster_iv_cap, 1) * 100, 100)
+            lambda value: threshold_risk_score(
+                0 if pd.isna(value) else value,
+                cluster_iv_cap,
+                cluster_iv_critical,
+            )
         )
     else:
         fallback_production = view["defect_rate"].map(lambda value: defect_risk_score(value, 4.0))
@@ -7580,7 +7686,9 @@ def render_zx_high_risk_cluster(
                 "rpm_client_weight_pct": weights.get("rpm_score", 0) * 100,
                 "iv_client_weight_pct": weights.get("intern_voice_score", 0) * 100,
                 "rpm_cap": max(cluster_rpm_cap if widget_key == "zx" else float(factory_settings.get("rpm_cap", 1500)), 1),
+                "rpm_critical": max(cluster_rpm_critical if widget_key == "zx" else float(factory_settings.get("rpm_critical", 3000)), 1),
                 "iv_cap": max(cluster_iv_cap if widget_key == "zx" else float(factory_settings.get("intern_voice_cap", 30)), 1),
+                "iv_critical": max(cluster_iv_critical if widget_key == "zx" else float(factory_settings.get("intern_voice_critical", 60)), 1),
             }
         )
 
@@ -7592,7 +7700,9 @@ def render_zx_high_risk_cluster(
             "rpm_client_weight_pct",
             "iv_client_weight_pct",
             "rpm_cap",
+            "rpm_critical",
             "iv_cap",
+            "iv_critical",
         ]
     ] = client_components
     view["client_risk_contribution"] = view["client_signal"] * (secondary_weight / 100)
@@ -7703,16 +7813,9 @@ def render_zx_high_risk_cluster(
         rpm_value = float(example.get("rpm_now")) if pd.notna(example.get("rpm_now")) else 0.0
         iv_value = float(example.get("intern_voice_count")) if pd.notna(example.get("intern_voice_count")) else 0.0
         if bool(example.get("has_production_record", False)):
-            benchmark_rate = benchmark_pct / 100
             production_score = float(example.get("production_axis", 0))
-            if shrunk_rate <= benchmark_rate:
-                score_formula_cn = f"因 {shrunk_rate:.2%} ≤ {benchmark_pct:.1f}% 基准，风险分 = `{shrunk_rate:.2%} ÷ {benchmark_pct:.1f}% × 50 = {production_score:.1f}`"
-                score_formula_en = f"Because {shrunk_rate:.2%} ≤ the {benchmark_pct:.1f}% benchmark, risk score = `{shrunk_rate:.2%} / {benchmark_pct:.1f}% x 50 = {production_score:.1f}`"
-            else:
-                score_formula_cn = f"因 {shrunk_rate:.2%} > {benchmark_pct:.1f}% 基准，风险分 = `min(50 + ({shrunk_rate:.2%} − {benchmark_pct:.1f}%) ÷ (2 × {benchmark_pct:.1f}%) × 50, 100) = {production_score:.1f}`"
-                score_formula_en = f"Because {shrunk_rate:.2%} > the {benchmark_pct:.1f}% benchmark, risk score = `min(50 + ({shrunk_rate:.2%} - {benchmark_pct:.1f}%) / (2 x {benchmark_pct:.1f}%) x 50, 100) = {production_score:.1f}`"
-            production_step_cn = f"`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {cluster_pseudo_count} 先验样本) = {shrunk_rate:.2%}`。{score_formula_cn} → **生产端 {production_score:.1f} 分**。其中 {benchmark_pct:.1f}% 对应 50 分，{benchmark_pct * 3:.1f}% 对应 100 分；先验数据仅用于平滑小样本。"
-            production_step_en = f"`({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} prior defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {cluster_pseudo_count} prior samples) = {shrunk_rate:.2%}`. {score_formula_en} → **production {production_score:.1f}**. The {benchmark_pct:.1f}% benchmark maps to 50 and {benchmark_pct * 3:.1f}% maps to 100; prior data only smooths small samples."
+            production_step_cn = f"`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {cluster_pseudo_count} 先验样本) = {shrunk_rate:.2%}`；按 `{benchmark_pct:.1f}% = 50分 / {cluster_qc_critical:.1f}% = 100分` 两段换算 → **生产端 {production_score:.1f} 分**。先验数据仅用于平滑小样本。"
+            production_step_en = f"`({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} prior defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {cluster_pseudo_count} prior samples) = {shrunk_rate:.2%}`; piecewise mapping uses `{benchmark_pct:.1f}% = 50 / {cluster_qc_critical:.1f}% = 100` → **production {production_score:.1f}**. Prior data only smooths small samples."
         else:
             production_step_cn = "无生产检验记录 → **生产端按 0 分显示**；该 CC 仅用于查看 RPM / IV 客户端信号。"
             production_step_en = "No production inspection record → **production displays as 0**; this CC is included only for its RPM / IV client signal."
@@ -7722,7 +7825,7 @@ def render_zx_high_risk_cluster(
 **CC {example_cc} · Model {example.get('model_display', '-')}**
 
 1. 生产端：{production_step_cn}
-2. RPM：`min({rpm_value:,.0f} ÷ {example.get('rpm_cap', 1500):,.0f} × 100, 100) = {example.get('rpm_score', 0):.1f}`；IV：`min({iv_value:,.0f} ÷ {example.get('iv_cap', 30):,.0f} × 100, 100) = {example.get('intern_voice_score', 0):.1f}`。
+2. RPM：`{example.get('rpm_cap', 1500):,.0f} = 50分 / {example.get('rpm_critical', 3000):,.0f} = 100分 → {example.get('rpm_score', 0):.1f}`；IV：`{example.get('iv_cap', 30):,.0f} = 50分 / {example.get('iv_critical', 60):,.0f} = 100分 → {example.get('intern_voice_score', 0):.1f}`。
 3. 客户端：`RPM {example.get('rpm_score', 0):.1f} × {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} × {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`。
 4. Risk Score：`生产端 {example.get('production_axis', 0):.1f} × {production_weight}% + 客户端 {example.get('client_signal', 0):.1f} × {secondary_weight}% = {example.get('cluster_score', 0):.1f}`。
 """,
@@ -7730,7 +7833,7 @@ def render_zx_high_risk_cluster(
 **CC {example_cc} · Model {example.get('model_display', '-')}**
 
 1. Production: {production_step_en}
-2. RPM: `min({rpm_value:,.0f} / {example.get('rpm_cap', 1500):,.0f} x 100, 100) = {example.get('rpm_score', 0):.1f}`; IV: `min({iv_value:,.0f} / {example.get('iv_cap', 30):,.0f} x 100, 100) = {example.get('intern_voice_score', 0):.1f}`.
+2. RPM: `{example.get('rpm_cap', 1500):,.0f} = 50 / {example.get('rpm_critical', 3000):,.0f} = 100 → {example.get('rpm_score', 0):.1f}`; IV: `{example.get('iv_cap', 30):,.0f} = 50 / {example.get('iv_critical', 60):,.0f} = 100 → {example.get('intern_voice_score', 0):.1f}`.
 3. Client: `RPM {example.get('rpm_score', 0):.1f} x {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} x {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`.
 4. Risk Score: `production {example.get('production_axis', 0):.1f} x {production_weight}% + client {example.get('client_signal', 0):.1f} x {secondary_weight}% = {example.get('cluster_score', 0):.1f}`.
 """,
@@ -7760,25 +7863,58 @@ def render_zx_high_risk_cluster(
                     help=t("与先验疵点数共同决定先验不良率和收缩强度。", "Used with prior defects to determine the prior defect rate and shrinkage strength."),
                 )
                 st.number_input(
-                    t("RPM 百万退货率阈值", "RPM Returns-per-Million Threshold"),
+                    t("QC 50分警戒线（%）", "QC warning threshold at 50 (%)"),
+                    min_value=0.5,
+                    max_value=20.0,
+                    value=cluster_qc_benchmark,
+                    step=0.5,
+                    format="%.1f",
+                    key=f"{widget_key}_cluster_qc_warning_threshold",
+                )
+                st.number_input(
+                    t("QC 100分严重线（%）", "QC critical threshold at 100 (%)"),
+                    min_value=1.0,
+                    max_value=50.0,
+                    value=cluster_qc_critical,
+                    step=0.5,
+                    format="%.1f",
+                    key=f"{widget_key}_cluster_qc_critical_threshold",
+                )
+                st.number_input(
+                    t("RPM 50分警戒线", "RPM warning threshold at 50"),
                     min_value=100.0,
                     max_value=10000.0,
                     value=cluster_rpm_cap,
                     step=100.0,
                     format="%.0f",
                     key=f"{widget_key}_cluster_rpm_threshold",
-                    help=t("公司规定的 RPM 风险阈值，默认 646。", "Company-defined RPM risk threshold; default 646."),
                 )
                 st.number_input(
-                    t("IV 风险阈值", "IV Risk Threshold"),
+                    t("RPM 100分严重线", "RPM critical threshold at 100"),
+                    min_value=200.0,
+                    max_value=30000.0,
+                    value=cluster_rpm_critical,
+                    step=100.0,
+                    format="%.0f",
+                    key=f"{widget_key}_cluster_rpm_critical_threshold",
+                )
+                st.number_input(
+                    t("IV 50分警戒线", "IV warning threshold at 50"),
                     min_value=1,
                     max_value=500,
                     value=cluster_iv_cap,
                     step=1,
                     key=f"{widget_key}_cluster_iv_threshold",
-                    help=t("Intern Voice 风险阈值，默认 5。", "Intern Voice risk threshold; default 5."),
                 )
-                st.caption(t("修改后立即按当前筛选重新计算。", "Changes immediately recalculate the current filtered view."))
+                st.number_input(
+                    t("IV 100分严重线", "IV critical threshold at 100"),
+                    min_value=2,
+                    max_value=1000,
+                    value=cluster_iv_critical,
+                    step=1,
+                    key=f"{widget_key}_cluster_iv_critical_threshold",
+                )
+                st.caption(t("警戒线对应50分，严重线对应100分；修改后立即重新计算。", "Warning maps to 50 and critical maps to 100; changes recalculate immediately."))
 
     if widget_key == "zx":
         scope_method_cn = (
@@ -8821,6 +8957,7 @@ def compute_supplier_production_process_distribution(
             score = defect_risk_score(
                 shrunk_defect_rate(row["defect_qty"], row["qty_inspected"], settings.get("qc_benchmark_pct", 4.0)),
                 settings.get("qc_benchmark_pct", 4.0),
+                settings.get("qc_critical_pct", 8.0),
             )
             rows.append(
                 {
@@ -12603,19 +12740,17 @@ with tabs[1]:
     score_logic_cn = (
         f"<div>当前编辑方案：<span class='formula-highlight'>{html.escape(active_profile_label)}</span>。</div>"
         f"<div>综合风险分 = <span class='formula-highlight'>生产端 {supplier_prod_w:.0f}% + 客户端 {supplier_client_w:.0f}%</span>。</div>"
-        f"<div>生产端 = 不良率风险分：基准 {risk_settings['qc_benchmark_pct']:.1f}% = 50分告警线，3× 基准 = 100分；基准以上仍按差距拉开，不再一律封顶100。小批量不良率按检验量向基准收缩。</div>"
+        f"<div>生产端：QC {risk_settings['qc_benchmark_pct']:.1f}% = 50分，{risk_settings['qc_critical_pct']:.1f}% = 100分，区间内分段线性换算；小样本先平滑。</div>"
         f"<div>客户端 = 标准化后的 RPM风险分 {client_rpm_w:.0f}% + 标准化后的 Intern Voice风险分 {client_iv_w:.0f}%。</div>"
-        f"<div>RPM风险分 = min(RPM百万退货率 / {risk_settings['rpm_cap']:.0f} * 100, 100)，{risk_settings['rpm_cap']:.0f} 是当前POC的100分封顶阈值，可在“更多评分基准”调整。</div>"
-        f"<div>Intern Voice风险分 = min(退货发起次数 / {risk_settings['intern_voice_cap']} * 100, 100)，{risk_settings['intern_voice_cap']} 是当前POC的100分封顶阈值。</div>"
+        f"<div>RPM：{risk_settings['rpm_cap']:.0f} = 50分，{risk_settings['rpm_critical']:.0f} = 100分；Intern Voice：{risk_settings['intern_voice_cap']} = 50分，{risk_settings['intern_voice_critical']} = 100分。</div>"
         "<div>说明：权重是按 0-100 风险分加权，不是直接按原始数量相加；默认 RPM 30% / IV 70% 是为了让更直接的退货发起信号在POC里更敏感。</div>"
     )
     score_logic_en = (
         f"<div>Editing profile: <span class='formula-highlight'>{html.escape(active_profile_label)}</span>.</div>"
         f"<div>Overall risk = <span class='formula-highlight'>Production {supplier_prod_w:.0f}% + Client {supplier_client_w:.0f}%</span>.</div>"
-        f"<div>Production = defect-rate risk score: benchmark {risk_settings['qc_benchmark_pct']:.1f}% = 50 (alert line), 3x benchmark = 100; stays discriminative above the benchmark instead of all capping at 100. Low-volume rates are shrunk toward the benchmark.</div>"
+        f"<div>Production: QC {risk_settings['qc_benchmark_pct']:.1f}% = 50 and {risk_settings['qc_critical_pct']:.1f}% = 100, with piecewise linear mapping; low-volume rates are smoothed first.</div>"
         f"<div>Client = normalized RPM risk {client_rpm_w:.0f}% + normalized Intern Voice risk {client_iv_w:.0f}%.</div>"
-        f"<div>RPM risk = min(RPM returns per million / {risk_settings['rpm_cap']:.0f} * 100, 100); {risk_settings['rpm_cap']:.0f} is the current POC cap for 100 points and can be adjusted in More benchmarks.</div>"
-        f"<div>Intern Voice risk = min(return initiations / {risk_settings['intern_voice_cap']} * 100, 100); {risk_settings['intern_voice_cap']} is the current POC cap for 100 points.</div>"
+        f"<div>RPM: {risk_settings['rpm_cap']:.0f} = 50 and {risk_settings['rpm_critical']:.0f} = 100; Intern Voice: {risk_settings['intern_voice_cap']} = 50 and {risk_settings['intern_voice_critical']} = 100.</div>"
         "<div>Note: weights apply to normalized 0-100 risk scores, not directly to raw counts. The default RPM 30% / IV 70% makes direct return-initiation evidence more sensitive in this POC.</div>"
     )
     _, supplier_readme_col = st.columns([0.78, 0.22])
@@ -12626,8 +12761,8 @@ with tabs[1]:
             t("比较各 community / 供应商的生产端与客户端质量风险。", "Compare production-side and client-side quality risk across communities and suppliers."),
             t("先把各信号标准化为 0-100 分，再按当前权重合成。", "Normalize each signal to 0-100 before applying the selected weights."),
             t(
-                f"综合风险 = 生产端 {supplier_prod_w:.0f}% + 客户端 {supplier_client_w:.0f}%；客户端 = RPM {client_rpm_w:.0f}% + Intern Voice {client_iv_w:.0f}%。QC 基准 {risk_settings['qc_benchmark_pct']:.1f}% 对应 50 分，RPM {risk_settings['rpm_cap']:.0f} 对应 100 分；小样本不良率向基准收缩。",
-                f"Overall risk = production {supplier_prod_w:.0f}% + client {supplier_client_w:.0f}%; client = RPM {client_rpm_w:.0f}% + Intern Voice {client_iv_w:.0f}%. QC benchmark {risk_settings['qc_benchmark_pct']:.1f}% equals 50 points, RPM {risk_settings['rpm_cap']:.0f} equals 100; low-volume rates shrink toward the benchmark.",
+                f"综合风险 = 生产端 {supplier_prod_w:.0f}% + 客户端 {supplier_client_w:.0f}%；客户端 = RPM {client_rpm_w:.0f}% + Intern Voice {client_iv_w:.0f}%。QC、RPM、IV 均使用可配置的50分警戒线和100分严重线。",
+                f"Overall risk = production {supplier_prod_w:.0f}% + client {supplier_client_w:.0f}%; client = RPM {client_rpm_w:.0f}% + Intern Voice {client_iv_w:.0f}%. QC, RPM and IV all use configurable warning-at-50 and critical-at-100 thresholds.",
             ),
             f"{selected_factory_source_label} QC + RPM + Intern Voice",
         )
@@ -12878,8 +13013,8 @@ with tabs[2]:
                 t("识别同时存在生产端和客户端风险的 CC，并形成改善优先级。", "Identify CCs with combined production and client risk and rank improvement priority."),
                 t("QC 使用小样本收缩后的不良率；客户端使用 RPM 和 Intern Voice；双端完整 CC 参与 K-means。", "QC uses a low-volume-shrunk defect rate; the client side uses RPM and Intern Voice; CCs with both sides enter K-means."),
                 t(
-                    f"改善优先指数 = 生产端 {product_prod_w:.0f}% + 客户端 {product_client_w:.0f}%；客户端 = RPM百分位 {client_rpm_w:.0f}% + Intern Voice次数百分位 {client_iv_w:.0f}%。QC {risk_settings['qc_benchmark_pct']:.1f}% = 50分，三倍基准 = 100分；缺失端不按0分参与聚类。",
-                    f"Improvement priority = production {product_prod_w:.0f}% + client {product_client_w:.0f}%; client = RPM percentile {client_rpm_w:.0f}% + Intern Voice-count percentile {client_iv_w:.0f}%. QC {risk_settings['qc_benchmark_pct']:.1f}% = 50 points and 3x benchmark = 100; missing sides are not treated as zero in clustering.",
+                    f"改善优先指数 = 生产端 {product_prod_w:.0f}% + 客户端 {product_client_w:.0f}%；客户端 = RPM百分位 {client_rpm_w:.0f}% + Intern Voice次数百分位 {client_iv_w:.0f}%。QC使用可配置的50分警戒线和100分严重线；缺失端不按0分参与聚类。",
+                    f"Improvement priority = production {product_prod_w:.0f}% + client {product_client_w:.0f}%; client = RPM percentile {client_rpm_w:.0f}% + Intern Voice-count percentile {client_iv_w:.0f}%. QC uses configurable warning-at-50 and critical-at-100 thresholds; missing sides are not treated as zero in clustering.",
                 ),
                 product_source,
             )
