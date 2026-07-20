@@ -4562,6 +4562,59 @@ def match_cp_rows_to_defect(cp_rows: pd.DataFrame, defect: object, limit: int = 
     return (matched if not matched.empty else ranked).head(limit).drop(columns="_match_score")
 
 
+ZX_AQL_TIGHTENED_RISK_SCORE = 55.0
+ZX_AQL_TIGHTENED_SMOOTHED_FAIL_RATE = 0.05
+ZX_AQL_STABLE_MIN_VALID_RECORDS = 5
+ZX_AQL_FAIL_PRIOR_COUNT = 1.0
+ZX_AQL_RECORD_PRIOR_COUNT = 20.0
+
+
+def recommend_zx_dynamic_aql(product: dict, fail_count: int, valid_records: int) -> dict[str, object]:
+    risk_score = pd.to_numeric(product.get("risk_score"), errors="coerce")
+    risk_level_value = str(product.get("risk_level") or "Medium")
+    observed_fail_rate = fail_count / valid_records if valid_records else None
+    smoothed_fail_rate = (
+        (fail_count + ZX_AQL_FAIL_PRIOR_COUNT) / (valid_records + ZX_AQL_RECORD_PRIOR_COUNT)
+        if valid_records
+        else None
+    )
+    high_risk = (
+        (pd.notna(risk_score) and float(risk_score) >= ZX_AQL_TIGHTENED_RISK_SCORE)
+        or risk_level_value in {"Critical", "High"}
+    )
+    low_risk = (
+        (pd.notna(risk_score) and float(risk_score) < 35)
+        or (pd.isna(risk_score) and risk_level_value == "Low")
+    )
+    stable_zero_fail = (
+        low_risk
+        and valid_records >= ZX_AQL_STABLE_MIN_VALID_RECORDS
+        and fail_count == 0
+    )
+    elevated_failure_signal = (
+        smoothed_fail_rate is not None
+        and smoothed_fail_rate >= ZX_AQL_TIGHTENED_SMOOTHED_FAIL_RATE
+    )
+
+    if high_risk or elevated_failure_signal:
+        standard = "AQL 1.0"
+        rationale = "High product risk or smoothed FQC first-pass failure rate at/above 5%."
+    elif stable_zero_fail:
+        standard = "AQL 2.5"
+        rationale = "Low product risk with at least five valid FQC records and zero first-pass failures."
+    else:
+        standard = "AQL 1.5"
+        rationale = "Default controlled level for medium risk, limited history, or isolated low-rate failures."
+    return {
+        "recommendation": standard,
+        "rationale": rationale,
+        "observed_fail_rate": finite_number(observed_fail_rate),
+        "smoothed_fail_rate": finite_number(smoothed_fail_rate),
+        "valid_records": int(valid_records),
+        "fail_count": int(fail_count),
+    }
+
+
 def build_tu_community_ai_fact_pack(
     finished_df: pd.DataFrame,
     voice_df: pd.DataFrame,
@@ -4799,23 +4852,13 @@ def build_tu_community_ai_fact_pack(
                 "cp_matches": cp_matches,
             }
         )
-        risk_level_value = str(product.get("risk_level") or "Medium")
-        if fail_count > 0 or risk_level_value in {"Critical", "High"}:
-            aql_tier = "Tightened review; candidate AQL 1.0"
-            rationale = "High/critical product priority or at least one linked FQC first-pass failure."
-        elif risk_level_value == "Medium":
-            aql_tier = "Normal review; candidate AQL 1.5"
-            rationale = "Medium product priority without linked FQC first-pass failure evidence."
-        else:
-            aql_tier = "Normal/reduced-review candidate; AQL 2.5 only after stable evidence"
-            rationale = "Lower product priority; reduced inspection requires a stable accepted history."
+        aql_result = recommend_zx_dynamic_aql(product, fail_count, valid_records)
         aql_recommendations.append(
             {
                 "fact_id": f"AQL{index:02d}",
                 "cc": cc,
                 "model": product.get("model"),
-                "recommendation": aql_tier,
-                "rationale": rationale,
+                **aql_result,
                 "governance_note": "Recommendation only. Final sample size requires approved ISO 2859-1/GB 2828 inspection level, lot size, code letter, Ac/Re table and quality-manager approval.",
             }
         )
@@ -5941,9 +5984,9 @@ def render_qwen_summary_panel(
                     )
                     st.markdown(render_zx_action_plan_table(action_plan), unsafe_allow_html=True)
                     st.caption(
-                        "表格列宽固定响应页面，行高随内容自动调整。建议 AQL 动态标准仅为推荐等级，最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。"
+                        "AQL 依据：风险分 ≥55 或平滑后 FQC 首次失败率 ≥5% → AQL 1.0；风险分 <35、至少 5 条有效 FQC 且零失败 → AQL 2.5；其他情况 → AQL 1.5。平滑公式为（失败数+1）/（有效记录+20），避免单次偶发失败直接升级。最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。"
                         if active_language == "中文"
-                        else "Column widths respond to the page and row heights adapt to their content. The recommended dynamic AQL standard is a recommendation only; final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table."
+                        else "AQL basis: risk score ≥55 or smoothed FQC first-pass failure rate ≥5% → AQL 1.0; risk score <35 with at least five valid FQC records and zero failures → AQL 2.5; otherwise → AQL 1.5. Smoothing uses (failures + 1) / (valid records + 20), so one isolated failure does not automatically trigger AQL 1.0. Final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table."
                     )
                 else:
                     st.markdown(display_content, unsafe_allow_html=True)
