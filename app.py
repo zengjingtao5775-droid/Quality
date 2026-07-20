@@ -8537,10 +8537,22 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
     if trend.empty:
         st.info(t("当前日期范围没有所选 CC 的趋势数据。", "No trend data for the selected CCs in the current date range."))
         return
-    ordered_weeks = sorted(trend["trend_week"].dropna().unique())
-    week_labels = {week: f"W{index}" for index, week in enumerate(ordered_weeks, start=1)}
-    trend["week_label"] = trend["trend_week"].map(week_labels)
+    iso_calendar = trend["trend_week"].dt.isocalendar()
+    trend["week_key"] = iso_calendar["year"].astype(str) + "-W" + iso_calendar["week"].astype(str).str.zfill(2)
+    trend["week_label"] = "W" + iso_calendar["week"].astype(str)
     trend["week_date"] = trend["trend_week"].dt.strftime("%Y-%m-%d")
+    ordered_week_keys = (
+        trend[["trend_week", "week_key"]]
+        .drop_duplicates()
+        .sort_values("trend_week")["week_key"]
+        .tolist()
+    )
+    week_tick_labels = (
+        trend[["week_key", "week_label"]]
+        .drop_duplicates()
+        .set_index("week_key")["week_label"]
+        .to_dict()
+    )
     follows_pareto_default = selected_ccs == default_ccs
     trend_chip = (
         t(
@@ -8553,14 +8565,14 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
     st.markdown(f"<span class='zx-pareto-chip'>{trend_chip}</span>", unsafe_allow_html=True)
     fig = px.line(
         trend,
-        x="week_label",
+        x="week_key",
         y="defect_rate",
         color="product_code",
         markers=True,
-        custom_data=["product_code", "qty_inspected", "defect_qty", "week_date"],
-        category_orders={"week_label": [week_labels[week] for week in ordered_weeks]},
+        custom_data=["product_code", "qty_inspected", "defect_qty", "week_date", "week_label"],
+        category_orders={"week_key": ordered_week_keys},
         labels={
-            "week_label": t("周次", "Week"),
+            "week_key": t("周次", "Week"),
             "defect_rate": t("不良率", "Defect Rate"),
             "product_code": "CC",
         },
@@ -8570,7 +8582,7 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         marker=dict(size=7, line=dict(width=1, color="#ffffff")),
         hovertemplate=(
             "<b>CC %{customdata[0]}</b><br>"
-            f"{t('周次', 'Week')}  %{{x}}<br>"
+            f"{t('周次', 'Week')}  %{{customdata[4]}}<br>"
             f"{t('日期', 'Date')}  %{{customdata[3]}}<br>"
             f"{t('不良率', 'Defect Rate')}  <b>%{{y:.2%}}</b><br>"
             f"{t('检验数', 'Inspected')}  %{{customdata[1]:,.0f}}<br>"
@@ -8579,7 +8591,14 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         ),
     )
     fig.update_yaxes(tickformat=".1%", rangemode="tozero")
-    fig.update_xaxes(type="category", categoryorder="array", categoryarray=[week_labels[week] for week in ordered_weeks])
+    fig.update_xaxes(
+        type="category",
+        categoryorder="array",
+        categoryarray=ordered_week_keys,
+        tickmode="array",
+        tickvals=ordered_week_keys,
+        ticktext=[week_tick_labels[key] for key in ordered_week_keys],
+    )
     fig.update_layout(hovermode="x unified", transition=dict(duration=320, easing="cubic-in-out"))
     plot_chart(fig, 390, key="zx_cc_defect_rate_trend_chart", cc_customdata_index=0)
 
