@@ -4611,7 +4611,7 @@ def build_tu_community_ai_fact_pack(
             cp_for_cc = cp[
                 cp["cc"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip().eq(cc)
             ].copy()
-        matched_cp = match_cp_rows_to_defect(cp_for_cc, product.get("top_defect"), limit=2)
+        matched_cp = match_cp_rows_to_defect(cp_for_cc, product.get("top_defect"), limit=1)
         pass_count = fail_count = valid_records = 0
         if not cc_fqc.empty:
             metrics = jdy_fqc_rft_metrics(cc_fqc)
@@ -4839,12 +4839,12 @@ def build_qwen_quality_prompt(report_scope: str, language: str, prompt_profile: 
             "Use exactly these localized sections and tables: "
             "(1) '## 1. 高风险 CC Top 5' with columns '优先级 | CC | Model | 主要疵点 | DPU（疵点数/检验数） | RPM | Intern Voice'; "
             "(2) '## 2. Decathlon & 工厂已做行动' with columns 'CC | Decathlon FQC 记录 | 工厂 FQC 记录 | 首次 RFT（PASS/有效记录） | 最近 FQC'; "
-            "(3) '## 3. 推荐行动计划' with columns '优先级 | CC | 建议关注点 | 相关 CP / 工序建议 | AQL 标准 | 完成标准'."
+            "(3) '## 3. 推荐行动计划' with columns '优先级 | CC | 建议关注点 | 相关 CP / 工序标准 | 建议 AQL 动态标准'."
             if language == "中文"
             else "Use exactly these sections and tables: "
             "(1) '## 1. Top 5 High-Risk CCs' with columns 'Priority | CC | Model | Top Defect | DPU (defect quantity / inspected) | RPM | Intern Voice'; "
             "(2) '## 2. Completed Decathlon & Factory Actions' with columns 'CC | Decathlon FQC Records | Factory FQC Records | First-Pass RFT (PASS/valid) | Latest FQC'; "
-            "(3) '## 3. Recommended Action Plan' with columns 'Priority | CC | Recommended Focus | Related CP / Process Recommendation | AQL Standard | Completion Standard'."
+            "(3) '## 3. Recommended Action Plan' with columns 'Priority | CC | Recommended Focus | Related CP / Process Standard | Recommended Dynamic AQL Standard'."
         )
         return (
             f"You are writing a polished {output_language} conclusion report for the ZX Textile Unit dashboard. "
@@ -5201,14 +5201,14 @@ def zx_conclusion_has_canonical_scope(content: str, facts_json: str, language: s
     facts = json.loads(facts_json)
     expected_ccs = [str(item.get("cc") or "").strip() for item in facts.get("product_risks", [])[:5]]
     required = (
-        ["高风险 CC Top 5", "Decathlon & 工厂已做行动", "推荐行动计划", "AQL 标准", "DPU（疵点数/检验数）"]
+        ["高风险 CC Top 5", "Decathlon & 工厂已做行动", "推荐行动计划", "建议 AQL 动态标准", "DPU（疵点数/检验数）"]
         if language == "中文"
-        else ["Top 5 High-Risk CCs", "Completed Decathlon & Factory Actions", "Recommended Action Plan", "AQL Standard", "DPU (defect quantity / inspected)"]
+        else ["Top 5 High-Risk CCs", "Completed Decathlon & Factory Actions", "Recommended Action Plan", "Recommended Dynamic AQL Standard", "DPU (defect quantity / inspected)"]
     )
     return all(token in content for token in required) and all(cc in content for cc in expected_ccs if cc)
 
 
-ZX_CONCLUSION_AI_PROMPT_VERSION = "zx-conclusion-v8-cp-recommendations"
+ZX_CONCLUSION_AI_PROMPT_VERSION = "zx-conclusion-v9-resizable-action-plan"
 
 
 def default_zx_conclusion_narrative(facts_json: str, language: str) -> dict:
@@ -5232,13 +5232,12 @@ def validated_zx_narrative(payload: object, facts_json: str, language: str) -> d
         if not isinstance(item, dict):
             continue
         action = clean_zx_narrative_cell(item.get("action"), 120)
-        standard = clean_zx_narrative_cell(item.get("completion_standard"), 180)
         requested_ccs = item.get("priority_ccs", [])
         if isinstance(requested_ccs, str):
             requested_ccs = re.findall(r"\d{6}", requested_ccs)
         priority_ccs = [str(cc).strip() for cc in requested_ccs if str(cc).strip() in allowed_ccs]
-        if action and standard:
-            actions.append({"action": action, "priority_ccs": priority_ccs, "completion_standard": standard})
+        if action:
+            actions.append({"action": action, "priority_ccs": priority_ccs})
     if len(actions) != 3:
         return fallback
     return {"actions": actions}
@@ -5251,12 +5250,12 @@ Use only the supplied JSON fact pack. Return one JSON object only, with no Markd
 {
   "zh": {
     "actions": [
-      {"action": "建议行动", "priority_ccs": ["CC from the supplied Top 5"], "completion_standard": "可验证的完成标准"}
+      {"action": "建议行动", "priority_ccs": ["CC from the supplied Top 5"]}
     ]
   },
   "en": {
     "actions": [
-      {"action": "Exact English translation", "priority_ccs": ["same CCs in the same order"], "completion_standard": "Exact English translation"}
+      {"action": "Exact English translation", "priority_ccs": ["same CCs in the same order"]}
     ]
   }
 }
@@ -5267,8 +5266,7 @@ Rules:
 3. Do not produce an executive summary. Do not reproduce any report title, table, metric value, percentage, count, date, score, formula, or calculated result. The application renders every fact and number deterministically.
 4. Refer to evidence qualitatively and direct the reader to the system tables. CC identifiers may be used only when they appear in the first five product_risks.
 5. Do not invent causes, targets, owners, events, or completed work. Actions are recommendations, not claims that work is already completed.
-6. Completion standards must be observable and must not invent a numeric target.
-7. DPU means defect quantity per inspected unit and is not a defective-unit probability.
+6. DPU means defect quantity per inspected unit and is not a defective-unit probability.
 """.strip()
 
 
@@ -5322,8 +5320,8 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
     def cp_action_cells(action: dict, top_defect: object) -> tuple[str, str]:
         cp_matches = action.get("cp_matches") or []
         focus_lines = [f"主要疵点：{top_defect or '待确认'}" if language == "中文" else f"Top defect: {report_text(top_defect)}"]
-        recommendation_lines: list[str] = []
-        for match in cp_matches[:2]:
+        cp_standard = "/"
+        for match in cp_matches[:1]:
             if not isinstance(match, dict):
                 continue
             focus = str(match.get("focus") or "").strip()
@@ -5331,23 +5329,12 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
             if language == "English":
                 focus = report_text(focus)
                 requirement = report_text(requirement)
-            if focus:
-                focus_lines.append(focus)
-                requirement_label = "要求：" if language == "中文" else "Requirement: "
-                recommendation_lines.append(
-                    f"{focus}<br><b>{requirement_label}</b>{requirement or ('按 CP 原始要求现场确认' if language == '中文' else 'Verify against the source CP requirement')}"
-                )
-        if not recommendation_lines:
-            fallback = (
-                f"DCS：当前保存的报告未包含该 CC 的 CP 明细；点击重新生成报告读取简道云记录"
-                if language == "中文"
-                else "DCS: the saved report does not contain detailed CP records for this CC; regenerate the report to load Jiandaoyun records"
-            )
-            recommendation_lines.append(fallback)
-        return "<br>".join(report_cell(line) for line in focus_lines), "<br><br>".join(
-            report_cell(line).replace("&lt;br&gt;", "<br>").replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
-            for line in recommendation_lines
-        )
+            if focus and re.search(r"\bdcs\b", focus, flags=re.IGNORECASE):
+                focus_label = "DCS 文件：" if language == "中文" else "DCS file: "
+                focus_lines.append(f"{focus_label}{focus}")
+                cp_standard = requirement or "/"
+                break
+        return "<br>".join(report_cell(line) for line in focus_lines), report_cell(cp_standard)
 
     if language == "中文":
         risk_rows = []
@@ -5376,12 +5363,8 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
             focus_text, cp_recommendation = cp_action_cells(action, item.get("top_defect"))
             if narrative_action.get("action"):
                 focus_text += f"<br><b>行动：</b>{report_cell(narrative_action['action'])}"
-            completion_standard = (
-                narrative_action.get("completion_standard")
-                or "下一轮 FQC 逐项核对上述 CP 要求，记录结果、首次 RFT 与未符合项关闭证据"
-            )
             action_plan_rows.append(
-                f"| {index} | {cc} | {focus_text} | {cp_recommendation} | {localized_aql(cc)} | {report_cell(completion_standard)} |"
+                f"| {index} | {cc} | {focus_text} | {cp_recommendation} | {localized_aql(cc)} |"
             )
         return f"""## 1. 高风险 CC Top 5
 | 优先级 | CC | Model | 主要疵点 | DPU（疵点数/检验数） | RPM | Intern Voice |
@@ -5396,11 +5379,11 @@ Top 5 沿用当前看板的风险排序；DPU 表示单位产品疵点数，不�
 {chr(10).join(action_rows) or '| 暂无数据 | - | - | - | - |'}
 
 ## 3. 推荐行动计划
-| 优先级 | CC | 建议关注点 | 相关 CP / 工序建议 | AQL 标准 | 完成标准 |
-|---:|---|---|---|---|---|
-{chr(10).join(action_plan_rows) or '| - | 暂无数据 | - | - | - | - |'}
+| 优先级 | CC | 建议关注点 | 相关 CP / 工序标准 | 建议 AQL 动态标准 |
+|---:|---|---|---|---|
+{chr(10).join(action_plan_rows) or '| - | 暂无数据 | - | - | - |'}
 
-AQL 标准为风险驱动的推荐等级；最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。
+建议 AQL 动态标准为风险驱动的推荐等级；最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。
 """
 
     risk_rows = []
@@ -5429,12 +5412,8 @@ AQL 标准为风险驱动的推荐等级；最终抽样数量仍须结合批量�
         focus_text, cp_recommendation = cp_action_cells(action, item.get("top_defect"))
         if narrative_action.get("action"):
             focus_text += f"<br><b>Action:</b> {report_cell(narrative_action['action'])}"
-        completion_standard = (
-            narrative_action.get("completion_standard")
-            or "Check every listed CP requirement in the next FQC round and record the result, first-pass RFT, and closure evidence for nonconformities"
-        )
         action_plan_rows.append(
-            f"| {index} | {cc} | {focus_text} | {cp_recommendation} | {localized_aql(cc)} | {report_cell(completion_standard)} |"
+            f"| {index} | {cc} | {focus_text} | {cp_recommendation} | {localized_aql(cc)} |"
         )
     return f"""## 1. Top 5 High-Risk CCs
 | Priority | CC | Model | Top Defect | DPU (defect quantity / inspected) | RPM | Intern Voice |
@@ -5449,12 +5428,72 @@ The Top 5 follow the dashboard risk ranking. DPU means defect quantity per inspe
 {chr(10).join(action_rows) or '| No data | - | - | - | - |'}
 
 ## 3. Recommended Action Plan
-| Priority | CC | Recommended Focus | Related CP / Process Recommendation | AQL Standard | Completion Standard |
-|---:|---|---|---|---|---|
-{chr(10).join(action_plan_rows) or '| - | No data | - | - | - | - |'}
+| Priority | CC | Recommended Focus | Related CP / Process Standard | Recommended Dynamic AQL Standard |
+|---:|---|---|---|---|
+{chr(10).join(action_plan_rows) or '| - | No data | - | - | - |'}
 
-The AQL standard is the risk-based recommended level. Final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table.
+The recommended dynamic AQL standard is the risk-based recommended level. Final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table.
 """
+
+
+def build_zx_action_plan_frame(facts_json: str, language: str, narrative: dict | None = None) -> pd.DataFrame:
+    facts = json.loads(facts_json)
+    products = facts.get("product_risks", [])[:5]
+    actions_by_cc = {str(item.get("cc")): item for item in facts.get("ps_actions", [])}
+    aql_by_cc = {str(item.get("cc")): item for item in facts.get("aql_recommendations", [])}
+    narrative = validated_zx_narrative(narrative or {}, facts_json, language)
+
+    def narrative_for_cc(cc: str) -> dict:
+        for recommendation in narrative.get("actions", []):
+            if cc in recommendation.get("priority_ccs", []):
+                return recommendation
+        return {}
+
+    def aql_standard(cc: str) -> str:
+        recommendation = str(aql_by_cc.get(cc, {}).get("recommendation") or "")
+        for standard in ("1.0", "1.5", "2.5"):
+            if standard in recommendation:
+                return f"AQL {standard}"
+        return "/"
+
+    rows: list[dict[str, object]] = []
+    for index, product in enumerate(products, start=1):
+        cc = str(product.get("cc") or "-")
+        action = actions_by_cc.get(cc, {})
+        top_defect = str(product.get("top_defect") or ("待确认" if language == "中文" else "To be confirmed"))
+        if language == "English":
+            top_defect = english_source_text(top_defect)
+        focus_lines = [
+            f"主要疵点：{top_defect}" if language == "中文" else f"Top defect: {top_defect}"
+        ]
+        cp_standard = "/"
+        for match in (action.get("cp_matches") or [])[:1]:
+            if not isinstance(match, dict):
+                continue
+            focus = str(match.get("focus") or "").strip()
+            requirement = str(match.get("requirement") or "").strip()
+            if language == "English":
+                focus = english_source_text(focus)
+                requirement = english_source_text(requirement)
+            if focus and re.search(r"\bdcs\b", focus, flags=re.IGNORECASE):
+                focus_lines.append(("DCS 文件：" if language == "中文" else "DCS file: ") + focus)
+                cp_standard = requirement or "/"
+                break
+        narrative_action = narrative_for_cc(cc).get("action")
+        if narrative_action:
+            focus_lines.append(
+                ("建议行动：" if language == "中文" else "Recommended action: ") + str(narrative_action)
+            )
+        rows.append(
+            {
+                "优先级" if language == "中文" else "Priority": index,
+                "CC": cc,
+                "建议关注点" if language == "中文" else "Recommended Focus": "\n".join(focus_lines),
+                "相关 CP / 工序标准" if language == "中文" else "Related CP / Process Standard": cp_standard,
+                "建议 AQL 动态标准" if language == "中文" else "Recommended Dynamic AQL Standard": aql_standard(cc),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def tu_report_passes_guardrails(content: str, language: str) -> bool:
@@ -5735,7 +5774,49 @@ def render_qwen_summary_panel(
             else:
                 display_content = str(report.get("content") or "").strip()
             with st.container(key="zx_ai_report_result"):
-                st.markdown(display_content, unsafe_allow_html=True)
+                if report.get("facts_json"):
+                    action_heading = "## 3. 推荐行动计划" if active_language == "中文" else "## 3. Recommended Action Plan"
+                    report_prefix = display_content.partition(action_heading)[0].rstrip()
+                    st.markdown(report_prefix, unsafe_allow_html=True)
+                    st.markdown(action_heading)
+                    action_plan = build_zx_action_plan_frame(
+                        str(report["facts_json"]),
+                        active_language,
+                        report.get("narrative"),
+                    )
+                    aql_column = "建议 AQL 动态标准" if active_language == "中文" else "Recommended Dynamic AQL Standard"
+                    focus_column = "建议关注点" if active_language == "中文" else "Recommended Focus"
+                    cp_column = "相关 CP / 工序标准" if active_language == "中文" else "Related CP / Process Standard"
+                    styled_action_plan = (
+                        action_plan.style
+                        .set_properties(**{"color": "#172033", "background-color": "#f8faff"})
+                        .set_properties(
+                            subset=[aql_column],
+                            **{"color": "#217346", "background-color": "#e6f4ec", "font-weight": "800"},
+                        )
+                    )
+                    st.dataframe(
+                        styled_action_plan,
+                        width="stretch",
+                        height="auto",
+                        hide_index=True,
+                        row_height=112,
+                        column_config={
+                            action_plan.columns[0]: st.column_config.NumberColumn(width="small"),
+                            "CC": st.column_config.TextColumn(width="small"),
+                            focus_column: st.column_config.TextColumn(width="large"),
+                            cp_column: st.column_config.TextColumn(width="large"),
+                            aql_column: st.column_config.TextColumn(width="medium"),
+                        },
+                        key=f"{key}_{active_language}_action_plan",
+                    )
+                    st.caption(
+                        "可拖动表头之间的分隔线，自定义每一列的宽度。建议 AQL 动态标准仅为推荐等级，最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。"
+                        if active_language == "中文"
+                        else "Drag the separators between column headers to resize each column. The recommended dynamic AQL standard is a recommendation only; final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table."
+                    )
+                else:
+                    st.markdown(display_content, unsafe_allow_html=True)
         else:
             st.markdown(report["content"])
             st.caption(t(f"通义千问 {report['model']} · {report['generated_at']}。数字来自当前看板事实，根因仍需现场验证。", f"Qwen {report['model']} · {report['generated_at']}. Numbers come from dashboard facts; root causes still require on-site validation."))
