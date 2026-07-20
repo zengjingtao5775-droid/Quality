@@ -856,6 +856,16 @@ st.markdown(
         line-height: 1.0;
         white-space: nowrap;
     }
+    .kpi-value-row {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .kpi-value-row .kpi-trend {
+        font-size: 0.82rem;
+        line-height: 1.2;
+    }
     .kpi-note {
         color: #475467;
         font-size: 0.82rem;
@@ -7136,19 +7146,20 @@ def render_kpi_cards(cards: list[dict[str, str]], variant: str = ""):
         label = html.escape(english_display_text(card["label"]))
         value = html.escape(english_display_text(card["value"]))
         note = html.escape(english_display_text(card["note"]))
+        trend_label = html.escape(english_display_text(str(card.get("trend_label", ""))))
         trend_direction = str(card.get("trend_direction", "")).strip()
         trend_tone = str(card.get("trend_tone", trend_direction)).strip()
         trend_symbol = {"up": "↑", "down": "↓", "flat": "→"}.get(trend_direction, "")
-        trend_html = (
-            f'<span class="kpi-trend {trend_tone}">{trend_symbol} {note}</span>'
-            if trend_direction
-            else note
+        value_trend_html = (
+            f'<span class="kpi-trend {trend_tone}">{trend_symbol} {trend_label}</span>'
+            if trend_direction and trend_label
+            else ""
         )
         html_parts.append(
             f"<div class=\"kpi-card {card.get('level', 'medium')}\">"
             f"<div class=\"kpi-label\">{label}</div>"
-            f"<div class=\"kpi-value\">{value}</div>"
-            f"<div class=\"kpi-note\">{trend_html}</div>"
+            f"<div class=\"kpi-value-row\"><div class=\"kpi-value\">{value}</div>{value_trend_html}</div>"
+            f"<div class=\"kpi-note\">{note}</div>"
             f"</div>"
         )
     html_parts.append("</div>")
@@ -7651,7 +7662,6 @@ def render_zx_high_risk_cluster(
     view["defect_rate_display"] = view["defect_rate"].map(
         lambda value: pct(value) if pd.notna(value) else "-"
     )
-    pareto_top = select_pareto_risk_products(view)
     view["cc_text"] = view["product_code"].astype(str)
     def cluster_formula(row: pd.Series) -> str:
         if has_client_signal and not bool(row.get("has_production_record", False)):
@@ -7955,17 +7965,6 @@ def render_zx_high_risk_cluster(
             key=f"{widget_key}_cluster_plot",
             cc_customdata_index=0,
             enable_box_zoom=True,
-        )
-    if widget_key == "zx" and not pareto_top.empty:
-        top_three = " · ".join(
-            f"{row['product_code']}（{row['risk_score_fixed']:.1f}）"
-            for _, row in pareto_top.head(3).iterrows()
-        )
-        st.caption(
-            t(
-                f"每个圆点均显示 CC 标签；颜色仅表示 K-means 高 / 中 / 低风险分组。Risk Score 前 3 与 Top CC Pareto 一致：{top_three}。",
-                f"Every dot displays its CC label; colours show K-means high / medium / low groups only. The Risk Score top 3 match Top CC Pareto: {top_three}.",
-            )
         )
     return view
 
@@ -8464,7 +8463,7 @@ def render_defect_pareto(
         y="defect_type",
         orientation="h",
         text=pareto["defect_qty"].map(lambda value: f"{value:,.0f}"),
-        labels={"defect_qty": t("疵点数", "Defects"), "defect_type": t("疵点类型", "Defect Type")},
+        labels={"defect_qty": t("疵点数量", "Defect Quantity"), "defect_type": t("疵点类型", "Defect Type")},
         color="focus_group" if focus_mode else None,
         color_discrete_map=(
             {
@@ -8518,7 +8517,7 @@ def render_product_priority(
     if pareto_mode:
         achieved_share = float(pareto_products.get("cumulative_risk_share", pd.Series(0, index=pareto_products.index)).max())
         st.markdown(
-            f"<span class='zx-pareto-chip'>80/20 · Top 20% · {len(pareto_products)} {t('个 CC 贡献', 'CCs contribute')} {achieved_share:.0%} {t('风险', 'of risk')}</span>",
+            f"<span class='zx-pareto-chip'>80/20 · Top 20% · {len(pareto_products)} {t('个 CC 贡献', 'CCs contribute')} {achieved_share:.0%} {t('的风险分', 'of Risk Score')}</span>",
             unsafe_allow_html=True,
         )
         focus_codes = set(pareto_products["product_code"].astype(str))
@@ -8580,7 +8579,7 @@ def render_product_priority(
         custom_data=["product_code", "model_hover", "rpm_now", "intern_voice_count", "defect_rate", "risk_score_fixed", "qty_inspected", "defect_qty"],
         labels={
             "risk_score_fixed": t("风险分", "Risk Score"),
-            "product_view": t("CC / 款式", "CC / Style"),
+            "product_view": "CC",
             "risk_level_fixed": t("风险等级", "Risk Level"),
             "risk_formula": t("风险分计算", "Risk Score Calculation"),
             "production_score_fixed": t("生产端风险分", "Production Risk Score"),
@@ -8788,7 +8787,7 @@ def render_zx_process_pareto(
             )
         )
         fig.update_layout(
-            yaxis=dict(title=None),
+            yaxis=dict(title=t("疵点数量", "Defect Quantity")),
             yaxis2=dict(title=None, overlaying="y", side="right", tickformat=".0%", range=[0, 1.05]),
             xaxis=dict(title=("CC / " if by_cc else "") + t("工序", "Process"), tickangle=-28),
             showlegend=False,
@@ -9792,6 +9791,7 @@ def build_zx_kpi_cards(
     eol_defects = float(pd.to_numeric(end_qc.get("defect_qty", 0), errors="coerce").fillna(0).sum())
     eol_rft = 1 - eol_defects / eol_qty if eol_qty else np.nan
     eol_trend_direction = ""
+    eol_trend_label = ""
     eol_trend_note = t(
         f"Excel · 检验 {compact_num(eol_qty)} / 疵点 {compact_num(eol_defects)}",
         f"Excel · inspected {compact_num(eol_qty)} / defects {compact_num(eol_defects)}",
@@ -9817,22 +9817,25 @@ def build_zx_kpi_cards(
             if previous_rft > 0:
                 rft_change = (current_rft - previous_rft) / previous_rft
                 eol_trend_direction = "down" if rft_change < 0 else "up" if rft_change > 0 else "flat"
-                eol_trend_note = t(
+                eol_trend_label = t(
                     f"RFT 环比下降 {abs(rft_change):.1%}" if rft_change < 0 else f"RFT 环比上升 {rft_change:.1%}" if rft_change > 0 else "RFT 环比持平",
                     f"RFT MoM down {abs(rft_change):.1%}" if rft_change < 0 else f"RFT MoM up {rft_change:.1%}" if rft_change > 0 else "RFT MoM flat",
-                ) + t(
-                    f" · 本月 {current_rft:.2%} / 上月 {previous_rft:.2%}",
-                    f" · current {current_rft:.2%} / previous {previous_rft:.2%}",
+                )
+                eol_trend_note = t(
+                    f"本月 {current_rft:.2%} / 上月 {previous_rft:.2%}",
+                    f"current {current_rft:.2%} / previous {previous_rft:.2%}",
                 )
             elif current_rft > 0:
                 eol_trend_direction = "up"
+                eol_trend_label = t("RFT 环比上升", "RFT MoM up")
                 eol_trend_note = t(
-                    f"RFT 环比上升 · 本月 {current_rft:.2%} / 上月 0.00%",
-                    f"RFT MoM up · current {current_rft:.2%} / previous 0.00%",
+                    f"本月 {current_rft:.2%} / 上月 0.00%",
+                    f"current {current_rft:.2%} / previous 0.00%",
                 )
             else:
                 eol_trend_direction = "flat"
-                eol_trend_note = t("RFT 环比持平 · 本月与上月均为 0", "RFT MoM flat · current and previous months are both 0")
+                eol_trend_label = t("RFT 环比持平", "RFT MoM flat")
+                eol_trend_note = t("本月与上月均为 0", "Current and previous months are both 0")
 
     if not isinstance(jdy_fqc, pd.DataFrame):
         jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
@@ -9847,6 +9850,7 @@ def build_zx_kpi_cards(
         display_rft = owner_rft
         trend_direction = ""
         trend_tone = "flat"
+        trend_label = ""
         if pd.notna(owner_rft):
             value = pct(owner_rft)
             note = t(
@@ -9880,12 +9884,13 @@ def build_zx_kpi_cards(
                             change = (current_rft - previous_rft) / previous_rft
                             trend_direction = "up" if change > 0 else "down" if change < 0 else "flat"
                             trend_tone = "good" if change > 0 else "bad" if change < 0 else "flat"
-                            note = t(
+                            trend_label = t(
                                 f"环比上升 {change:.1%}" if change > 0 else f"环比下降 {abs(change):.1%}" if change < 0 else "环比持平",
                                 f"MoM up {change:.1%}" if change > 0 else f"MoM down {abs(change):.1%}" if change < 0 else "MoM flat",
-                            ) + t(
-                                f" · 本月 {current_rft:.2%} / 上月 {previous_rft:.2%}",
-                                f" · current {current_rft:.2%} / previous {previous_rft:.2%}",
+                            )
+                            note = t(
+                                f"本月 {current_rft:.2%} / 上月 {previous_rft:.2%}",
+                                f"current {current_rft:.2%} / previous {previous_rft:.2%}",
                             )
         elif jdy_fqc.empty:
             value = t("待刷新", "Refresh")
@@ -9897,6 +9902,7 @@ def build_zx_kpi_cards(
             "label": t(label_cn, label_en),
             "value": value,
             "note": note,
+            "trend_label": trend_label,
             "trend_direction": trend_direction,
             "trend_tone": trend_tone,
             "level": "high" if pd.notna(display_rft) and display_rft < 0.92 else "medium" if pd.notna(display_rft) and display_rft < 0.97 else "low",
@@ -9932,16 +9938,18 @@ def build_zx_kpi_cards(
 
     rpm_trend_direction = ""
     rpm_trend_tone = "flat"
+    rpm_trend_label = ""
     if period_rpm_now is not None and period_rpm_prev is not None and period_rpm_prev > 0:
         rpm_change = (period_rpm_now - period_rpm_prev) / period_rpm_prev
         rpm_trend_direction = "up" if rpm_change > 0 else "down" if rpm_change < 0 else "flat"
         rpm_trend_tone = "bad" if rpm_change > 0 else "good" if rpm_change < 0 else "flat"
-        rpm_note = t(
+        rpm_trend_label = t(
             f"较上期上升 {rpm_change:.1%}" if rpm_change > 0 else f"较上期下降 {abs(rpm_change):.1%}" if rpm_change < 0 else "较上期持平",
             f"Up {rpm_change:.1%} vs previous" if rpm_change > 0 else f"Down {abs(rpm_change):.1%} vs previous" if rpm_change < 0 else "Flat vs previous",
-        ) + t(
-            f" · 当前 {compact_num(period_rpm_now)} / 上期 {compact_num(period_rpm_prev)}",
-            f" · current {compact_num(period_rpm_now)} / previous {compact_num(period_rpm_prev)}",
+        )
+        rpm_note = t(
+            f"当前 {compact_num(period_rpm_now)} / 上期 {compact_num(period_rpm_prev)}",
+            f"current {compact_num(period_rpm_now)} / previous {compact_num(period_rpm_prev)}",
         )
     else:
         rpm_note = t(
@@ -9950,27 +9958,31 @@ def build_zx_kpi_cards(
         )
     nqc_trend_direction = ""
     nqc_trend_tone = "flat"
+    nqc_trend_label = ""
     if pd.notna(total_nqc) and pd.notna(previous_nqc):
         if previous_nqc > 0:
             nqc_change = (total_nqc - previous_nqc) / previous_nqc
             nqc_trend_direction = "up" if nqc_change > 0 else "down" if nqc_change < 0 else "flat"
             nqc_trend_tone = "bad" if nqc_change > 0 else "good" if nqc_change < 0 else "flat"
-            nqc_note = t(
+            nqc_trend_label = t(
                 f"较上期上升 {nqc_change:.1%}" if nqc_change > 0 else f"较上期下降 {abs(nqc_change):.1%}" if nqc_change < 0 else "较上期持平",
                 f"Up {nqc_change:.1%} vs previous" if nqc_change > 0 else f"Down {abs(nqc_change):.1%} vs previous" if nqc_change < 0 else "Flat vs previous",
-            ) + t(
-                f" · 当前 €{compact_num(total_nqc)} / 上期 €{compact_num(previous_nqc)}",
-                f" · current €{compact_num(total_nqc)} / previous €{compact_num(previous_nqc)}",
+            )
+            nqc_note = t(
+                f"当前 €{num(total_nqc)} / 上期 €{num(previous_nqc)}",
+                f"current €{num(total_nqc)} / previous €{num(previous_nqc)}",
             )
         elif total_nqc > 0:
             nqc_trend_direction = "up"
             nqc_trend_tone = "bad"
+            nqc_trend_label = t("较上期上升", "Up vs previous")
             nqc_note = t(
-                f"较上期上升 · 当前 €{compact_num(total_nqc)} / 上期 €0",
-                f"Up vs previous · current €{compact_num(total_nqc)} / previous €0",
+                f"当前 €{num(total_nqc)} / 上期 €0",
+                f"current €{num(total_nqc)} / previous €0",
             )
         else:
             nqc_trend_direction = "flat"
+            nqc_trend_label = t("较上期持平", "Flat vs previous")
             nqc_note = t("当前与上期均为 €0", "Current and previous are both €0")
     else:
         nqc_note = t("客户 NQC 金额（欧元）· 上期数据未接入", "Customer NQC amount (EUR) · previous data unavailable")
@@ -9989,13 +10001,18 @@ def build_zx_kpi_cards(
     )
     iv_previous = float(pd.to_numeric(iv_previous_source, errors="coerce").sum(min_count=1)) if not iv_voice.empty else np.nan
     iv_trend_direction = ""
+    iv_trend_label = ""
     if previous_available and pd.notna(iv_previous):
         if iv_previous > 0:
             yoy_change = (iv_current - iv_previous) / iv_previous
             iv_trend_direction = "down" if yoy_change < 0 else "up" if yoy_change > 0 else "flat"
+            iv_trend_label = t(
+                f"同比下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"同比上升 {yoy_change:.1%}" if yoy_change > 0 else "同比持平",
+                f"Down {abs(yoy_change):.1%} YoY" if yoy_change < 0 else f"Up {yoy_change:.1%} YoY" if yoy_change > 0 else "Flat YoY",
+            )
             yoy_note = t(
-                f"工厂售前（Before）· 较去年同期下降 {abs(yoy_change):.1%}" if yoy_change < 0 else f"工厂售前（Before）· 较去年同期上升 {yoy_change:.1%}" if yoy_change > 0 else "工厂售前（Before）· 与去年同期持平",
-                f"Before sale · down {abs(yoy_change):.1%} vs previous year" if yoy_change < 0 else f"Before sale · up {yoy_change:.1%} vs previous year" if yoy_change > 0 else "Before sale · flat vs previous year",
+                f"当前 {iv_current:,} / 去年同期 {iv_previous:,.0f}",
+                f"current {iv_current:,} / previous year {iv_previous:,.0f}",
             )
         else:
             yoy_note = t("工厂售前（Before）· 去年同期为 0，无法计算同比", "Before sale · previous-year period was 0; change is not calculable")
@@ -10009,6 +10026,7 @@ def build_zx_kpi_cards(
             "label": t("End of line RFT", "End-of-line RFT"),
             "value": pct(eol_rft) if pd.notna(eol_rft) else "N/A",
             "note": eol_trend_note,
+            "trend_label": eol_trend_label,
             "trend_direction": eol_trend_direction,
             "trend_tone": "bad" if eol_trend_direction == "down" else "good" if eol_trend_direction == "up" else "flat",
             "level": "high" if pd.notna(eol_rft) and eol_rft < 0.96 else "medium" if pd.notna(eol_rft) and eol_rft < 0.98 else "low",
@@ -10017,14 +10035,16 @@ def build_zx_kpi_cards(
             "label": f"RPM ({metric_period})",
             "value": num(rpm_r12m, 0) if pd.notna(rpm_r12m) else "N/A",
             "note": rpm_note,
+            "trend_label": rpm_trend_label,
             "trend_direction": rpm_trend_direction,
             "trend_tone": rpm_trend_tone,
             "level": "high" if pd.notna(rpm_r12m) and rpm_r12m >= 1_000 else "medium" if pd.notna(rpm_r12m) and rpm_r12m >= 500 else "low",
         },
         {
             "label": t(f"NQC 金额（{metric_period}）", f"NQC Amount ({metric_period})"),
-            "value": f"€{compact_num(total_nqc)}" if pd.notna(total_nqc) else "N/A",
+            "value": f"€{num(total_nqc)}" if pd.notna(total_nqc) else "N/A",
             "note": nqc_note,
+            "trend_label": nqc_trend_label,
             "trend_direction": nqc_trend_direction,
             "trend_tone": nqc_trend_tone,
             "level": "high" if nqc_trend_direction == "up" else "low" if nqc_trend_direction == "down" else "medium",
@@ -10033,6 +10053,7 @@ def build_zx_kpi_cards(
             "label": t("工厂售前 IV", "Factory Before-Sale IV"),
             "value": f"{iv_current:,}",
             "note": yoy_note,
+            "trend_label": iv_trend_label,
             "trend_direction": iv_trend_direction,
             "level": "high" if previous_available and pd.notna(iv_previous) and iv_current > iv_previous else "low",
         },
