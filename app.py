@@ -1388,10 +1388,10 @@ st.markdown(
     .st-key-zx_ai_report_result {
         margin-top: 14px;
         padding: 20px 22px 12px;
-        border: 1px solid rgba(203, 213, 245, 0.92);
-        border-radius: 18px;
-        background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247,249,255,0.96));
-        box-shadow: 0 14px 36px rgba(36, 52, 167, 0.09);
+        border: 1px solid #d8dfed;
+        border-radius: 12px;
+        background: #ffffff;
+        box-shadow: 0 8px 24px rgba(24, 41, 105, 0.07);
     }
     .st-key-zx_ai_report_result h1 {
         font-size: 1.38rem;
@@ -1401,41 +1401,41 @@ st.markdown(
     .st-key-zx_ai_report_result h2 {
         margin-top: 1.15rem;
         padding-bottom: 0.45rem;
-        border-bottom: 1px solid #dfe4fb;
+        border-bottom: 2px solid #dce3f2;
         font-size: 1.48rem;
-        color: #2434a7;
-        text-align: center;
+        color: #192a6b;
+        text-align: left;
     }
     .st-key-zx_ai_report_result table {
         width: 100%;
-        border: 1px solid #d8def2;
+        border: 1px solid #d8dfed;
         border-collapse: separate;
         border-spacing: 0;
         border-radius: 12px;
         overflow: hidden;
-        box-shadow: 0 6px 18px rgba(35, 52, 153, 0.06);
+        box-shadow: none;
     }
     .st-key-zx_ai_report_result th,
     .st-key-zx_ai_report_result td {
         padding: 0.72rem 0.78rem !important;
         text-align: center !important;
         vertical-align: middle;
-        border-color: #e1e6f4 !important;
+        border-color: #e1e6ef !important;
     }
     .st-key-zx_ai_report_result thead th {
-        color: #18317d;
-        background: #e9eefc;
+        color: #192a6b;
+        background: #e8edf8;
         font-weight: 850;
     }
     .st-key-zx_ai_report_result tbody tr:nth-child(odd) td {
-        background: #fffdf5;
+        background: #ffffff;
     }
     .st-key-zx_ai_report_result tbody tr:nth-child(even) td {
-        background: #f7f9ff;
+        background: #f8faff;
     }
     .st-key-zx_ai_report_result table:nth-of-type(3) thead th {
-        color: #ffffff;
-        background: linear-gradient(135deg, #2439a8, #5265dd);
+        color: #192a6b;
+        background: #e4eaf6;
     }
     .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(3),
     .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(4),
@@ -1445,15 +1445,22 @@ st.markdown(
         line-height: 1.55;
     }
     .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(3) {
-        background: #fffaf0;
+        background: #f7f9fd;
     }
     .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(4) {
-        background: #f0f5ff;
+        background: #f3f6fb;
     }
     .st-key-zx_ai_report_result table:nth-of-type(3) td:nth-child(5) {
-        color: #1c378e;
-        background: #edf7f1;
+        background: #ffffff;
+    }
+    .st-key-zx_ai_report_result .zx-aql-standard {
+        display: inline-block;
+        padding: 0.22rem 0.52rem;
+        border-radius: 6px;
+        color: #217346;
+        background: #e6f4ec;
         font-weight: 850;
+        white-space: nowrap;
     }
     section[data-testid="stSidebar"] .zx-pareto-chip {
         color: #172033 !important;
@@ -4436,6 +4443,10 @@ def match_cp_rows_to_defect(cp_rows: pd.DataFrame, defect: object, limit: int = 
         + " "
         + ranked.get("requirement", pd.Series("", index=ranked.index)).fillna("").astype(str)
     ).str.casefold()
+    dcs_rows = ranked[searchable.str.contains(r"\bdcs\b", regex=True)]
+    if not dcs_rows.empty:
+        ranked = dcs_rows.copy()
+        searchable = searchable.loc[ranked.index]
     ranked["_match_score"] = searchable.map(
         lambda text: sum(3 if term in {"dcs 111", "seam allowance", "车缝止口"} else 1 for term in terms if term in text)
     )
@@ -5295,12 +5306,14 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
     def localized_aql(cc: str) -> str:
         recommendation = str(aql_by_cc.get(cc, {}).get("recommendation") or "")
         if "1.0" in recommendation:
-            return "AQL 1.0"
-        if "1.5" in recommendation:
-            return "AQL 1.5"
-        if "2.5" in recommendation:
-            return "AQL 2.5"
-        return "-"
+            standard = "AQL 1.0"
+        elif "1.5" in recommendation:
+            standard = "AQL 1.5"
+        elif "2.5" in recommendation:
+            standard = "AQL 2.5"
+        else:
+            return "-"
+        return f"<span class='zx-aql-standard'>{standard}</span>"
 
     def report_cell(value: object, max_length: int = 520) -> str:
         text = str(value or "-").replace("|", "/")[:max_length]
@@ -5326,9 +5339,9 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
                 )
         if not recommendation_lines:
             fallback = (
-                f"未找到该 CC 的匹配 CP；补充 {top_defect or '主要疵点'} 与工序、DCS/DPR 的关联"
+                f"DCS：当前保存的报告未包含该 CC 的 CP 明细；点击重新生成报告读取简道云记录"
                 if language == "中文"
-                else f"No matched CP for this CC; link {report_text(top_defect)} to its process and DCS/DPR"
+                else "DCS: the saved report does not contain detailed CP records for this CC; regenerate the report to load Jiandaoyun records"
             )
             recommendation_lines.append(fallback)
         return "<br>".join(report_cell(line) for line in focus_lines), "<br><br>".join(
@@ -5713,13 +5726,14 @@ def render_qwen_summary_panel(
             st.error(t(f"AI 总结生成失败：{exc}", f"AI summary failed: {exc}"))
     if report:
         if prompt_profile == "zx_conclusion":
-            display_content = str(report.get("content") or "").strip()
-            if not display_content and report.get("facts_json"):
+            if report.get("facts_json"):
                 display_content = build_zx_conclusion_report(
                     str(report["facts_json"]),
                     active_language,
                     report.get("narrative"),
                 )
+            else:
+                display_content = str(report.get("content") or "").strip()
             with st.container(key="zx_ai_report_result"):
                 st.markdown(display_content, unsafe_allow_html=True)
         else:
