@@ -96,6 +96,7 @@ ENGLISH_DISPLAY_EXACT = {
     "2026 ZX Intern Voice.xlsx": "2026 ZX Intern Voice.xlsx",
     "缝纫不匀": "Uneven stitching",
     "缝份不匀": "Uneven seam allowance",
+    "缝份不均": "Uneven seam allowance",
     "内里爆口": "Lining seam opening",
     "网棉漏车": "Missed stitching on mesh padding",
     "线头": "Loose threads",
@@ -227,6 +228,54 @@ def english_source_text(value: object) -> str:
     # ``Source item + hash`` label. Current ZX defect and process values are
     # mapped explicitly above; a future unknown value remains visible verbatim.
     return text
+
+
+def english_cp_text(value: object, *, requirement: bool = False, dcs_reference: str = "") -> str:
+    source = re.sub(r"\s+", " ", str(value or "")).strip()
+    compact = re.sub(r"\s+", "", source).lower()
+    if requirement and "梭织面料" in source and "针织面料" in source:
+        return (
+            "Woven fabric and leather: 4–5 stitches/cm; knitted fabric: 5–6 stitches/cm; "
+            "ski woven fabric: 4.5–5.5 stitches/cm; overlock: 4–5 stitches/cm."
+        )
+    if requirement and "人字" in source and "橡筋" in source and ("6+/-1mm" in compact or "6±1mm" in compact):
+        return (
+            "Control one zigzag V width at 6 ± 1 mm. Secure the elastic with backstitching covering "
+            "at least three stitches, keep a 6–8 mm seam allowance, and verify that no thread breaks "
+            "after the elastic is fully stretched."
+        )
+    if requirement and "止口" in source and ("3+/-1mm" in compact or "3±1mm" in compact):
+        return (
+            "Lockstitch, chainstitch, and lining seams: 3 ± 1 mm. For rib overlock 504, follow the TF "
+            "requirement of 5 mm or 7 mm. Overlocked lining padding: 4 ± 1 mm; lockstitched lining: "
+            "3 ± 1 mm; leather seam allowance: 2 ± 0.5 mm."
+        )
+
+    replacements = {
+        "手腕人字车橡筋": "Wrist zigzag elastic",
+        "车缝止口": "Seam allowance",
+        "针密度": "Stitch density",
+        "总检": "Final inspection",
+        "车缝": "Sewing",
+        "梭织面料": "woven fabric",
+        "针织面料": "knitted fabric",
+        "皮料": "leather",
+        "滑雪": "ski",
+        "包缝": "overlock",
+        "要求": "requirement",
+    }
+    translated = source
+    for chinese, english in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+        translated = translated.replace(chinese, english)
+    translated = english_source_text(translated)
+    if re.search(r"[\u3400-\u9fff]", translated):
+        if requirement:
+            dcs_label = dcs_reference or "the linked DCS"
+            return f"Follow the approved control requirement in {dcs_label}."
+        translated = re.sub(r"[\u3400-\u9fff]+", " ", translated)
+    translated = re.sub(r"\s+", " ", translated)
+    translated = re.sub(r"\s*/\s*", " / ", translated)
+    return translated.strip(" /") or (f"Refer to {dcs_reference}." if dcs_reference else "/")
 
 
 def localize_display_value(value: object) -> object:
@@ -5345,6 +5394,9 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
         if language != "English":
             return text
         text = english_source_text(text)
+        if re.search(r"[\u3400-\u9fff]", text):
+            text = re.sub(r"[\u3400-\u9fff]+", " ", text)
+            text = re.sub(r"\s+", " ", text).strip() or "Source item"
         if product_label:
             for source, translated in EN_COLOR_REPLACEMENTS:
                 text = text.replace(source, translated)
@@ -5385,8 +5437,14 @@ def build_zx_conclusion_report(facts_json: str, language: str, narrative: dict |
             focus = str(match.get("focus") or "").strip()
             requirement = str(match.get("requirement") or "").strip()
             if language == "English":
-                focus = report_text(focus)
-                requirement = report_text(requirement)
+                dcs_match = re.search(r"\bDCS\s*[\w.-]+", focus, flags=re.IGNORECASE)
+                dcs_reference = dcs_match.group(0).upper() if dcs_match else ""
+                focus = english_cp_text(focus, dcs_reference=dcs_reference)
+                requirement = english_cp_text(
+                    requirement,
+                    requirement=True,
+                    dcs_reference=dcs_reference,
+                )
             if focus and re.search(r"\bdcs\b", focus, flags=re.IGNORECASE):
                 focus_label = "DCS 文件：" if language == "中文" else "DCS file: "
                 focus_lines.append(f"{focus_label}{focus}")
@@ -5521,6 +5579,8 @@ def build_zx_action_plan_frame(facts_json: str, language: str, narrative: dict |
         top_defect = str(product.get("top_defect") or ("待确认" if language == "中文" else "To be confirmed"))
         if language == "English":
             top_defect = english_source_text(top_defect)
+            if re.search(r"[\u3400-\u9fff]", top_defect):
+                top_defect = "Source defect requiring English mapping"
         focus_lines = [
             f"主要疵点：{top_defect}" if language == "中文" else f"Top defect: {top_defect}"
         ]
@@ -5531,13 +5591,24 @@ def build_zx_action_plan_frame(facts_json: str, language: str, narrative: dict |
             focus = str(match.get("focus") or "").strip()
             requirement = str(match.get("requirement") or "").strip()
             if language == "English":
-                focus = english_source_text(focus)
-                requirement = english_source_text(requirement)
+                dcs_match = re.search(r"\bDCS\s*[\w.-]+", focus, flags=re.IGNORECASE)
+                dcs_reference = dcs_match.group(0).upper() if dcs_match else ""
+                focus = english_cp_text(focus, dcs_reference=dcs_reference)
+                requirement = english_cp_text(
+                    requirement,
+                    requirement=True,
+                    dcs_reference=dcs_reference,
+                )
             if focus and re.search(r"\bdcs\b", focus, flags=re.IGNORECASE):
                 focus_lines.append(("DCS 文件：" if language == "中文" else "DCS file: ") + focus)
                 cp_standard = requirement or "/"
                 break
         narrative_action = narrative_for_cc(cc).get("action")
+        if narrative_action:
+            if language == "English":
+                narrative_action = english_source_text(narrative_action)
+                if re.search(r"[\u3400-\u9fff]", narrative_action):
+                    narrative_action = ""
         if narrative_action:
             focus_lines.append(
                 ("建议行动：" if language == "中文" else "Recommended action: ") + str(narrative_action)
