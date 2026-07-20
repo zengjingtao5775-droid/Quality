@@ -5506,7 +5506,13 @@ def render_qwen_summary_panel(
             st.error(t(f"AI 总结生成失败：{exc}", f"AI summary failed: {exc}"))
     if report:
         if prompt_profile == "zx_conclusion":
-            display_content = build_zx_conclusion_report(current_facts_json(), active_language, report.get("narrative"))
+            display_content = str(report.get("content") or "").strip()
+            if not display_content and report.get("facts_json"):
+                display_content = build_zx_conclusion_report(
+                    str(report["facts_json"]),
+                    active_language,
+                    report.get("narrative"),
+                )
             with st.container(key="zx_ai_report_result"):
                 st.markdown(display_content)
         else:
@@ -5525,12 +5531,13 @@ def render_qwen_summary_panel(
                 if active_language == "中文"
                 else f"Model generated: {report['generated_at']} (Beijing time) · Model: Qwen {report['model']} · Figures and tables are system-generated; the model writes only action recommendations · Chinese and English use the same data snapshot."
             )
-    elif prompt_profile == "zx_conclusion":
-        with st.container(key="zx_ai_report_result"):
-            st.markdown(build_zx_conclusion_report(current_facts_json(), active_language))
-        st.caption(t("当前暂无已保存的 AI 报告；以上为规则生成的即时总结。", "No saved AI report yet; the summary above is generated instantly from rules."))
-    elif prompt_profile == "tu_community":
-        st.markdown(build_tu_guardrailed_report(current_facts_json(), active_language))
+    else:
+        st.info(
+            t(
+                "当前暂无已保存报告。点击“生成报告”后才会读取最新数据并调用 AI；生成完成后将持续显示该报告快照。",
+                "No saved report is available. Data and AI are only called after Generate Report is clicked; the generated snapshot remains displayed afterward.",
+            )
+        )
 
 
 def jdy_section_pareto(fqc: pd.DataFrame) -> pd.DataFrame:
