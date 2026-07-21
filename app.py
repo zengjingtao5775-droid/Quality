@@ -5983,17 +5983,12 @@ def render_qwen_summary_panel(
                         report.get("narrative"),
                     )
                     st.markdown(render_zx_action_plan_table(action_plan), unsafe_allow_html=True)
-                    st.caption(
-                        "AQL 依据：风险分 ≥55 或平滑后 FQC 首次失败率 ≥5% → AQL 1.0；风险分 <35、至少 5 条有效 FQC 且零失败 → AQL 2.5；其他情况 → AQL 1.5。平滑公式为（失败数+1）/（有效记录+20），避免单次偶发失败直接升级。最终抽样数量仍须结合批量、检验水平、样本代码和批准的 Ac/Re 表确认。"
-                        if active_language == "中文"
-                        else "AQL basis: risk score ≥55 or smoothed FQC first-pass failure rate ≥5% → AQL 1.0; risk score <35 with at least five valid FQC records and zero failures → AQL 2.5; otherwise → AQL 1.5. Smoothing uses (failures + 1) / (valid records + 20), so one isolated failure does not automatically trigger AQL 1.0. Final sample size still requires lot size, inspection level, sample code, and an approved Ac/Re table."
-                    )
                 else:
                     st.markdown(display_content, unsafe_allow_html=True)
         else:
             st.markdown(report["content"])
             st.caption(t(f"通义千问 {report['model']} · {report['generated_at']}。数字来自当前看板事实，根因仍需现场验证。", f"Qwen {report['model']} · {report['generated_at']}. Numbers come from dashboard facts; root causes still require on-site validation."))
-        if not generated_now:
+        if not generated_now and prompt_profile != "zx_conclusion":
             st.caption(
                 t(
                     "当前显示上一次保存的报告；需要按当前筛选更新时，请点击“重新生成报告”。",
@@ -6002,9 +5997,9 @@ def render_qwen_summary_panel(
             )
         if prompt_profile == "zx_conclusion":
             st.caption(
-                f"模型生成时间：{report['generated_at']}（北京时间） · 模型：通义千问 {report['model']} · 数字与表格由系统计算，模型仅生成行动建议 · 中英文版本使用同一数据快照。"
+                f"模型生成时间：{report['generated_at']}（北京时间） · 模型：通义千问 {report['model']}"
                 if active_language == "中文"
-                else f"Model generated: {report['generated_at']} (Beijing time) · Model: Qwen {report['model']} · Figures and tables are system-generated; the model writes only action recommendations · Chinese and English use the same data snapshot."
+                else f"Model generated: {report['generated_at']} (Beijing time) · Model: Qwen {report['model']}"
             )
     else:
         st.info(
