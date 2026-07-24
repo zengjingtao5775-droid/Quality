@@ -10,3 +10,4 @@ venv/
 env/
 TF Database/**/status.png
 POC_Raw_Data/
+.runtime/

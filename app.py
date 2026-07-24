@@ -28,6 +28,12 @@ from openpyxl import load_workbook
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+AI_REPORT_STORE_PATH = Path(
+    os.environ.get(
+        "AI_REPORT_STORE_PATH",
+        str(Path(__file__).resolve().parent / ".runtime" / "ai_report_snapshots.json"),
+    )
+)
 
 
 def beijing_timestamp() -> str:
@@ -5774,6 +5780,25 @@ def generate_qwen_zx_bilingual_reports(facts_json: str, model: str, _api_key: st
     return reports
 
 
+def build_zx_rule_fallback_reports(facts_json: str, model: str) -> dict[str, dict]:
+    generated_at = beijing_timestamp()
+    snapshot_fingerprint = hashlib.sha256(facts_json.encode()).hexdigest()[:12]
+    reports: dict[str, dict] = {}
+    for language in ["中文", "English"]:
+        narrative = default_zx_conclusion_narrative(facts_json, language)
+        reports[language] = {
+            "content": build_zx_conclusion_report(facts_json, language, narrative),
+            "narrative": narrative,
+            "facts_json": facts_json,
+            "model": model,
+            "generated_at": generated_at,
+            "generated_timezone": "Asia/Shanghai",
+            "snapshot_fingerprint": snapshot_fingerprint,
+            "generation_mode": "rule_fallback",
+        }
+    return reports
+
+
 def generate_qwen_quality_summary(report_scope: str, facts_json: str, language: str, model: str, prompt_profile: str, prompt_version: str, api_key_fingerprint: str, _api_key: str) -> dict:
     del api_key_fingerprint
     del prompt_version
@@ -5829,15 +5854,26 @@ def generate_qwen_quality_summary(report_scope: str, facts_json: str, language: 
     }
 
 
-@st.cache_resource(show_spinner=False)
 def saved_ai_report_store() -> dict[str, dict[str, object]]:
-    """Keep the latest generated report available across Streamlit sessions.
+    try:
+        payload = json.loads(AI_REPORT_STORE_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
-    The store is process-local: it survives widget reruns and new browser
-    sessions while the deployed app process is alive. A deliberate Generate /
-    Regenerate click is the only path that writes a new model response.
-    """
-    return {}
+
+def persist_ai_report_store(report_store: dict[str, dict[str, object]]) -> bool:
+    try:
+        AI_REPORT_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = AI_REPORT_STORE_PATH.with_suffix(".tmp")
+        temporary_path.write_text(
+            json.dumps(report_store, ensure_ascii=False, separators=(",", ":"), allow_nan=False),
+            encoding="utf-8",
+        )
+        temporary_path.replace(AI_REPORT_STORE_PATH)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def render_qwen_summary_panel(
@@ -5916,6 +5952,8 @@ def render_qwen_summary_panel(
             )
         )
     generated_now = False
+    fallback_generated = False
+    persistence_succeeded = True
     if generate_clicked:
         try:
             active_facts_json = current_facts_json()
@@ -5923,7 +5961,11 @@ def render_qwen_summary_panel(
                 target_languages = ["中文", "English"] if prompt_profile == "zx_conclusion" else [active_language]
                 generated_reports: dict[str, tuple[dict, str]] = {}
                 if prompt_profile == "zx_conclusion":
-                    bilingual_reports = generate_qwen_zx_bilingual_reports(active_facts_json, model, api_key)
+                    try:
+                        bilingual_reports = generate_qwen_zx_bilingual_reports(active_facts_json, model, api_key)
+                    except Exception:
+                        bilingual_reports = build_zx_rule_fallback_reports(active_facts_json, model)
+                        fallback_generated = True
                     for target_language in target_languages:
                         target_fingerprint = hashlib.sha256(
                             f"{prompt_profile}|{prompt_version}|{target_language}|{model}|{active_facts_json}".encode()
@@ -5958,9 +6000,24 @@ def render_qwen_summary_panel(
                     if target_language == active_language:
                         report = target_report
                         saved_fingerprint = target_fingerprint
+                persistence_succeeded = persist_ai_report_store(report_store)
             generated_now = True
         except Exception as exc:
             st.error(t(f"AI 总结生成失败：{exc}", f"AI summary failed: {exc}"))
+    if fallback_generated:
+        st.warning(
+            t(
+                "模型请求暂时失败，已生成并保存系统规则版报告；稍后可点击“重新生成报告”补充 AI 行动建议。",
+                "The model request failed temporarily. A rule-based report was generated and saved; regenerate later to add AI action recommendations.",
+            )
+        )
+    if generated_now and not persistence_succeeded:
+        st.warning(
+            t(
+                "报告已生成，但服务器未能写入持久化文件；当前会话仍可正常查看。",
+                "The report was generated, but the server could not write the persistent snapshot; it remains available in this session.",
+            )
+        )
     if report:
         if prompt_profile == "zx_conclusion":
             if report.get("facts_json"):
@@ -5996,10 +6053,20 @@ def render_qwen_summary_panel(
                 )
             )
         if prompt_profile == "zx_conclusion":
+            model_label = (
+                f"系统规则版（{report['model']} 暂不可用）"
+                if report.get("generation_mode") == "rule_fallback"
+                else f"通义千问 {report['model']}"
+            )
+            model_label_en = (
+                f"Rule-based fallback ({report['model']} unavailable)"
+                if report.get("generation_mode") == "rule_fallback"
+                else f"Qwen {report['model']}"
+            )
             st.caption(
-                f"模型生成时间：{report['generated_at']}（北京时间） · 模型：通义千问 {report['model']}"
+                f"模型生成时间：{report['generated_at']}（北京时间） · 模型：{model_label}"
                 if active_language == "中文"
-                else f"Model generated: {report['generated_at']} (Beijing time) · Model: Qwen {report['model']}"
+                else f"Model generated: {report['generated_at']} (Beijing time) · Model: {model_label_en}"
             )
     else:
         st.info(
