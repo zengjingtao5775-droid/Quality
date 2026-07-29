@@ -1834,8 +1834,8 @@ DASHBOARD_SCOPES = {
     },
     "ZX": {
         "code": "TU",
-        "label_cn": "Textile Unit 看板",
-        "label_en": "Textile Unit Dashboard",
+        "label_cn": "Textile Unit Reporting",
+        "label_en": "Textile Unit Reporting",
         "subtitle_cn": "49425 · 中兴",
         "subtitle_en": "49425 · Zhongxing",
         "factories": ["ZX"],
@@ -1948,6 +1948,86 @@ ZX_ROOT_CAUSE_SUBFORM_FIELDS = (
 )
 JIANDAOYUN_CACHE_VERSION = 5
 DATA_SCOPE_CACHE_VERSION = 15
+JIANDAOYUN_RUNTIME_SNAPSHOT_DIR = ROOT / ".runtime" / "jiandaoyun_snapshots"
+
+
+def _jdy_runtime_snapshot_paths(name: str) -> tuple[Path, Path]:
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(name)).strip("_").lower()
+    return (
+        JIANDAOYUN_RUNTIME_SNAPSHOT_DIR / f"{safe_name}.csv",
+        JIANDAOYUN_RUNTIME_SNAPSHOT_DIR / f"{safe_name}.meta.json",
+    )
+
+
+def persist_jiandaoyun_snapshot(
+    name: str,
+    frame: pd.DataFrame,
+    meta: dict | None = None,
+) -> dict:
+    """Persist the last successful Jiandaoyun response for demo-safe reuse."""
+
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return dict(meta or {})
+    csv_path, meta_path = _jdy_runtime_snapshot_paths(name)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    stored_meta = dict(meta or {})
+    stored_meta.update(
+        {
+            "mode": "persistent_snapshot",
+            "snapshot_name": name,
+            "snapshot_file": str(csv_path.relative_to(ROOT)),
+            "records": len(frame),
+            "columns": len(frame.columns),
+            "saved_at": beijing_timestamp(),
+        }
+    )
+    csv_tmp = csv_path.with_suffix(".csv.tmp")
+    meta_tmp = meta_path.with_suffix(".json.tmp")
+    frame.to_csv(csv_tmp, index=False, encoding="utf-8-sig")
+    meta_tmp.write_text(
+        json.dumps(stored_meta, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    csv_tmp.replace(csv_path)
+    meta_tmp.replace(meta_path)
+    return stored_meta
+
+
+def load_persisted_jiandaoyun_snapshot(
+    name: str,
+) -> tuple[pd.DataFrame, dict]:
+    csv_path, meta_path = _jdy_runtime_snapshot_paths(name)
+    if not csv_path.exists():
+        return pd.DataFrame(), {}
+    frame = pd.read_csv(csv_path, encoding="utf-8-sig", low_memory=False)
+    for column in ["date", "inspection_date", "updated_at", "extract_date"]:
+        if column in frame.columns:
+            frame[column] = pd.to_datetime(frame[column], errors="coerce")
+    for column in ["has_defect", "is_fail", "is_decathlon_sampling"]:
+        if column in frame.columns:
+            frame[column] = (
+                frame[column]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin({"true", "1", "yes"})
+            )
+    meta: dict = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    meta.update(
+        {
+            "mode": "persistent_snapshot",
+            "snapshot_name": name,
+            "snapshot_file": str(csv_path.relative_to(ROOT)),
+            "records": len(frame),
+            "columns": len(frame.columns),
+        }
+    )
+    return frame, meta
 
 # User-confirmed Decathlon inspectors in the ZX FQC form. Matching is
 # normalized for spaces/case, and Chinese suffixes such as "/3rd" are allowed.
@@ -4270,6 +4350,22 @@ def normalize_jdy_flat(raw: pd.DataFrame, meta: dict) -> tuple[pd.DataFrame, dic
 @st.cache_data(show_spinner=False)
 def load_jiandaoyun_zx_fqc(cache_version: int = JIANDAOYUN_CACHE_VERSION) -> tuple[pd.DataFrame, dict]:
     source = JIANDAOYUN_SOURCES["ZX_FQC"]
+    persisted_fqc, persisted_meta = load_persisted_jiandaoyun_snapshot(
+        "zx_fqc"
+    )
+    if not persisted_fqc.empty:
+        persisted_fqc["inspector_owner"] = persisted_fqc.get(
+            "inspector", pd.Series("", index=persisted_fqc.index)
+        ).map(zx_inspector_owner)
+        persisted_meta.update(
+            {
+                "source_label": source["label"],
+                "source_name": source["source_name"],
+                "cache_version": cache_version,
+                "period": source_date_range(persisted_fqc),
+            }
+        )
+        return persisted_fqc, persisted_meta
     directory = ROOT / source["directory"]
     flat_file = latest_matching_file(directory, source["flat_pattern"])
     raw_file = latest_matching_file(directory, source["raw_pattern"]) if directory.exists() else None
@@ -4307,7 +4403,7 @@ def load_jiandaoyun_zx_fqc(cache_version: int = JIANDAOYUN_CACHE_VERSION) -> tup
     return normalize_jdy_flat(raw, meta)
 
 
-@st.cache_data(show_spinner=False, ttl=900)
+@st.cache_data(show_spinner=False)
 def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_version: int = JIANDAOYUN_CACHE_VERSION) -> tuple[pd.DataFrame, dict]:
     source = JIANDAOYUN_SOURCES["ZX_FQC"]
     fields_payload = {
@@ -4360,6 +4456,8 @@ def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_versi
     meta["columns"] = len(fqc.columns)
     meta["period"] = source_date_range(fqc)
     meta["pulled_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    persist_jiandaoyun_snapshot("zx_fqc", fqc, meta)
+    load_jiandaoyun_zx_fqc.clear()
     return fqc, meta
 
 
@@ -4422,7 +4520,7 @@ def extract_zx_5m1e_selections(record: dict) -> list[str]:
     return categories
 
 
-@st.cache_data(show_spinner=False, ttl=900)
+@st.cache_data(show_spinner=False)
 def load_jiandaoyun_gloves_fqc_api(
     api_key: str,
     factories: tuple[str, ...],
@@ -4527,10 +4625,16 @@ def load_jiandaoyun_gloves_fqc_api(
         "pulled_at": beijing_timestamp(),
         "cache_version": cache_version,
     }
+    snapshot_name = (
+        "gloves_fqc_"
+        + "_".join(str(factory).lower() for factory in factories)
+        + ("_third_party_qc" if inspector_usernames else "_all")
+    )
+    persist_jiandaoyun_snapshot(snapshot_name, combined, meta)
     return combined, meta
 
 
-@st.cache_data(show_spinner=False, ttl=900)
+@st.cache_data(show_spinner=False)
 def load_jiandaoyun_zx_cp_api(api_key: str, refresh_token: int = 0) -> tuple[pd.DataFrame, dict]:
     del refresh_token
     source = JIANDAOYUN_SOURCES["ZX_CP"]
@@ -4580,7 +4684,19 @@ def load_jiandaoyun_zx_cp_api(api_key: str, refresh_token: int = 0) -> tuple[pd.
     cp = pd.DataFrame(rows)
     if cp.empty:
         return cp, {"records": 0, "mode": "live_api", "source_name": source["source_name"]}
-    return cp, {"records": len(cp), "mode": "live_api", "source_name": source["source_name"]}
+    meta = {
+        "records": len(cp),
+        "mode": "live_api",
+        "source_name": source["source_name"],
+        "pulled_at": beijing_timestamp(),
+    }
+    persist_jiandaoyun_snapshot("zx_control_plan", cp, meta)
+    return cp, meta
+
+
+def load_zx_control_plan_snapshot() -> pd.DataFrame:
+    snapshot, _ = load_persisted_jiandaoyun_snapshot("zx_control_plan")
+    return snapshot
 
 
 def normalize_hugss_shipped_po(raw: pd.DataFrame) -> pd.DataFrame:
@@ -4601,6 +4717,20 @@ def normalize_hugss_shipped_po(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_zx_hugss_shipped_po_snapshot() -> pd.DataFrame:
+    persisted, _ = load_persisted_jiandaoyun_snapshot("zx_hugss_shipped_po")
+    if not persisted.empty:
+        persisted["extract_date"] = pd.to_datetime(
+            persisted.get("extract_date"), errors="coerce"
+        )
+        persisted["vendor_code"] = (
+            persisted.get("vendor_code", "")
+            .astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+        )
+        persisted["ytd_po_qty"] = pd.to_numeric(
+            persisted.get("ytd_po_qty", 0), errors="coerce"
+        ).fillna(0)
+        return persisted
     snapshot = ROOT / JIANDAOYUN_SOURCES["ZX_HUGSS_SHIPPED_PO"]["snapshot"]
     if not snapshot.exists():
         return pd.DataFrame(columns=["extract_date", "vendor_code", "supplier", "ytd_po_qty"])
@@ -4611,7 +4741,7 @@ def load_zx_hugss_shipped_po_snapshot() -> pd.DataFrame:
     return shipped
 
 
-@st.cache_data(show_spinner=False, ttl=900)
+@st.cache_data(show_spinner=False)
 def load_jiandaoyun_zx_hugss_shipped_po_api(api_key: str, refresh_token: int = 0) -> pd.DataFrame:
     del refresh_token
     source = JIANDAOYUN_SOURCES["ZX_HUGSS_SHIPPED_PO"]
@@ -4634,7 +4764,17 @@ def load_jiandaoyun_zx_hugss_shipped_po_api(api_key: str, refresh_token: int = 0
         if not last_data_id:
             break
     raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    return normalize_hugss_shipped_po(raw)
+    shipped = normalize_hugss_shipped_po(raw)
+    persist_jiandaoyun_snapshot(
+        "zx_hugss_shipped_po",
+        shipped,
+        {
+            "mode": "live_api",
+            "source_name": source["source_name"],
+            "pulled_at": beijing_timestamp(),
+        },
+    )
+    return shipped
 
 
 def build_zx_fqc_po_coverage(fqc: pd.DataFrame, shipped: pd.DataFrame) -> pd.DataFrame:
@@ -4713,10 +4853,22 @@ def render_gloves_live_api_loader(
     state_key = "gloves_more_analysis_live_api"
     refresh_key = "gloves_more_analysis_refresh_token"
     api_key = get_jdy_api_key()
+    required_scope = "third_party_qc" if inspector_usernames else "all"
+    snapshot_name = (
+        "gloves_fqc_"
+        + "_".join(str(factory).lower() for factory in required_factories)
+        + ("_third_party_qc" if inspector_usernames else "_all")
+    )
     stored = st.session_state.get(state_key)
+    if not stored:
+        persisted_data, persisted_meta = load_persisted_jiandaoyun_snapshot(
+            snapshot_name
+        )
+        if not persisted_data.empty:
+            stored = {"data": persisted_data, "meta": persisted_meta}
+            st.session_state[state_key] = stored
     stored_factories = set(stored.get("meta", {}).get("factories", [])) if stored else set()
     required_set = set(required_factories)
-    required_scope = "third_party_qc" if inspector_usernames else "all"
     stored_scope = stored.get("meta", {}).get("dataset_scope") if stored else None
     has_required_data = (
         bool(stored)
@@ -4734,26 +4886,26 @@ def render_gloves_live_api_loader(
             disabled=not bool(api_key),
         )
     with status_col:
-        if not api_key:
+        if not api_key and not has_required_data:
             st.warning(
                 t(
-                    "未检测到简道云 API Key，无法读取实时数据。",
-                    "No Jiandaoyun API key was detected, so live data cannot be loaded.",
+                    "未检测到简道云 API Key，且尚无已保存快照。",
+                    "No Jiandaoyun API key or saved snapshot was found.",
                 )
             )
-        elif has_required_data:
+        if has_required_data:
             meta = stored["meta"]
             st.caption(
                 t(
-                    f"实时 API · {meta.get('records', 0):,} 条记录 · 更新于 {meta.get('pulled_at', '-')}",
-                    f"Live API · {meta.get('records', 0):,} records · updated {meta.get('pulled_at', '-')}",
+                    f"已保存快照 · {meta.get('records', 0):,} 条记录 · 保存于 {meta.get('saved_at', meta.get('pulled_at', '-'))}",
+                    f"Saved snapshot · {meta.get('records', 0):,} records · saved {meta.get('saved_at', meta.get('pulled_at', '-'))}",
                 )
             )
-        else:
+        elif api_key:
             st.caption(
                 t(
-                    "此模块不会在页面打开时自动调用 API，请点击左侧按钮加载。",
-                    "This module does not call the API on page load. Use the button to load it.",
+                    "页面不会自动调用 API；首次点击刷新后将保存快照供后续演示。",
+                    "The page never calls the API automatically. The first refresh saves a reusable snapshot.",
                 )
             )
 
@@ -5306,14 +5458,7 @@ def build_tu_community_ai_fact_pack(
     live_fqc = st.session_state.get("zx_panel_jdy_live_fqc", pd.DataFrame())
     jdy_fqc = live_fqc.copy() if isinstance(live_fqc, pd.DataFrame) and not live_fqc.empty else pd.DataFrame()
     if jdy_fqc.empty:
-        api_key = get_jdy_api_key()
-        if api_key:
-            try:
-                jdy_fqc, _ = load_jiandaoyun_zx_fqc_api(api_key, 0, JIANDAOYUN_CACHE_VERSION)
-            except Exception:
-                jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
-        else:
-            jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+        jdy_fqc, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
     if not jdy_fqc.empty and jdy_fqc.get("date", pd.Series(dtype="datetime64[ns]")).notna().any():
         latest_year = int(jdy_fqc["date"].dropna().dt.year.max())
         jdy_fqc = jdy_fqc[jdy_fqc["date"].dt.year.eq(latest_year)].copy()
@@ -5410,12 +5555,7 @@ def build_tu_community_ai_fact_pack(
     cp = st.session_state.get("zx_panel_jdy_live_cp", pd.DataFrame())
     cp = cp.copy() if isinstance(cp, pd.DataFrame) else pd.DataFrame()
     if cp.empty:
-        api_key = get_jdy_api_key()
-        if api_key:
-            try:
-                cp, _ = load_jiandaoyun_zx_cp_api(api_key, 0)
-            except Exception:
-                cp = pd.DataFrame()
+        cp = load_zx_control_plan_snapshot()
     for index, product in enumerate(product_facts[:5], start=1):
         cc = str(product.get("cc") or "").strip()
         cc_fqc = jdy_fqc[
@@ -10713,7 +10853,7 @@ def render_se_data_summary(finished_df: pd.DataFrame, process_df: pd.DataFrame, 
 
 def load_tu_jiandaoyun_fqc(refresh_token: int = 0) -> tuple[pd.DataFrame, dict, str]:
     api_key = get_jdy_api_key()
-    if api_key:
+    if api_key and refresh_token > 0:
         try:
             jdy_fqc, jdy_meta = load_jiandaoyun_zx_fqc_api(
                 api_key,
@@ -10773,6 +10913,14 @@ def render_tu_jdy_refresh_control(
             st.session_state[meta_state_key] = live_meta
             if not live_po_coverage.empty:
                 st.session_state[coverage_state_key] = live_po_coverage
+                persist_jiandaoyun_snapshot(
+                    "zx_fqc_po_coverage",
+                    live_po_coverage,
+                    {
+                        "mode": "derived_snapshot",
+                        "pulled_at": beijing_timestamp(),
+                    },
+                )
             if include_cp:
                 st.session_state[cp_state_key] = live_cp
             st.session_state[error_state_key] = ""
@@ -10785,7 +10933,18 @@ def render_tu_jdy_refresh_control(
     current_meta = dict(st.session_state.get(meta_state_key, {})) if using_live else local_meta
     current_error = str(st.session_state.get(error_state_key, ""))
     if coverage_state_key not in st.session_state:
-        st.session_state[coverage_state_key] = load_zx_fqc_po_coverage_snapshot()
+        persisted_coverage, _ = load_persisted_jiandaoyun_snapshot(
+            "zx_fqc_po_coverage"
+        )
+        st.session_state[coverage_state_key] = (
+            persisted_coverage
+            if not persisted_coverage.empty
+            else load_zx_fqc_po_coverage_snapshot()
+        )
+    if include_cp and cp_state_key not in st.session_state:
+        persisted_cp = load_zx_control_plan_snapshot()
+        if not persisted_cp.empty:
+            st.session_state[cp_state_key] = persisted_cp
     mode = t("本次会话实时数据", "Live data in this session") if using_live else t("本地缓存数据量", "Local cached records")
     updated_at = current_meta.get("pulled_at", "")
     status_text = t(
@@ -11125,6 +11284,8 @@ def render_tu_jiandaoyun_ytd_cp(
     fqc = jdy_fqc.copy() if isinstance(jdy_fqc, pd.DataFrame) else load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)[0]
     cp = st.session_state.get(f"{panel_key}_jdy_live_cp", pd.DataFrame())
     cp = cp.copy() if isinstance(cp, pd.DataFrame) else pd.DataFrame()
+    if cp.empty:
+        cp = load_zx_control_plan_snapshot()
     if not fqc.empty and fqc["date"].notna().any():
         ytd_year = int(fqc["date"].dropna().dt.year.max())
         fqc = fqc[fqc["date"].dt.year.eq(ytd_year)].copy()
@@ -11933,7 +12094,7 @@ def render_community_cockpit(
         with readme_col:
             render_readme_popover(
                 t("说明", "Info"),
-                t("Textile Unit 看板核心指标", "Textile Unit Dashboard Core Metrics"),
+                t("Textile Unit Reporting 核心指标", "Textile Unit Reporting Core Metrics"),
                 t("一眼区分工厂终检质量、FQC 放行质量和客户端质量信号。", "Separate factory end-line quality, FQC release quality, and client quality signals at a glance."),
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
                 t(
@@ -12371,8 +12532,8 @@ def render_zx_v2_data_map(
     render_data_gap_matrix(gap_matrix)
     st.caption(
         t(
-            f"与 Textile Unit 看板使用同一数据地图口径；当前覆盖 {confidence['supplier_count']} 家 TU 供应商。",
-            f"Uses the same data-map definitions as the Textile Unit Dashboard; the current scope covers {confidence['supplier_count']} TU suppliers.",
+            f"与 Textile Unit Reporting 使用同一数据地图口径；当前覆盖 {confidence['supplier_count']} 家 TU 供应商。",
+            f"Uses the same data-map definitions as Textile Unit Reporting; the current scope covers {confidence['supplier_count']} TU suppliers.",
         )
     )
     render_data_confidence_explanation(confidence)
@@ -13122,6 +13283,1758 @@ def build_product_qc_provenance(finished: pd.DataFrame, product_codes: list[str]
     return detail.sort_values(["cc_order", "defect_qty"], ascending=[True, False]).drop(columns=["cc_order"])
 
 
+ZX_ALERT_TYPES = {
+    "IQC": ("IQC 来料预警", "IQC Alert"),
+    "PQC": ("PQC 过程预警", "PQC Alert"),
+    "END_QC": ("End of QC 预警", "End of QC Alert"),
+    "AQL": ("AQL 验货预警", "AQL Inspection Alert"),
+    "LAB": ("实验室测试预警", "Lab Test Alert"),
+}
+
+ZX_ALERT_CARD_LABELS = {
+    **ZX_ALERT_TYPES,
+    "CRITICAL": ("Critical 问题", "Critical Issues"),
+    "HIGH": ("High Risk", "High Risk"),
+    "MEDIUM": ("Medium Risk", "Medium Risk"),
+    "MATERIAL_MISSING": ("原材料供应商缺失", "Material Supplier Missing"),
+    "PO_MISSING": ("工单 / PO 缺失", "Workorder / PO Missing"),
+    "MODEL_MISSING": ("Model / Item 缺失", "Model / Item Missing"),
+    "OPEN": ("Open Alerts", "Open Alerts"),
+}
+
+ZX_ALERT_COLUMNS = [
+    "alert_type",
+    "inspection_type",
+    "inspection_date",
+    "supplier_dpp",
+    "supplier_code",
+    "material_supplier",
+    "order_po",
+    "model_item_code",
+    "item_name",
+    "issue_driver",
+    "inspected_qty",
+    "defect_qty",
+    "defect_rate",
+    "risk_level",
+    "status",
+    "source",
+]
+
+
+def _frame_series(frame: pd.DataFrame, column: str, default: object = "") -> pd.Series:
+    if column in frame.columns:
+        return frame[column]
+    return pd.Series([default] * len(frame), index=frame.index)
+
+
+def _zx_alert_issue_text(row: pd.Series) -> str:
+    for column in [
+        "important_issue",
+        "gtd_issue",
+        "visual_issue",
+        "functional_issue",
+        "liner_issue",
+        "size_issue",
+    ]:
+        value = str(row.get(column, "") or "").strip()
+        if value and value.lower() not in {"nan", "none"}:
+            return value
+    if float(row.get("critical_defects", 0) or 0) > 0:
+        return "Critical defect"
+    if float(row.get("major_defects", 0) or 0) > 0:
+        return "Major defect"
+    if float(row.get("minor_defects", 0) or 0) > 0:
+        return "Minor defect"
+    return "Failed inspection"
+
+
+def build_zx_quality_alerts(
+    finished_df: pd.DataFrame,
+    incoming_df: pd.DataFrame,
+    jdy_fqc: pd.DataFrame,
+    risk_settings: dict,
+) -> pd.DataFrame:
+    """Create the ZX alert list from the sources named in the Excel brief."""
+
+    frames: list[pd.DataFrame] = []
+    benchmark = float(risk_settings.get("qc_benchmark_pct", 4.0))
+    critical = float(risk_settings.get("qc_critical_pct", benchmark * 2))
+
+    if not incoming_df.empty:
+        iqc = incoming_df[incoming_risk_mask(incoming_df)].copy()
+        if not iqc.empty:
+            decision = _frame_series(iqc, "decision", "").fillna("").astype(str)
+            iqc_alerts = pd.DataFrame(index=iqc.index)
+            iqc_alerts["alert_type"] = "IQC"
+            iqc_alerts["inspection_type"] = "IQC"
+            iqc_alerts["inspection_date"] = pd.to_datetime(
+                _frame_series(iqc, "date", pd.NaT), errors="coerce"
+            )
+            iqc_alerts["supplier_dpp"] = (
+                _frame_series(iqc, "supplier", "中兴").fillna("中兴").astype(str)
+            )
+            iqc_alerts["supplier_code"] = "49425"
+            iqc_alerts["material_supplier"] = (
+                _frame_series(iqc, "material_supplier", "未记录")
+                .fillna("未记录")
+                .astype(str)
+            )
+            iqc_alerts["order_po"] = (
+                _frame_series(iqc, "batch", "").fillna("").astype(str)
+            )
+            iqc_alerts["model_item_code"] = (
+                _frame_series(iqc, "material_name", "").fillna("").astype(str)
+            )
+            iqc_alerts["item_name"] = (
+                _frame_series(iqc, "material_name", "").fillna("").astype(str)
+            )
+            iqc_alerts["issue_driver"] = (
+                _frame_series(iqc, "issue", "未知问题")
+                .fillna("未知问题")
+                .astype(str)
+            )
+            iqc_alerts["inspected_qty"] = pd.to_numeric(
+                _frame_series(iqc, "material_qty", 0), errors="coerce"
+            ).fillna(0)
+            iqc_alerts["defect_qty"] = 1.0
+            iqc_alerts["defect_rate"] = np.nan
+            iqc_alerts["risk_level"] = np.where(
+                negative_quality_mask(decision), "High", "Medium"
+            )
+            iqc_alerts["status"] = "Open"
+            iqc_alerts["source"] = (
+                _frame_series(iqc, "source_file", "ZX incoming material")
+                .fillna("")
+                .astype(str)
+            )
+            frames.append(iqc_alerts.reset_index(drop=True))
+
+    if not finished_df.empty:
+        production = finished_df[
+            pd.to_numeric(
+                _frame_series(finished_df, "defect_qty", 0), errors="coerce"
+            )
+            .fillna(0)
+            .gt(0)
+        ].copy()
+        stages = [
+            ("PQC", "PQC", "Online QC"),
+            ("END_QC", "End of QC", "End QC / FQC"),
+        ]
+        for alert_type, inspection_type, stage_value in stages:
+            scoped = production[
+                _frame_series(production, "inspection_stage", "")
+                .fillna("")
+                .astype(str)
+                .eq(stage_value)
+            ].copy()
+            if scoped.empty:
+                continue
+            defects = pd.to_numeric(
+                _frame_series(scoped, "defect_qty", 0), errors="coerce"
+            ).fillna(0)
+            inspected = pd.to_numeric(
+                _frame_series(scoped, "qty_inspected", 0), errors="coerce"
+            ).fillna(0)
+            rates = pd.Series(
+                safe_rate(defects, inspected), index=scoped.index, dtype=float
+            )
+            scores = rates.map(
+                lambda value: (
+                    defect_risk_score(value, benchmark, critical)
+                    if pd.notna(value)
+                    else np.nan
+                )
+            )
+            production_alerts = pd.DataFrame(index=scoped.index)
+            production_alerts["alert_type"] = alert_type
+            production_alerts["inspection_type"] = inspection_type
+            production_alerts["inspection_date"] = pd.to_datetime(
+                _frame_series(scoped, "date", pd.NaT), errors="coerce"
+            )
+            production_alerts["supplier_dpp"] = (
+                _frame_series(scoped, "supplier", "中兴")
+                .fillna("中兴")
+                .astype(str)
+            )
+            production_alerts["supplier_code"] = (
+                _frame_series(scoped, "supplier_code", "49425")
+                .fillna("49425")
+                .astype(str)
+            )
+            production_alerts["material_supplier"] = ""
+            production_alerts["order_po"] = (
+                _frame_series(scoped, "work_order", "").fillna("").astype(str)
+            )
+            production_alerts["model_item_code"] = (
+                _frame_series(scoped, "product_code", "").fillna("").astype(str)
+            )
+            production_alerts["item_name"] = (
+                _frame_series(scoped, "product_label", "").fillna("").astype(str)
+            )
+            production_alerts["issue_driver"] = (
+                _frame_series(scoped, "defect_type", "未知疵点")
+                .fillna("未知疵点")
+                .astype(str)
+            )
+            production_alerts["inspected_qty"] = inspected
+            production_alerts["defect_qty"] = defects
+            production_alerts["defect_rate"] = rates
+            production_alerts["risk_level"] = scores.map(risk_level)
+            production_alerts["status"] = "Open"
+            production_alerts["source"] = (
+                _frame_series(scoped, "source_file", "ZX factory QC")
+                .fillna("")
+                .astype(str)
+            )
+            frames.append(production_alerts.reset_index(drop=True))
+
+    if not jdy_fqc.empty:
+        critical_defects = pd.to_numeric(
+            _frame_series(jdy_fqc, "critical_defects", 0), errors="coerce"
+        ).fillna(0)
+        is_fail = (
+            _frame_series(jdy_fqc, "is_fail", False).fillna(False).astype(bool)
+        )
+        has_defect = pd.to_numeric(
+            _frame_series(jdy_fqc, "defect_qty", 0), errors="coerce"
+        ).fillna(0).gt(0)
+        aql = jdy_fqc[is_fail | has_defect | critical_defects.gt(0)].copy()
+        if not aql.empty:
+            defects = pd.to_numeric(
+                _frame_series(aql, "defect_qty", 0), errors="coerce"
+            ).fillna(0)
+            inspected = pd.to_numeric(
+                _frame_series(aql, "sampling_size", 0), errors="coerce"
+            ).fillna(0)
+            aql_critical = pd.to_numeric(
+                _frame_series(aql, "critical_defects", 0), errors="coerce"
+            ).fillna(0)
+            aql_major = pd.to_numeric(
+                _frame_series(aql, "major_defects", 0), errors="coerce"
+            ).fillna(0)
+            aql_fail = (
+                _frame_series(aql, "is_fail", False).fillna(False).astype(bool)
+            )
+            aql_alerts = pd.DataFrame(index=aql.index)
+            aql_alerts["alert_type"] = "AQL"
+            aql_alerts["inspection_type"] = "AQL inspection"
+            aql_alerts["inspection_date"] = pd.to_datetime(
+                _frame_series(aql, "date", pd.NaT), errors="coerce"
+            )
+            aql_alerts["supplier_dpp"] = (
+                _frame_series(aql, "supplier", "中兴").fillna("中兴").astype(str)
+            )
+            aql_alerts["supplier_code"] = "49425"
+            aql_alerts["material_supplier"] = ""
+            aql_alerts["order_po"] = (
+                _frame_series(aql, "po", "").fillna("").astype(str)
+            )
+            aql_alerts["model_item_code"] = (
+                _frame_series(aql, "model", "").fillna("").astype(str)
+            )
+            aql_alerts["item_name"] = (
+                _frame_series(aql, "cc", "").fillna("").astype(str)
+            )
+            aql_alerts["issue_driver"] = aql.apply(
+                _zx_alert_issue_text, axis=1
+            )
+            aql_alerts["inspected_qty"] = inspected
+            aql_alerts["defect_qty"] = defects
+            aql_alerts["defect_rate"] = pd.Series(
+                safe_rate(defects, inspected), index=aql.index, dtype=float
+            )
+            aql_alerts["risk_level"] = np.select(
+                [aql_critical.gt(0) | aql_fail, aql_major.gt(0)],
+                ["Critical", "High"],
+                default="Medium",
+            )
+            aql_alerts["status"] = "Open"
+            aql_alerts["source"] = (
+                _frame_series(aql, "source", "Jiandaoyun ZX FQC")
+                .fillna("")
+                .astype(str)
+            )
+            frames.append(aql_alerts.reset_index(drop=True))
+
+    if not frames:
+        return pd.DataFrame(columns=ZX_ALERT_COLUMNS + ["risk_rank"])
+
+    alerts = pd.concat(frames, ignore_index=True)
+    for column in ZX_ALERT_COLUMNS:
+        if column not in alerts.columns:
+            alerts[column] = np.nan
+    alerts["inspection_date"] = pd.to_datetime(
+        alerts["inspection_date"], errors="coerce"
+    )
+    today = pd.Timestamp(dt.datetime.now(BEIJING_TZ).date())
+    valid_date_mask = alerts["inspection_date"].between(
+        pd.Timestamp("2000-01-01"),
+        today + pd.Timedelta(days=31),
+    )
+    alerts.loc[~valid_date_mask, "inspection_date"] = pd.NaT
+    alerts["supplier_dpp"] = "49425 中兴"
+    alerts["supplier_code"] = (
+        alerts["supplier_code"]
+        .fillna("49425")
+        .astype(str)
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+        .replace("", "49425")
+    )
+    alerts["risk_rank"] = alerts["risk_level"].map(
+        {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+    ).fillna(0)
+    return alerts.sort_values(
+        ["risk_rank", "inspection_date", "defect_qty"],
+        ascending=[False, False, False],
+        na_position="last",
+    ).reset_index(drop=True)
+
+
+def _reset_zx_alert_filters() -> None:
+    st.session_state["zx_alert_type_filter"] = []
+    st.session_state["zx_alert_material_supplier_filter"] = []
+    st.session_state["zx_alert_order_search"] = ""
+    st.session_state["zx_alert_model_search"] = ""
+    st.session_state["zx_alert_risk_filter"] = []
+    if "_zx_alert_default_dates" in st.session_state:
+        st.session_state["zx_alert_date_filter"] = st.session_state[
+            "_zx_alert_default_dates"
+        ]
+    if "_zx_alert_default_suppliers" in st.session_state:
+        st.session_state["zx_alert_supplier_filter"] = st.session_state[
+            "_zx_alert_default_suppliers"
+        ]
+    st.session_state["zx_alert_selected_card"] = "ALL"
+
+
+def _filter_zx_alert_card(
+    alerts: pd.DataFrame, selected_card: str
+) -> pd.DataFrame:
+    if selected_card in ZX_ALERT_TYPES:
+        return alerts[alerts["alert_type"].eq(selected_card)].copy()
+    if selected_card in {"CRITICAL", "HIGH", "MEDIUM"}:
+        return alerts[alerts["risk_level"].eq(selected_card.title())].copy()
+    if selected_card == "MATERIAL_MISSING":
+        return alerts[
+            alerts["material_supplier"].fillna("").astype(str).str.strip().eq("")
+        ].copy()
+    if selected_card == "PO_MISSING":
+        return alerts[
+            alerts["order_po"].fillna("").astype(str).str.strip().eq("")
+        ].copy()
+    if selected_card == "MODEL_MISSING":
+        return alerts[
+            alerts["model_item_code"].fillna("").astype(str).str.strip().eq("")
+        ].copy()
+    return alerts.copy()
+
+
+def _style_zx_alert_chart(fig: go.Figure, title: str) -> go.Figure:
+    fig.update_layout(
+        title={
+            "text": title,
+            "x": 0.015,
+            "xanchor": "left",
+            "font": {"size": 13, "color": "#282b30"},
+        },
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        margin={"l": 40, "r": 18, "t": 82, "b": 35},
+        height=360,
+        font={"family": "Arial, sans-serif", "size": 10, "color": "#858a93"},
+        hoverlabel={"bgcolor": "#2c3037", "font": {"color": "#FFFFFF"}},
+        showlegend=True,
+        barmode="stack",
+        bargap=0.38,
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.01,
+            "xanchor": "left",
+            "x": 0,
+            "font": {"size": 9, "color": "#5d626a"},
+            "title": {"text": ""},
+        },
+    )
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor="#eef0f3",
+        zeroline=False,
+        linecolor="#eef0f3",
+        tickfont={"size": 9, "color": "#a0a4ab"},
+        title_font={"size": 9, "color": "#7f848c"},
+    )
+    fig.update_yaxes(
+        showgrid=False,
+        zeroline=False,
+        tickfont={"size": 9, "color": "#90959d"},
+        title_font={"size": 9, "color": "#7f848c"},
+    )
+    return fig
+
+
+def render_zx_alert_dashboard(
+    finished_df: pd.DataFrame,
+    incoming_df: pd.DataFrame,
+    jdy_fqc: pd.DataFrame,
+) -> None:
+    alerts = build_zx_quality_alerts(
+        finished_df,
+        incoming_df,
+        jdy_fqc,
+        current_risk_settings(),
+    )
+    latest_source_date = alerts["inspection_date"].max() if not alerts.empty else pd.NaT
+    source_cutoff = (
+        latest_source_date.strftime("%Y-%m-%d")
+        if pd.notna(latest_source_date)
+        else "-"
+    )
+
+    st.markdown(
+        """
+        <style>
+        .zx-alert-breadcrumb {
+            color: #8993a4;
+            font-size: 0.82rem;
+            font-weight: 650;
+            letter-spacing: 0.01em;
+            margin-bottom: 0.5rem;
+        }
+        .zx-alert-title-row {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.2rem 0 1rem 0;
+        }
+        .zx-alert-title {
+            margin: 0;
+            color: #172033;
+            font-size: clamp(1.65rem, 2.5vw, 2.35rem);
+            font-weight: 900;
+            letter-spacing: -0.035em;
+        }
+        .zx-alert-subtitle {
+            margin-top: 0.35rem;
+            color: #657184;
+            font-size: 0.88rem;
+        }
+        .zx-alert-scope {
+            display: inline-flex;
+            padding: 0.48rem 0.78rem;
+            border: 1px solid #d8deea;
+            border-radius: 8px;
+            background: #ffffff;
+            color: #263245;
+            font-size: 0.82rem;
+            font-weight: 760;
+            white-space: nowrap;
+        }
+        .st-key-zx_alert_filters {
+            background: #ffffff;
+            border: 1px solid #e1e6ee;
+            border-radius: 12px;
+            padding: 1rem 1rem 0.75rem 1rem;
+            box-shadow: 0 10px 28px rgba(23, 32, 51, 0.06);
+            margin-bottom: 0.9rem;
+        }
+        .st-key-zx_alert_filters [data-baseweb="tag"] {
+            background: #eef0ff !important;
+            border: 1px solid #cbd1ff !important;
+            border-radius: 6px !important;
+        }
+        .st-key-zx_alert_filters [data-baseweb="tag"] *,
+        .st-key-zx_alert_filters [data-baseweb="tag"] svg,
+        .st-key-zx_alert_filters [data-baseweb="tag"] path {
+            color: #2f3fb9 !important;
+            fill: #2f3fb9 !important;
+            stroke: #2f3fb9 !important;
+        }
+        .st-key-zx_alert_filter_actions {
+            background: #ffffff;
+            border: 1px solid #e1e6ee;
+            border-radius: 10px;
+            padding: 0.65rem 0.8rem;
+            margin-bottom: 0.95rem;
+        }
+        .zx-alert-card-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.75rem;
+            margin: 0.2rem 0 0.35rem 0;
+        }
+        .zx-alert-card {
+            display: flex;
+            min-height: 118px;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 1rem;
+            border-radius: 10px;
+            border: 1px solid #e0e5ec;
+            background: #ffffff;
+            color: #172033 !important;
+            text-decoration: none !important;
+            box-shadow: 0 8px 20px rgba(23, 32, 51, 0.05);
+            transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+        }
+        .zx-alert-card:hover {
+            border-color: #3848c8 !important;
+            box-shadow: 0 10px 24px rgba(56, 72, 200, 0.12);
+            transform: translateY(-1px);
+        }
+        .zx-alert-card.active {
+            border: 2px solid #3848c8;
+            background: #f3f4ff;
+        }
+        .zx-alert-card-label {
+            color: #293347 !important;
+            font-size: 0.88rem;
+            font-weight: 820;
+            line-height: 1.28;
+        }
+        .zx-alert-card-value {
+            color: #101827 !important;
+            font-size: clamp(1.75rem, 2.4vw, 2.35rem);
+            font-weight: 900;
+            letter-spacing: -0.035em;
+            line-height: 1;
+        }
+        .zx-alert-selected {
+            display: inline-flex;
+            padding: 0.34rem 0.66rem;
+            border-radius: 999px;
+            background: #eef0ff;
+            color: #3344bd;
+            font-size: 0.78rem;
+            font-weight: 800;
+            margin: 0.7rem 0 0.25rem 0;
+        }
+        .st-key-zx_alert_chart_inspection,
+        .st-key-zx_alert_chart_supplier,
+        .st-key-zx_alert_chart_driver,
+        .st-key-zx_alert_chart_trend,
+        .st-key-zx_alert_detail {
+            background: #ffffff;
+            border: 1px solid #e1e6ee;
+            border-radius: 12px;
+            padding: 0.45rem 0.65rem 0.7rem 0.65rem;
+            box-shadow: 0 8px 22px rgba(23, 32, 51, 0.045);
+        }
+        @media (max-width: 900px) {
+            .zx-alert-card-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"],
+        [data-testid="stSidebarCollapsedControl"],
+        [data-testid="stHeader"] {
+            display: none !important;
+        }
+        .stApp {
+            background: #eef1f4;
+        }
+        .stApp::before {
+            content: "";
+            position: fixed;
+            inset: 0 auto 0 0;
+            width: 7px;
+            background: #3546c4;
+            z-index: 999;
+        }
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stMainBlockContainer"] {
+            width: 100% !important;
+            max-width: none !important;
+        }
+        [data-testid="stMainBlockContainer"] {
+            padding: 0 22px 48px 28px !important;
+        }
+        [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {
+            gap: 0 !important;
+        }
+        .st-key-zx_alert_filters [data-testid="stHorizontalBlock"],
+        .st-key-zx_alert_filter_actions [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+        }
+        .st-key-zx_alert_filters [data-testid="stColumn"],
+        .st-key-zx_alert_filter_actions [data-testid="stColumn"] {
+            min-width: 0 !important;
+        }
+        .zx-alert-page-head {
+            display: grid;
+            grid-template-columns: 1fr 180px;
+            gap: 1rem;
+            align-items: start;
+            margin: 0 -22px 14px -28px;
+            padding: 9px 24px 9px 34px;
+            background: #ffffff;
+            border-bottom: 1px solid #e3e6ea;
+        }
+        .zx-alert-page-head .zx-alert-breadcrumb {
+            color: #8d9198;
+            font-size: 0.76rem;
+            font-weight: 500;
+            margin: 0 0 6px;
+            line-height: 1.25;
+        }
+        .zx-alert-page-head .zx-alert-title {
+            margin: 0;
+            color: #2b2d31;
+            font-size: 16px !important;
+            font-weight: 700;
+            letter-spacing: 0;
+            line-height: 1.2;
+        }
+        .zx-alert-page-head .zx-alert-subtitle {
+            margin-top: 9px;
+            color: #555a62;
+            font-size: 0.68rem;
+            font-weight: 500;
+            line-height: 1.25;
+        }
+        .zx-alert-head-controls {
+            display: grid;
+            gap: 7px;
+        }
+        .zx-alert-overview-select {
+            min-height: 32px;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            border: 1px solid #d8dadd;
+            background: #ffffff;
+            color: #404348;
+            font-size: 0.76rem;
+            justify-content: space-between;
+        }
+        .material-symbols-rounded {
+            font-family: "Material Symbols Rounded" !important;
+            font-weight: normal;
+            font-style: normal;
+            font-size: 16px;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            display: inline-block;
+            white-space: nowrap;
+            word-wrap: normal;
+            direction: ltr;
+            font-feature-settings: "liga";
+            -webkit-font-feature-settings: "liga";
+            -webkit-font-smoothing: antialiased;
+        }
+        .zx-alert-view-tabs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            border: 1px solid #d8dadd;
+        }
+        .zx-alert-view-tabs span {
+            padding: 6px 8px;
+            text-align: center;
+            color: #777b82;
+            background: #f8f8f8;
+            font-size: 0.72rem;
+        }
+        .zx-alert-view-tabs span:first-child {
+            color: #33373d;
+            background: #ffffff;
+            border-right: 1px solid #d8dadd;
+            font-weight: 650;
+        }
+        .zx-alert-filter-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-height: 34px;
+            margin-bottom: 5px;
+        }
+        .zx-alert-presets {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+        .zx-alert-preset {
+            display: inline-flex;
+            align-items: center;
+            min-height: 27px;
+            padding: 0 10px;
+            border-radius: 14px;
+            border: 1px dashed #c8cbd1;
+            color: #8b8f96;
+            background: #ffffff;
+            font-size: 0.72rem;
+        }
+        .zx-alert-preset.active {
+            border-style: solid;
+            border-color: #3647c5;
+            color: #ffffff;
+            background: #3647c5;
+            font-weight: 650;
+        }
+        .zx-alert-filter-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 9px;
+            color: #6c7078;
+            font-size: 0.68rem;
+        }
+        .st-key-zx_alert_filters {
+            background: #ffffff;
+            border: 0;
+            border-radius: 0;
+            padding: 8px 14px 10px;
+            box-shadow: none;
+            margin-bottom: 10px;
+        }
+        .st-key-zx_alert_filters [data-testid="stWidgetLabel"] {
+            display: none !important;
+        }
+        .st-key-zx_alert_filters div[data-baseweb="input"] > div,
+        .st-key-zx_alert_filters div[data-baseweb="select"] > div {
+            min-height: 34px !important;
+            border-radius: 3px !important;
+            border-color: #d5d8dd !important;
+            background: #ffffff !important;
+            box-shadow: none !important;
+        }
+        .st-key-zx_alert_filters input,
+        .st-key-zx_alert_filters div[data-baseweb="select"] {
+            font-size: 0.72rem !important;
+            color: #3d4148 !important;
+        }
+        .st-key-zx_alert_filters [data-testid="stDateInput"] input {
+            font-size: 0.65rem !important;
+        }
+        .st-key-zx_alert_filters [data-baseweb="tag"] {
+            background: #ffffff !important;
+            border: 0 !important;
+            border-radius: 2px !important;
+            height: 22px !important;
+        }
+        .st-key-zx_alert_filters [data-baseweb="tag"] *,
+        .st-key-zx_alert_filters [data-baseweb="tag"] svg,
+        .st-key-zx_alert_filters [data-baseweb="tag"] path {
+            color: #3d4148 !important;
+            fill: #3647c5 !important;
+            stroke: #3647c5 !important;
+        }
+        .st-key-zx_alert_filter_actions {
+            background: #ffffff;
+            border: 0;
+            border-radius: 0;
+            padding: 8px 14px;
+            margin-bottom: 10px;
+        }
+        .st-key-zx_alert_filter_actions button {
+            min-height: 32px !important;
+            border-radius: 3px !important;
+            font-size: 0.72rem !important;
+            padding: 4px 8px !important;
+            white-space: nowrap !important;
+        }
+        .st-key-zx_alert_filter_actions [data-testid="stDownloadButton"] button {
+            color: #ffffff !important;
+            background: #3647c5 !important;
+            border-color: #3647c5 !important;
+        }
+        .zx-alert-type-checks {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 5px 12px;
+            color: #42464d;
+            font-size: 10px;
+            line-height: 1.2;
+        }
+        .zx-alert-type-checks span {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            white-space: nowrap;
+        }
+        .zx-alert-type-checks .material-symbols-rounded {
+            color: #3647c5;
+            font-size: 14px;
+        }
+        .zx-alert-card-grid {
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 8px;
+            margin: 0 0 8px;
+        }
+        .zx-alert-card {
+            min-height: 99px;
+            padding: 13px 12px 12px;
+            border-radius: 2px;
+            border-color: #eceef1;
+            box-shadow: none;
+        }
+        .zx-alert-card:hover {
+            border-color: #3647c5 !important;
+            background: #fafbff;
+            box-shadow: none;
+            transform: none;
+        }
+        .zx-alert-card.active {
+            border: 2px solid #3647c5;
+            background: #f5f6ff;
+        }
+        .zx-alert-card-label {
+            color: #22252a !important;
+            font-size: 0.75rem;
+            font-weight: 680;
+            line-height: 1.35;
+        }
+        .zx-alert-card-top {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 6px;
+        }
+        .zx-alert-card-icons {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: #6f747c;
+        }
+        .zx-alert-card-icons .material-symbols-rounded:first-child {
+            color: #a0a4ab;
+            font-size: 13px;
+        }
+        .zx-alert-card-value {
+            color: #17191d !important;
+            font-size: 1.45rem;
+            font-weight: 720;
+            letter-spacing: -0.02em;
+        }
+        .zx-alert-selected {
+            padding: 2px 0 8px;
+            border-radius: 0;
+            background: transparent;
+            color: #555b65;
+            font-size: 0.68rem;
+            font-weight: 650;
+            margin: 0;
+        }
+        .st-key-zx_alert_chart_inspection,
+        .st-key-zx_alert_chart_supplier,
+        .st-key-zx_alert_chart_driver,
+        .st-key-zx_alert_chart_trend,
+        .st-key-zx_alert_chart_model,
+        .st-key-zx_alert_chart_risk,
+        .st-key-zx_alert_detail {
+            background: #ffffff;
+            border: 0;
+            border-radius: 0;
+            padding: 4px 8px 8px;
+            box-shadow: none;
+        }
+        .st-key-zx_alert_chart_inspection,
+        .st-key-zx_alert_chart_driver,
+        .st-key-zx_alert_chart_model {
+            border-right: 1px solid #eceef1;
+        }
+        .st-key-zx_alert_chart_inspection,
+        .st-key-zx_alert_chart_supplier,
+        .st-key-zx_alert_chart_driver,
+        .st-key-zx_alert_chart_trend,
+        .st-key-zx_alert_chart_model,
+        .st-key-zx_alert_chart_risk {
+            border-bottom: 1px solid #eceef1;
+            min-height: 390px;
+        }
+        .st-key-zx_alert_detail {
+            margin-top: 10px;
+            padding: 12px 14px 16px;
+        }
+        div[data-testid="stPlotlyChart"] {
+            margin: 0 !important;
+        }
+        @media (max-width: 800px) {
+            .zx-alert-card-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+            .st-key-zx_alert_filters [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+            }
+            .st-key-zx_alert_filters [data-testid="stColumn"] {
+                flex: 1 1 30% !important;
+                width: 30% !important;
+            }
+        }
+        @media (max-width: 480px) {
+            [data-testid="stMainBlockContainer"] {
+                padding-left: 14px !important;
+                padding-right: 8px !important;
+            }
+            .zx-alert-page-head {
+                grid-template-columns: 1fr;
+                margin-left: -14px;
+                margin-right: -8px;
+                padding-left: 20px;
+            }
+            .zx-alert-head-controls {
+                display: none;
+            }
+            .zx-alert-card-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .st-key-zx_alert_filters [data-testid="stHorizontalBlock"],
+            .st-key-zx_alert_filter_actions [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
+        <div class="zx-alert-page-head">
+          <div>
+            <div class="zx-alert-breadcrumb">Cockpit&nbsp;&nbsp;/&nbsp;&nbsp;Alert&nbsp;&nbsp;/&nbsp;&nbsp;Order Alert&nbsp;&nbsp;/&nbsp;&nbsp;<strong>Overview</strong></div>
+            <h1 class="zx-alert-title">Overview</h1>
+            <div class="zx-alert-subtitle">
+              Latest Alert Data Refreshed at: {html.escape(beijing_timestamp())} Local Time
+              &nbsp;({html.escape(t('数据截止', 'Source through'))}: {html.escape(source_cutoff)})
+            </div>
+          </div>
+          <div class="zx-alert-head-controls">
+            <div class="zx-alert-overview-select"><span>Overview</span><span class="material-symbols-rounded">expand_more</span></div>
+            <div class="zx-alert-view-tabs"><span>Current</span><span>History</span></div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    inspection_options = list(ZX_ALERT_TYPES)
+    supplier_options = sorted(
+        value
+        for value in alerts.get(
+            "supplier_dpp", pd.Series(dtype=object)
+        ).dropna().astype(str).unique()
+        if value
+    )
+    material_supplier_options = sorted(
+        value
+        for value in alerts.get(
+            "material_supplier", pd.Series(dtype=object)
+        ).dropna().astype(str).unique()
+        if value
+    )
+    valid_dates = alerts.get(
+        "inspection_date", pd.Series(dtype="datetime64[ns]")
+    ).dropna()
+    min_alert_date = (
+        valid_dates.min().date() if not valid_dates.empty else dt.date.today()
+    )
+    max_alert_date = (
+        valid_dates.max().date() if not valid_dates.empty else dt.date.today()
+    )
+    default_alert_start = max(
+        min_alert_date,
+        (pd.Timestamp(max_alert_date) - pd.DateOffset(years=1)).date(),
+    )
+    st.session_state["_zx_alert_default_dates"] = (
+        default_alert_start,
+        max_alert_date,
+    )
+    st.session_state["_zx_alert_default_suppliers"] = supplier_options
+
+    with st.container(key="zx_alert_filters"):
+        st.markdown(
+            f"""
+            <div class="zx-alert-filter-toolbar">
+              <div class="zx-alert-presets">
+                <span class="zx-alert-preset active">Default</span>
+                <span class="zx-alert-preset">+ Add New</span>
+              </div>
+              <span class="zx-alert-filter-status">TU · Gloves · 49425 · {html.escape(t('中兴', 'Zhongxing'))}<span class="material-symbols-rounded">settings</span></span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        top_cols = st.columns(9, gap="small")
+        top_cols[0].text_input(
+            "Community",
+            value="Production Zone · TU",
+            disabled=True,
+            key="zx_alert_community",
+            label_visibility="collapsed",
+        )
+        top_cols[1].text_input(
+            "Country",
+            value="Country · China",
+            disabled=True,
+            key="zx_alert_country",
+            label_visibility="collapsed",
+        )
+        selected_suppliers = top_cols[2].multiselect(
+            "Supplier / DPP",
+            supplier_options,
+            default=supplier_options,
+            key="zx_alert_supplier_filter",
+            placeholder="Vendor DPP",
+            format_func=lambda value: t("49425 中兴", "49425 Zhongxing"),
+        )
+        top_cols[3].text_input(
+            "Sector",
+            value="Sector · Gloves",
+            disabled=True,
+            key="zx_alert_sector",
+            label_visibility="collapsed",
+        )
+        top_cols[4].text_input(
+            "Department",
+            value="Dept · Textile",
+            disabled=True,
+            key="zx_alert_department",
+            label_visibility="collapsed",
+        )
+        selected_types = top_cols[5].multiselect(
+            t("检验类型", "Inspection Type"),
+            inspection_options,
+            default=[],
+            key="zx_alert_type_filter",
+            placeholder=t("检验类型", "Inspection Type"),
+            format_func=lambda value: {
+                "IQC": "IQC",
+                "PQC": "PQC",
+                "END_QC": "End QC",
+                "AQL": "AQL",
+                "LAB": t("实验室", "Lab"),
+            }[value],
+        )
+        model_search = top_cols[6].text_input(
+            "Model / Item Code",
+            placeholder="Model",
+            key="zx_alert_model_search",
+        )
+        top_cols[7].text_input(
+            "Industrial Universe",
+            value="Industrial Universe · Textile",
+            disabled=True,
+            key="zx_alert_industrial_universe",
+            label_visibility="collapsed",
+        )
+        top_cols[8].text_input(
+            "Customer",
+            value="Customer · Decathlon",
+            disabled=True,
+            key="zx_alert_customer",
+            label_visibility="collapsed",
+        )
+
+        bottom_cols = st.columns(6, gap="small")
+        bottom_cols[0].text_input(
+            "Purchase Organization",
+            value="Purchase Organization · NEA",
+            disabled=True,
+            key="zx_alert_purchase_org",
+            label_visibility="collapsed",
+        )
+        bottom_cols[1].text_input(
+            "Supplier Code (CNUF)",
+            value="Supplier Code(CNUF) · 49425",
+            disabled=True,
+            key="zx_alert_cnuf",
+            label_visibility="collapsed",
+        )
+        selected_material_suppliers = bottom_cols[2].multiselect(
+            t("原材料供应商", "Material Supplier"),
+            material_supplier_options,
+            default=[],
+            key="zx_alert_material_supplier_filter",
+            placeholder=t("原材料供应商", "Material Supplier"),
+        )
+        order_search = bottom_cols[3].text_input(
+            t("工单 / PO", "Workorder / PO"),
+            placeholder=t("输入工单或PO", "Search workorder or PO"),
+            key="zx_alert_order_search",
+        )
+        selected_dates = bottom_cols[4].date_input(
+            t("检验日期", "Inspection Date"),
+            value=(default_alert_start, max_alert_date),
+            min_value=min_alert_date,
+            max_value=max_alert_date,
+            key="zx_alert_date_filter",
+            label_visibility="collapsed",
+        )
+        selected_risks = bottom_cols[5].multiselect(
+            t("风险等级", "Risk Level"),
+            ["Critical", "High", "Medium", "Low"],
+            default=[],
+            key="zx_alert_risk_filter",
+            placeholder=t("风险等级", "Risk Level"),
+            format_func=risk_level_text,
+        )
+
+    filtered = alerts.copy()
+    if selected_types:
+        filtered = filtered[filtered["alert_type"].isin(selected_types)]
+    if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+        selected_start, selected_end = selected_dates
+        filtered = filtered[
+            filtered["inspection_date"].dt.date.between(
+                selected_start, selected_end
+            )
+        ]
+    if selected_suppliers:
+        filtered = filtered[filtered["supplier_dpp"].isin(selected_suppliers)]
+    elif supplier_options:
+        filtered = filtered.iloc[0:0].copy()
+    if selected_material_suppliers:
+        material_blank = (
+            filtered["material_supplier"].fillna("").astype(str).eq("")
+        )
+        filtered = filtered[
+            filtered["material_supplier"].isin(selected_material_suppliers)
+            | material_blank
+        ]
+    if order_search.strip():
+        filtered = filtered[
+            filtered["order_po"].fillna("").astype(str).str.contains(
+                re.escape(order_search.strip()), case=False, na=False
+            )
+        ]
+    if model_search.strip():
+        model_needle = re.escape(model_search.strip())
+        filtered = filtered[
+            filtered["model_item_code"].fillna("").astype(str).str.contains(
+                model_needle, case=False, na=False
+            )
+            | filtered["item_name"].fillna("").astype(str).str.contains(
+                model_needle, case=False, na=False
+            )
+        ]
+    if selected_risks:
+        filtered = filtered[filtered["risk_level"].isin(selected_risks)]
+
+    with st.container(key="zx_alert_filter_actions"):
+        action_cols = st.columns(
+            [1.2, 4.0, 1.6, 2.2], vertical_alignment="center"
+        )
+        action_cols[0].markdown("**Alert Type**")
+        action_cols[1].markdown(
+            """
+            <div class="zx-alert-type-checks">
+              <span><i class="material-symbols-rounded">check_box</i>IQC</span>
+              <span><i class="material-symbols-rounded">check_box</i>PQC</span>
+              <span><i class="material-symbols-rounded">check_box</i>End of QC</span>
+              <span><i class="material-symbols-rounded">check_box</i>AQL</span>
+              <span><i class="material-symbols-rounded">check_box</i>Lab</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        action_cols[2].button(
+            "Reset",
+            key="zx_alert_reset",
+            icon=":material/restart_alt:",
+            use_container_width=True,
+            on_click=_reset_zx_alert_filters,
+        )
+        download_frame = filtered.drop(
+            columns=["risk_rank"], errors="ignore"
+        ).copy()
+        if "inspection_date" in download_frame.columns:
+            download_frame["inspection_date"] = download_frame[
+                "inspection_date"
+            ].dt.strftime("%Y-%m-%d")
+        action_cols[3].download_button(
+            "Download",
+            download_frame.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"ZX_quality_alerts_{dt.date.today().isoformat()}.csv",
+            mime="text/csv",
+            icon=":material/download:",
+            use_container_width=True,
+        )
+
+    query_card = str(
+        query_param_value("alert_type", "ALL") or "ALL"
+    ).upper()
+    if query_card not in {"ALL", *ZX_ALERT_CARD_LABELS.keys()}:
+        query_card = "ALL"
+    if st.session_state.get("_zx_alert_query_seen") != query_card:
+        st.session_state["_zx_alert_query_seen"] = query_card
+        st.session_state["zx_alert_selected_card"] = query_card
+    selected_card = str(
+        st.session_state.get("zx_alert_selected_card", query_card)
+    )
+    card_html: list[str] = []
+    for alert_type in ZX_ALERT_CARD_LABELS:
+        label = t(*ZX_ALERT_CARD_LABELS[alert_type])
+        count = len(_filter_zx_alert_card(filtered, alert_type))
+        next_card = "ALL" if selected_card == alert_type else alert_type
+        active_class = " active" if selected_card == alert_type else ""
+        href = (
+            f"?scope=ZX&page=alert&lang={language_query_code()}"
+            f"&alert_type={html.escape(next_card)}"
+        )
+        card_html.append(
+            f"<a class='zx-alert-card{active_class}' href='{href}' target='_self'>"
+            "<span class='zx-alert-card-top'>"
+            f"<span class='zx-alert-card-label'>{html.escape(label)}</span>"
+            "<span class='zx-alert-card-icons'>"
+            "<span class='material-symbols-rounded'>info</span>"
+            "<span class='material-symbols-rounded'>menu</span>"
+            "</span></span>"
+            f"<span class='zx-alert-card-value'>{count:,}</span>"
+            "</a>"
+        )
+    st.markdown(
+        f"<div class='zx-alert-card-grid'>{''.join(card_html)}</div>",
+        unsafe_allow_html=True,
+    )
+
+    selected_label = (
+        t("全部预警", "All Alerts")
+        if selected_card == "ALL"
+        else t(
+            *ZX_ALERT_CARD_LABELS.get(
+                selected_card, ("全部预警", "All Alerts")
+            )
+        )
+    )
+    st.markdown(
+        f"<span class='zx-alert-selected'>{html.escape(t('明细范围', 'Detail Scope'))} · {html.escape(selected_label)}</span>",
+        unsafe_allow_html=True,
+    )
+
+    _render_zx_alert_charts(filtered)
+    _render_zx_alert_detail(filtered, selected_card)
+
+    st.caption(
+        t(
+            "口径说明：Alert卡片来自Excel定义；PQC与End of QC沿用当前看板不良率阈值。当前数据无关闭状态字段，触发记录暂标记为Open；实验室测试尚未接入。",
+            "Definition: cards follow the Excel requirement. PQC and End of QC reuse the dashboard defect-rate thresholds. Source data has no closure field, so triggered rows are labelled Open; lab-test data is not connected.",
+        )
+    )
+
+
+def _render_zx_alert_charts_legacy(filtered: pd.DataFrame) -> None:
+    chart_left, chart_right = st.columns(2, gap="medium")
+    with chart_left:
+        with st.container(key="zx_alert_chart_inspection"):
+            inspection_summary = (
+                filtered.groupby("inspection_type", as_index=False)
+                .size()
+                .rename(columns={"size": "alerts"})
+                .sort_values("alerts", ascending=True)
+            )
+            if inspection_summary.empty:
+                st.info(
+                    t(
+                        "当前筛选下没有预警。",
+                        "No alerts under the current filters.",
+                    )
+                )
+            else:
+                fig = px.bar(
+                    inspection_summary,
+                    x="alerts",
+                    y="inspection_type",
+                    orientation="h",
+                    text="alerts",
+                    color_discrete_sequence=["#3C4CC7"],
+                    labels={
+                        "alerts": t("预警数", "Open Alerts"),
+                        "inspection_type": t("检验类型", "Inspection Type"),
+                    },
+                )
+                fig.update_traces(textposition="outside", cliponaxis=False)
+                fig.update_xaxes(
+                    range=[
+                        0,
+                        max(float(inspection_summary["alerts"].max()) * 1.18, 1),
+                    ]
+                )
+                _style_zx_alert_chart(
+                    fig,
+                    t(
+                        "按检验类型的预警",
+                        "Alerts by Inspection Type",
+                    ),
+                )
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+
+    with chart_right:
+        with st.container(key="zx_alert_chart_supplier"):
+            supplier_summary = (
+                filtered.groupby("supplier_dpp", as_index=False)
+                .size()
+                .rename(columns={"size": "alerts"})
+                .nlargest(10, "alerts")
+                .sort_values("alerts", ascending=True)
+            )
+            if supplier_summary.empty:
+                st.info(
+                    t(
+                        "当前筛选下没有供应商预警。",
+                        "No supplier alerts under the current filters.",
+                    )
+                )
+            else:
+                fig = px.bar(
+                    supplier_summary,
+                    x="alerts",
+                    y="supplier_dpp",
+                    orientation="h",
+                    text="alerts",
+                    color_discrete_sequence=["#6978D5"],
+                    labels={
+                        "alerts": t("预警数", "Open Alerts"),
+                        "supplier_dpp": "Supplier / DPP",
+                    },
+                )
+                fig.update_traces(textposition="outside", cliponaxis=False)
+                fig.update_xaxes(
+                    range=[
+                        0,
+                        max(float(supplier_summary["alerts"].max()) * 1.18, 1),
+                    ]
+                )
+                _style_zx_alert_chart(
+                    fig,
+                    t(
+                        "按 Supplier / DPP 的预警",
+                        "Alerts by Supplier / DPP",
+                    ),
+                )
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+
+    chart_left_2, chart_right_2 = st.columns(2, gap="medium")
+    with chart_left_2:
+        with st.container(key="zx_alert_chart_driver"):
+            driver_summary = (
+                filtered.assign(
+                    issue_driver=filtered["issue_driver"]
+                    .fillna(t("未记录", "Not recorded"))
+                    .astype(str)
+                )
+                .groupby("issue_driver", as_index=False)
+                .size()
+                .rename(columns={"size": "alerts"})
+                .nlargest(10, "alerts")
+                .sort_values("alerts", ascending=True)
+            )
+            if driver_summary.empty:
+                st.info(
+                    t(
+                        "当前筛选下没有问题类型数据。",
+                        "No issue-driver data under the current filters.",
+                    )
+                )
+            else:
+                fig = px.bar(
+                    driver_summary,
+                    x="alerts",
+                    y="issue_driver",
+                    orientation="h",
+                    text="alerts",
+                    color_discrete_sequence=["#EEA43A"],
+                    labels={
+                        "alerts": t("预警数", "Open Alerts"),
+                        "issue_driver": t(
+                            "疵点 / 测试代码", "Defect / Test Code"
+                        ),
+                    },
+                )
+                fig.update_traces(textposition="outside", cliponaxis=False)
+                fig.update_xaxes(
+                    range=[
+                        0,
+                        max(float(driver_summary["alerts"].max()) * 1.18, 1),
+                    ]
+                )
+                _style_zx_alert_chart(
+                    fig,
+                    t(
+                        "按疵点 / 测试代码的预警",
+                        "Alerts by Defect Type / Test Code",
+                    ),
+                )
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+
+    with chart_right_2:
+        with st.container(key="zx_alert_chart_trend"):
+            dated = filtered.dropna(subset=["inspection_date"]).copy()
+            if dated.empty:
+                st.info(
+                    t(
+                        "当前筛选下没有可用日期趋势。",
+                        "No dated alert trend under the current filters.",
+                    )
+                )
+            else:
+                dated["week"] = dated["inspection_date"].dt.to_period(
+                    "W"
+                ).apply(lambda period: period.start_time)
+                trend = (
+                    dated.groupby(
+                        ["week", "inspection_type"], as_index=False
+                    )
+                    .size()
+                    .rename(columns={"size": "alerts"})
+                )
+                fig = px.line(
+                    trend,
+                    x="week",
+                    y="alerts",
+                    color="inspection_type",
+                    markers=True,
+                    color_discrete_sequence=[
+                        "#3C4CC7",
+                        "#6978D5",
+                        "#E8A72B",
+                        "#D45D62",
+                        "#7A63B8",
+                    ],
+                    labels={
+                        "week": t("周", "Week"),
+                        "alerts": t("预警数", "Open Alerts"),
+                        "inspection_type": t(
+                            "检验类型", "Inspection Type"
+                        ),
+                    },
+                )
+                _style_zx_alert_chart(
+                    fig, t("每周预警趋势", "Weekly Alert Trend")
+                )
+                fig.update_layout(showlegend=True, legend_title_text="")
+                fig.update_yaxes(title_text=t("预警数", "Open Alerts"))
+                fig.update_xaxes(title_text="")
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+
+
+def _render_zx_alert_charts(filtered: pd.DataFrame) -> None:
+    palette = {
+        "IQC": "#f9c548",
+        "PQC": "#1698c4",
+        "END_QC": "#c2c7e8",
+        "AQL": "#dfa800",
+        "LAB": "#9a789d",
+    }
+    legend_labels = {
+        "IQC": "IQC",
+        "PQC": "PQC",
+        "END_QC": "End of QC",
+        "AQL": "AQL",
+        "LAB": "Lab",
+    }
+    chart_config = {
+        "displayModeBar": True,
+        "displaylogo": False,
+        "modeBarButtonsToRemove": [
+            "zoom2d",
+            "pan2d",
+            "select2d",
+            "lasso2d",
+            "zoomIn2d",
+            "zoomOut2d",
+            "autoScale2d",
+            "resetScale2d",
+        ],
+    }
+
+    def stacked_bar(
+        frame: pd.DataFrame,
+        category: str,
+        title: str,
+        *,
+        orientation: str = "h",
+        top_n: int = 12,
+    ) -> go.Figure | None:
+        if frame.empty or category not in frame.columns:
+            return None
+        source = frame[[category, "alert_type"]].copy()
+        source[category] = (
+            source[category]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .replace(
+                {
+                    "": t("未记录", "Not recorded"),
+                    "nan": t("未记录", "Not recorded"),
+                }
+            )
+        )
+        totals = source[category].value_counts()
+        if top_n:
+            totals = totals.head(top_n)
+        if totals.empty:
+            return None
+        categories = (
+            totals.sort_values(ascending=True).index.tolist()
+            if orientation == "h"
+            else totals.sort_values(ascending=False).index.tolist()
+        )
+        grouped = (
+            source[source[category].isin(categories)]
+            .groupby([category, "alert_type"])
+            .size()
+            .unstack(fill_value=0)
+        )
+        fig = go.Figure()
+        for alert_type in ZX_ALERT_TYPES:
+            values = [
+                int(grouped.loc[value, alert_type])
+                if value in grouped.index and alert_type in grouped.columns
+                else 0
+                for value in categories
+            ]
+            if orientation == "h":
+                fig.add_bar(
+                    name=legend_labels[alert_type],
+                    x=values,
+                    y=categories,
+                    orientation="h",
+                    marker_color=palette[alert_type],
+                    hovertemplate=(
+                        f"{html.escape(legend_labels[alert_type])}<br>"
+                        "%{y}: %{x:,}<extra></extra>"
+                    ),
+                )
+            else:
+                fig.add_bar(
+                    name=legend_labels[alert_type],
+                    x=categories,
+                    y=values,
+                    marker_color=palette[alert_type],
+                    hovertemplate=(
+                        f"{html.escape(legend_labels[alert_type])}<br>"
+                        "%{x}: %{y:,}<extra></extra>"
+                    ),
+                )
+        _style_zx_alert_chart(fig, title)
+        if orientation == "h":
+            fig.update_yaxes(
+                type="category",
+                categoryorder="array",
+                categoryarray=categories,
+            )
+        else:
+            fig.update_xaxes(
+                type="category",
+                categoryorder="array",
+                categoryarray=categories,
+            )
+        return fig
+
+    chart_specs = [
+        (
+            "zx_alert_chart_inspection",
+            "inspection_type",
+            t("按检验类型的预警", "Alert by Inspection Type"),
+            "v",
+            12,
+        ),
+        (
+            "zx_alert_chart_supplier",
+            "issue_driver",
+            t("按疵点 / 测试代码的预警", "Alert by Defect Type / Test Code"),
+            "h",
+            10,
+        ),
+        (
+            "zx_alert_chart_driver",
+            "model_item_code",
+            t("按 Model / Item 的预警", "Alert by Model / Item"),
+            "h",
+            10,
+        ),
+        (
+            "zx_alert_chart_trend",
+            "material_supplier",
+            t("按原材料供应商的预警", "Alert by Material Supplier"),
+            "h",
+            10,
+        ),
+        (
+            "zx_alert_chart_model",
+            "risk_level",
+            t("按风险等级的预警", "Alert by Risk Level"),
+            "h",
+            8,
+        ),
+        (
+            "zx_alert_chart_risk",
+            "order_po",
+            t("按工单 / PO 的预警", "Alert by Workorder / PO"),
+            "h",
+            10,
+        ),
+    ]
+
+    for row_start in range(0, len(chart_specs), 2):
+        left, right = st.columns(2, gap="small")
+        for column, spec in zip((left, right), chart_specs[row_start : row_start + 2]):
+            key, category, title, orientation, top_n = spec
+            with column:
+                with st.container(key=key):
+                    fig = stacked_bar(
+                        filtered,
+                        category,
+                        title,
+                        orientation=orientation,
+                        top_n=top_n,
+                    )
+                    if fig is None:
+                        st.info(
+                            t(
+                                "当前筛选范围没有可用数据。",
+                                "No data under the current filters.",
+                            )
+                        )
+                    else:
+                        st.plotly_chart(
+                            fig,
+                            use_container_width=True,
+                            config=chart_config,
+                        )
+
+
+def _render_zx_alert_detail(
+    filtered: pd.DataFrame, selected_card: str
+) -> None:
+    detail = _filter_zx_alert_card(filtered, selected_card)
+    detail = detail.sort_values(
+        ["risk_rank", "inspection_date", "defect_qty"],
+        ascending=[False, False, False],
+        na_position="last",
+    )
+    with st.container(key="zx_alert_detail"):
+        header_cols = st.columns([3.2, 1], vertical_alignment="center")
+        header_cols[0].subheader(t("预警明细", "Alert Detail"))
+        header_cols[1].caption(
+            t(
+                f"{len(detail):,} 条开放预警",
+                f"{len(detail):,} open alerts",
+            )
+        )
+        if detail.empty:
+            if selected_card == "LAB":
+                st.info(
+                    t(
+                        "当前ZX数据源尚未接入实验室测试结果，因此该卡片显示为0；缺失数据不等于无风险。",
+                        "ZX lab-test results are not connected. The card is 0; missing data does not mean no risk.",
+                    )
+                )
+            else:
+                st.info(
+                    t(
+                        "当前筛选范围没有预警明细。",
+                        "No alert details under the current scope.",
+                    )
+                )
+            return
+
+        display = detail[
+            [
+                "alert_type",
+                "inspection_type",
+                "inspection_date",
+                "supplier_dpp",
+                "supplier_code",
+                "material_supplier",
+                "order_po",
+                "model_item_code",
+                "item_name",
+                "issue_driver",
+                "defect_qty",
+                "defect_rate",
+                "risk_level",
+                "status",
+            ]
+        ].copy()
+        display["alert_type"] = display["alert_type"].map(
+            lambda value: t(
+                *ZX_ALERT_TYPES.get(value, (value, value))
+            )
+        )
+        display["risk_level"] = display["risk_level"].map(risk_level_text)
+        display["status"] = display["status"].map(
+            lambda value: t("开放", "Open") if value == "Open" else value
+        )
+        display = display.rename(
+            columns={
+                "alert_type": t("预警卡片", "Alert Card"),
+                "inspection_type": t("检验类型", "Inspection Type"),
+                "inspection_date": t("检验日期", "Inspection Date"),
+                "supplier_dpp": "Supplier / DPP",
+                "supplier_code": "CNUF",
+                "material_supplier": t(
+                    "原材料供应商", "Material Supplier"
+                ),
+                "order_po": t("工单 / PO", "Workorder / PO"),
+                "model_item_code": "Model / Item Code",
+                "item_name": t(
+                    "Model / Item / 部件名称",
+                    "Model / Item / Component Name",
+                ),
+                "issue_driver": t(
+                    "疵点 / 测试代码", "Defect / Test Code"
+                ),
+                "defect_qty": t("疵点数", "Defects"),
+                "defect_rate": t("不良率", "Defect Rate"),
+                "risk_level": t("风险等级", "Risk Level"),
+                "status": t("状态", "Status"),
+            }
+        )
+        st.dataframe(
+            display,
+            use_container_width=True,
+            hide_index=True,
+            height=min(580, 48 + 35 * max(5, min(len(display), 15))),
+            column_config={
+                t(
+                    "检验日期", "Inspection Date"
+                ): st.column_config.DateColumn(format="YYYY-MM-DD"),
+                t("疵点数", "Defects"): st.column_config.NumberColumn(
+                    format="%.0f"
+                ),
+                t(
+                    "不良率", "Defect Rate"
+                ): st.column_config.ProgressColumn(
+                    format="%.1f%%",
+                    min_value=0,
+                    max_value=1,
+                ),
+            },
+        )
+
+
 def get_active_scope_key() -> str:
     try:
         value = st.query_params.get("scope", DEFAULT_DASHBOARD_SCOPE)
@@ -13135,6 +15048,19 @@ def get_active_scope_key() -> str:
     return value
 
 
+def get_active_zx_page(scope_key: str) -> str:
+    if scope_key != "ZX":
+        return "reporting"
+    value = str(query_param_value("page", "reporting") or "reporting").strip().lower()
+    return value if value in {"reporting", "alert"} else "reporting"
+
+
+def zx_page_display(page_key: str) -> str:
+    if page_key == "alert":
+        return t("ZX Alert 看板", "ZX Alert Dashboard")
+    return "Textile Unit Reporting"
+
+
 def scope_display(scope_key: str) -> str:
     scope = DASHBOARD_SCOPES[scope_key]
     return scope["label_cn"] if st.session_state.lang == "中文" else scope["label_en"]
@@ -13145,14 +15071,20 @@ def scope_subtitle(scope_key: str) -> str:
     return scope["subtitle_cn"] if st.session_state.lang == "中文" else scope["subtitle_en"]
 
 
-def render_scope_nav(active_scope: str) -> None:
-    def nav_item(scope_key: str) -> str:
+def render_scope_nav(active_scope: str, active_page: str = "reporting") -> None:
+    def nav_item(scope_key: str, page_key: str = "reporting") -> str:
         scope = DASHBOARD_SCOPES[scope_key]
-        active = " active" if scope_key == active_scope else ""
-        title = html.escape(scope_display(scope_key))
+        is_active = scope_key == active_scope and (
+            scope_key != "ZX" or page_key == active_page
+        )
+        active = " active" if is_active else ""
+        title = html.escape(
+            zx_page_display(page_key) if scope_key == "ZX" else scope_display(scope_key)
+        )
         subtitle = html.escape(scope_subtitle(scope_key))
-        code = html.escape(scope["code"])
-        href = f"?scope={html.escape(scope_key)}&lang={language_query_code()}"
+        code = html.escape("AL" if scope_key == "ZX" and page_key == "alert" else scope["code"])
+        page_query = f"&page={html.escape(page_key)}" if scope_key == "ZX" else ""
+        href = f"?scope={html.escape(scope_key)}{page_query}&lang={language_query_code()}"
         return (
             f"<div class='side-nav-item{active}'>"
             f"<a href='{href}' target='_self'>"
@@ -13164,7 +15096,18 @@ def render_scope_nav(active_scope: str) -> None:
     visible_scope_keys = [
         scope_key for scope_key in DASHBOARD_SCOPES if DASHBOARD_VISIBILITY.get(scope_key, False)
     ]
-    visible_nav = "".join(nav_item(scope_key) for scope_key in visible_scope_keys)
+    visible_nav_parts: list[str] = []
+    for scope_key in visible_scope_keys:
+        if scope_key == "ZX":
+            visible_nav_parts.extend(
+                [
+                    nav_item(scope_key, "reporting"),
+                    nav_item(scope_key, "alert"),
+                ]
+            )
+        else:
+            visible_nav_parts.append(nav_item(scope_key))
+    visible_nav = "".join(visible_nav_parts)
     if active_scope == "ZX":
         current_identity = (
             "<div class='side-current-supplier'>"
@@ -13189,7 +15132,7 @@ def render_scope_nav(active_scope: str) -> None:
         {visible_nav}
         <div class="side-current">
             <div class="side-current-kicker">{html.escape(t("当前页面", "Current Page"))}</div>
-            <div class="side-current-title">{html.escape(scope_display(active_scope))}</div>
+            <div class="side-current-title">{html.escape(zx_page_display(active_page) if active_scope == 'ZX' else scope_display(active_scope))}</div>
             {current_identity}
         </div>
         """,
@@ -13219,6 +15162,7 @@ def _clear_global_cc_focus(model_filter_key: str) -> None:
 # 5. Load data and sidebar filters
 # ==========================================
 active_scope_key = get_active_scope_key()
+active_zx_page = get_active_zx_page(active_scope_key)
 scope_factory_codes = tuple(DASHBOARD_SCOPES[active_scope_key]["factories"])
 with st.spinner(t("正在读取供应商质量数据...", "Loading supplier quality data...")):
     finished_all, voice_all, incoming_all = load_all_data(DATA_SCOPE_CACHE_VERSION, scope_factory_codes)
@@ -13232,20 +15176,35 @@ if finished_all.empty:
     st.error(t("未能读取本地成品检验数据，请检查各 Database 文件夹。", "No finished QC data was loaded."))
     st.stop()
 
-render_scope_nav(active_scope_key)
+render_scope_nav(active_scope_key, active_zx_page)
 selected_factories = DASHBOARD_SCOPES[active_scope_key]["factories"]
 selected_factory_source_label = ", ".join(english_display_text(FACTORIES[code]["name"]) for code in selected_factories)
 
+language_page_query = (
+    f"&page={html.escape(active_zx_page)}" if active_scope_key == "ZX" else ""
+)
 st.sidebar.markdown(
     f"""
     <div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>
     <div class='language-links'>
-        <a class='{'active' if st.session_state.lang == '中文' else ''}' href='?scope={html.escape(active_scope_key)}&lang=zh' target='_self'>中文</a>
-        <a class='{'active' if st.session_state.lang == 'English' else ''}' href='?scope={html.escape(active_scope_key)}&lang=en' target='_self'>English</a>
+        <a class='{'active' if st.session_state.lang == '中文' else ''}' href='?scope={html.escape(active_scope_key)}{language_page_query}&lang=zh' target='_self'>中文</a>
+        <a class='{'active' if st.session_state.lang == 'English' else ''}' href='?scope={html.escape(active_scope_key)}{language_page_query}&lang=en' target='_self'>English</a>
     </div>
     """,
     unsafe_allow_html=True,
 )
+
+if active_scope_key == "ZX" and active_zx_page == "alert":
+    st.sidebar.markdown("---")
+    st.sidebar.caption(
+        t(
+            "Alert页面使用主页面筛选器；当前范围固定为 TU / Gloves / 49425 中兴。",
+            "The Alert page uses on-page filters; scope is fixed to TU / Gloves / 49425 Zhongxing.",
+        )
+    )
+    render_zx_alert_dashboard(finished_all, incoming_all, sidebar_jdy_fqc)
+    st.stop()
+
 st.sidebar.markdown("---")
 st.sidebar.markdown(t("**筛选条件**", "**Filters**"))
 
