@@ -1921,6 +1921,31 @@ JIANDAOYUN_SOURCES = {
         "snapshot": Path("TU database/ZX Database/Decathlon PS data/ZX_FQC_PO_coverage_snapshot.csv"),
     },
 }
+GLOVES_FQC_FORM_ENTRIES = {
+    "ZX": {
+        "label_cn": "中兴",
+        "label_en": "ZX",
+        "entry_id": "6722d8ffaff0bfe163575eee",
+    },
+    "XY": {
+        "label_cn": "鑫源",
+        "label_en": "XY",
+        "entry_id": "672361c4b76c1b837573a442",
+    },
+    "DY": {
+        "label_cn": "东曜",
+        "label_en": "DY",
+        "entry_id": "6723985c8e9351a6c55be908",
+    },
+}
+THIRD_PARTY_QC_NAMES = ("韩永红", "李秀玲")
+THIRD_PARTY_QC_USERNAMES = ("R-VPVW13bX", "R-ZSLo437g")
+ZX_ROOT_CAUSE_SUBFORM_FIELDS = (
+    ("_widget_1709302458855", "_widget_1754548093443", "GTD / 包装"),
+    ("_widget_1709478349228", "_widget_1753855936112", "外观做工"),
+    ("_widget_1709303778508", "_widget_1753855936121", "功能检查"),
+    ("_widget_1715253071107", "_widget_1753855936129", "内里检查"),
+)
 JIANDAOYUN_CACHE_VERSION = 5
 DATA_SCOPE_CACHE_VERSION = 15
 
@@ -4338,6 +4363,173 @@ def load_jiandaoyun_zx_fqc_api(api_key: str, refresh_token: int = 0, cache_versi
     return fqc, meta
 
 
+def jdy_scalar_text(value: object) -> str:
+    if isinstance(value, dict):
+        for key in ["name", "text", "label", "value", "nickname", "username"]:
+            candidate = value.get(key)
+            if isinstance(candidate, (str, int, float, bool)) and str(candidate).strip():
+                return str(candidate).strip()
+        return "; ".join(
+            text
+            for text in (jdy_scalar_text(candidate) for candidate in value.values())
+            if text
+        )
+    if isinstance(value, list):
+        return "; ".join(text for text in (jdy_scalar_text(item) for item in value) if text)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def normalize_5m1e_category(value: object) -> list[str]:
+    text = jdy_scalar_text(value)
+    if not text:
+        return []
+    categories: list[str] = []
+    aliases = {
+        "人": ("人", "人员", "操作员", "员工", "man"),
+        "机": ("机", "机器", "设备", "machine"),
+        "料": ("料", "材料", "物料", "原料", "material"),
+        "法": ("法", "方法", "工艺", "流程", "method"),
+        "环": ("环", "环境", "现场", "environment"),
+    }
+    parts = [
+        part.strip()
+        for part in re.split(r"[,，;；/|、\n]+", text)
+        if part.strip()
+    ]
+    for part in parts:
+        normalized = re.sub(r"\s+", "", part).casefold()
+        for category, candidates in aliases.items():
+            if normalized == category or any(
+                normalized == candidate.casefold() or candidate.casefold() in normalized
+                for candidate in candidates[1:]
+            ):
+                categories.append(category)
+                break
+    return categories
+
+
+def extract_zx_5m1e_selections(record: dict) -> list[str]:
+    categories: list[str] = []
+    for subform_id, cause_field_id, _area in ZX_ROOT_CAUSE_SUBFORM_FIELDS:
+        subform_rows = record.get(subform_id) or []
+        if not isinstance(subform_rows, list):
+            continue
+        for subform_row in subform_rows:
+            if isinstance(subform_row, dict):
+                categories.extend(normalize_5m1e_category(subform_row.get(cause_field_id)))
+    return categories
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def load_jiandaoyun_gloves_fqc_api(
+    api_key: str,
+    factories: tuple[str, ...],
+    inspector_usernames: tuple[str, ...] = (),
+    refresh_token: int = 0,
+    cache_version: int = JIANDAOYUN_CACHE_VERSION,
+) -> tuple[pd.DataFrame, dict]:
+    del refresh_token
+    frames: list[pd.DataFrame] = []
+    form_meta: dict[str, dict] = {}
+    app_id = JIANDAOYUN_SOURCES["ZX_FQC"]["app_id"]
+
+    for factory in factories:
+        form_config = GLOVES_FQC_FORM_ENTRIES.get(factory)
+        if not form_config:
+            continue
+        entry_id = form_config["entry_id"]
+        widgets_res = jdy_api_post(
+            api_key,
+            "/api/v5/app/entry/widget/list",
+            {"app_id": app_id, "entry_id": entry_id},
+        )
+        widgets = widgets_res.get("widgets") or []
+        raw_frames: list[pd.DataFrame] = []
+        cause_map: dict[str, list[str]] = {}
+        last_data_id = None
+        page_count = 0
+
+        while True:
+            payload = {
+                "app_id": app_id,
+                "entry_id": entry_id,
+                "filter": {},
+                "limit": 100,
+            }
+            if inspector_usernames:
+                payload["filter"] = {
+                    "rel": "and",
+                    "cond": [
+                        {
+                            "field": "_widget_1709200105566",
+                            "type": "user",
+                            "method": "in",
+                            "value": list(inspector_usernames),
+                        }
+                    ],
+                }
+            if last_data_id:
+                payload["data_id"] = last_data_id
+            data_res = jdy_api_post(api_key, "/api/v5/app/entry/data/list", payload)
+            batch = data_res.get("data") or []
+            if not batch:
+                break
+
+            raw_frames.append(flatten_jdy_records(batch, widgets))
+            if factory == "ZX":
+                cause_map.update(
+                    {
+                        str(record.get("_id") or ""): extract_zx_5m1e_selections(record)
+                        for record in batch
+                    }
+                )
+            page_count += 1
+
+            if len(batch) < 100:
+                break
+            last_data_id = batch[-1].get("_id")
+            if not last_data_id:
+                break
+
+        if raw_frames:
+            raw_form = pd.concat(raw_frames, ignore_index=True)
+            form_df, _ = normalize_jdy_flat(raw_form, {})
+            form_df["factory"] = factory
+            form_df["factory_label_cn"] = form_config["label_cn"]
+            form_df["factory_label_en"] = form_config["label_en"]
+            form_df["root_cause_categories"] = form_df["record_id"].map(
+                lambda record_id: "|".join(cause_map.get(str(record_id), []))
+            )
+            form_df["root_cause_selection_count"] = form_df[
+                "root_cause_categories"
+            ].map(lambda value: len([item for item in str(value).split("|") if item]))
+        else:
+            form_df = pd.DataFrame()
+        if not form_df.empty:
+            frames.append(form_df)
+        form_meta[factory] = {
+            "records": len(form_df),
+            "pages": page_count,
+            "entry_id": entry_id,
+        }
+
+    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    meta = {
+        "mode": "live_api",
+        "source_name": "Jiandaoyun Gloves FQC",
+        "factories": list(factories),
+        "dataset_scope": "third_party_qc" if inspector_usernames else "all",
+        "forms": form_meta,
+        "records": len(combined),
+        "period": source_date_range(combined) if not combined.empty else "",
+        "pulled_at": beijing_timestamp(),
+        "cache_version": cache_version,
+    }
+    return combined, meta
+
+
 @st.cache_data(show_spinner=False, ttl=900)
 def load_jiandaoyun_zx_cp_api(api_key: str, refresh_token: int = 0) -> tuple[pd.DataFrame, dict]:
     del refresh_token
@@ -4492,6 +4684,482 @@ def load_zx_fqc_po_coverage_snapshot() -> pd.DataFrame:
     for column in ["year", "factory_fqc_po_records", "decathlon_fqc_po_records", "shipped_po_qty"]:
         coverage[column] = pd.to_numeric(coverage.get(column, 0), errors="coerce").fillna(0).astype(int)
     return coverage
+
+
+def third_party_qc_name(value: object) -> str:
+    text = str(value or "")
+    for name in THIRD_PARTY_QC_NAMES:
+        if name in text:
+            return name
+    return ""
+
+
+def filter_analysis_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
+    if df.empty or "date" not in df.columns or period == "ALL":
+        return df.copy()
+    view = df.copy()
+    view["date"] = pd.to_datetime(view["date"], errors="coerce", utc=True)
+    now = pd.Timestamp.now(tz="UTC")
+    if period == "YTD":
+        return view[view["date"].dt.year == now.year].copy()
+    return view[view["date"] >= now - pd.DateOffset(months=12)].copy()
+
+
+def render_gloves_live_api_loader(
+    required_factories: tuple[str, ...],
+    module_key: str,
+    inspector_usernames: tuple[str, ...] = (),
+) -> tuple[pd.DataFrame, dict]:
+    state_key = "gloves_more_analysis_live_api"
+    refresh_key = "gloves_more_analysis_refresh_token"
+    api_key = get_jdy_api_key()
+    stored = st.session_state.get(state_key)
+    stored_factories = set(stored.get("meta", {}).get("factories", [])) if stored else set()
+    required_set = set(required_factories)
+    required_scope = "third_party_qc" if inspector_usernames else "all"
+    stored_scope = stored.get("meta", {}).get("dataset_scope") if stored else None
+    has_required_data = (
+        bool(stored)
+        and required_set.issubset(stored_factories)
+        and stored_scope == required_scope
+    )
+
+    action_col, status_col = st.columns([0.28, 0.72])
+    with action_col:
+        refresh_clicked = st.button(
+            t("从简道云刷新", "Refresh from Jiandaoyun"),
+            key=f"gloves_more_analysis_refresh_{module_key}",
+            type="primary",
+            width="stretch",
+            disabled=not bool(api_key),
+        )
+    with status_col:
+        if not api_key:
+            st.warning(
+                t(
+                    "未检测到简道云 API Key，无法读取实时数据。",
+                    "No Jiandaoyun API key was detected, so live data cannot be loaded.",
+                )
+            )
+        elif has_required_data:
+            meta = stored["meta"]
+            st.caption(
+                t(
+                    f"实时 API · {meta.get('records', 0):,} 条记录 · 更新于 {meta.get('pulled_at', '-')}",
+                    f"Live API · {meta.get('records', 0):,} records · updated {meta.get('pulled_at', '-')}",
+                )
+            )
+        else:
+            st.caption(
+                t(
+                    "此模块不会在页面打开时自动调用 API，请点击左侧按钮加载。",
+                    "This module does not call the API on page load. Use the button to load it.",
+                )
+            )
+
+    if refresh_clicked and api_key:
+        st.session_state[refresh_key] = int(st.session_state.get(refresh_key, 0)) + 1
+        with st.spinner(
+            t(
+                "正在读取 Gloves FQC 实时数据...",
+                "Reading live Gloves FQC data...",
+            )
+        ):
+            try:
+                data, meta = load_jiandaoyun_gloves_fqc_api(
+                    api_key,
+                    required_factories,
+                    inspector_usernames,
+                    st.session_state[refresh_key],
+                )
+                st.session_state[state_key] = {"data": data, "meta": meta}
+                stored = st.session_state[state_key]
+                has_required_data = True
+            except Exception as exc:
+                st.error(
+                    t(
+                        f"简道云读取失败：{exc}",
+                        f"Jiandaoyun request failed: {exc}",
+                    )
+                )
+
+    if not has_required_data:
+        return pd.DataFrame(), {}
+    return stored["data"].copy(), dict(stored["meta"])
+
+
+def render_third_party_qc_efficiency() -> None:
+    fqc, _meta = render_gloves_live_api_loader(
+        ("ZX", "XY", "DY"),
+        "third_party_qc",
+        THIRD_PARTY_QC_USERNAMES,
+    )
+    if fqc.empty:
+        return
+    view = fqc.copy()
+    view["third_party_qc"] = view.get("inspector", "").map(third_party_qc_name)
+    view = view[view["third_party_qc"].ne("")].copy()
+    if view.empty:
+        st.info(
+            t(
+                "ZX、XY、DY 实时表单中没有韩永红或李秀玲的验货记录。",
+                "No inspection records for Han Yonghong or Li Xiuling were found in ZX, XY, or DY.",
+            )
+        )
+        return
+
+    period = st.segmented_control(
+        t("统计周期", "Period"),
+        ["R12M", "YTD", "ALL"],
+        default="R12M",
+        format_func=lambda value: {
+            "R12M": t("近 12 个月", "R12M"),
+            "YTD": t("本年度", "YTD"),
+            "ALL": t("全部", "All"),
+        }[value],
+        key=f"third_party_qc_period_{language_query_code()}",
+    )
+    view = filter_analysis_period(view, period or "R12M")
+    if view.empty:
+        st.info(t("当前周期没有三方 QC 验货记录。", "No third-party QC records exist in this period."))
+        return
+
+    view["date"] = pd.to_datetime(view["date"], errors="coerce", utc=True).dt.tz_convert(BEIJING_TZ).dt.tz_localize(None)
+    view["inspection_day"] = view["date"].dt.date
+    view["month"] = view["date"].dt.to_period("M").astype(str)
+    view["po_clean"] = view.get("po", "").fillna("").astype(str).str.strip()
+    view["valid_result"] = view.get("result", "").astype(str).isin(["PASS", "FAIL"])
+    view["is_pass_record"] = view.get("result", "").astype(str).eq("PASS")
+
+    records = len(view)
+    unique_pos = view.loc[view["po_clean"].ne(""), "po_clean"].nunique()
+    active_days = view["inspection_day"].nunique()
+    valid_results = int(view["valid_result"].sum())
+    pass_rate = float(view["is_pass_record"].sum() / valid_results) if valid_results else np.nan
+    metric_columns = st.columns(5)
+    metrics = [
+        (t("验货记录", "Inspection Records"), f"{records:,}"),
+        (t("涉及 PO", "Unique POs"), f"{unique_pos:,}"),
+        (t("活跃验货天数", "Active Days"), f"{active_days:,}"),
+        (
+            t("记录 / 活跃日", "Records / Active Day"),
+            f"{records / active_days:.1f}" if active_days else "N/A",
+        ),
+        (
+            t("PASS 率", "PASS Rate"),
+            f"{pass_rate:.1%}" if pd.notna(pass_rate) else "N/A",
+        ),
+    ]
+    for column, (label, value) in zip(metric_columns, metrics):
+        column.metric(label, value)
+    st.caption(
+        t(
+            "效率为工作量代理指标：验货记录或唯一 PO / 活跃验货日。简道云当前没有检验工时字段，因此不表示每小时效率。",
+            "Efficiency is a workload proxy: inspection records or unique POs per active inspection day. The form has no labor-hour field, so this is not hourly productivity.",
+        )
+    )
+
+    monthly = (
+        view.groupby(["month", "factory", "third_party_qc"], as_index=False)
+        .agg(records=("record_id", "count"), unique_po=("po_clean", lambda values: values[values.ne("")].nunique()))
+    )
+    fig = px.bar(
+        monthly,
+        x="month",
+        y="records",
+        color="third_party_qc",
+        facet_row="factory",
+        barmode="group",
+        text_auto=True,
+        labels={
+            "month": t("月份", "Month"),
+            "records": t("验货记录", "Inspection Records"),
+            "third_party_qc": t("三方 QC", "Third-party QC"),
+            "factory": t("工厂", "Factory"),
+        },
+        color_discrete_sequence=["#0b6dcc", "#00a7a0"],
+    )
+    fig.update_layout(height=520, margin=dict(l=16, r=16, t=28, b=20), legend_title_text="")
+    fig.for_each_annotation(lambda annotation: annotation.update(text=annotation.text.split("=")[-1]))
+    st.plotly_chart(fig, width="stretch")
+
+    summary = (
+        view.groupby(["third_party_qc", "factory"], as_index=False)
+        .agg(
+            inspection_records=("record_id", "count"),
+            unique_pos=("po_clean", lambda values: values[values.ne("")].nunique()),
+            active_days=("inspection_day", "nunique"),
+            pass_records=("is_pass_record", "sum"),
+            valid_results=("valid_result", "sum"),
+            latest_inspection=("date", "max"),
+        )
+    )
+    summary["records_per_active_day"] = summary["inspection_records"] / summary["active_days"].replace(0, np.nan)
+    summary["pos_per_active_day"] = summary["unique_pos"] / summary["active_days"].replace(0, np.nan)
+    summary["pass_rate"] = summary["pass_records"] / summary["valid_results"].replace(0, np.nan)
+    summary["latest_inspection"] = summary["latest_inspection"].dt.strftime("%Y-%m-%d")
+    summary = summary.rename(
+        columns={
+            "third_party_qc": t("三方 QC", "Third-party QC"),
+            "factory": t("工厂", "Factory"),
+            "inspection_records": t("验货记录", "Inspection Records"),
+            "unique_pos": t("唯一 PO", "Unique POs"),
+            "active_days": t("活跃天数", "Active Days"),
+            "records_per_active_day": t("记录 / 活跃日", "Records / Active Day"),
+            "pos_per_active_day": t("PO / 活跃日", "POs / Active Day"),
+            "pass_rate": t("PASS 率", "PASS Rate"),
+            "latest_inspection": t("最近验货", "Latest Inspection"),
+        }
+    )
+    st.dataframe(summary, hide_index=True, width="stretch")
+
+    with st.expander(t("涉及 PO 明细", "PO Detail"), expanded=False):
+        po_detail = view[
+            ["date", "third_party_qc", "factory", "po", "cc", "model", "sampling_size", "result"]
+        ].sort_values("date", ascending=False)
+        po_detail["date"] = po_detail["date"].dt.strftime("%Y-%m-%d")
+        po_detail = po_detail.rename(
+            columns={
+                "date": t("验货日期", "Inspection Date"),
+                "third_party_qc": t("三方 QC", "Third-party QC"),
+                "factory": t("工厂", "Factory"),
+                "po": "PO",
+                "cc": "CC",
+                "model": "Model",
+                "sampling_size": t("抽样数", "Sample Size"),
+                "result": t("结果", "Result"),
+            }
+        )
+        st.dataframe(po_detail, hide_index=True, width="stretch", height=420)
+
+
+def render_zx_5m1e_analysis() -> None:
+    fqc, _meta = render_gloves_live_api_loader(("ZX",), "zx_5m1e")
+    if fqc.empty:
+        return
+    view = fqc[fqc.get("factory", "").eq("ZX")].copy()
+    selections = (
+        view.loc[view["root_cause_categories"].fillna("").ne(""), ["record_id", "root_cause_categories"]]
+        .assign(category=lambda frame: frame["root_cause_categories"].str.split("|"))
+        .explode("category")
+    )
+    selections = selections[selections["category"].isin(["人", "机", "料", "法", "环"])]
+    defect_records = int(pd.to_numeric(view.get("defect_qty", 0), errors="coerce").fillna(0).gt(0).sum())
+    classified_records = int(view.get("root_cause_selection_count", 0).gt(0).sum())
+    coverage = classified_records / defect_records if defect_records else np.nan
+
+    metric_columns = st.columns(3)
+    metric_columns[0].metric(t("已分类问题记录", "Classified Issue Records"), f"{classified_records:,}")
+    metric_columns[1].metric(t("原因选择项", "Cause Selections"), f"{len(selections):,}")
+    metric_columns[2].metric(
+        t("问题记录填报覆盖率", "Issue Record Coverage"),
+        f"{coverage:.1%}" if pd.notna(coverage) else "N/A",
+    )
+    st.caption(
+        t(
+            "来源为 ZX FQC 子表中的“不良原因分析”选择项。占比只在已分类的人、机、料、法、环原因项中计算；空白记录不会被当作零风险。",
+            "Source: the Root Cause Analysis selections in ZX FQC subforms. Shares are calculated only among classified Man, Machine, Material, Method, and Environment selections; blanks are not treated as zero risk.",
+        )
+    )
+    if selections.empty:
+        st.warning(
+            t(
+                "实时 ZX 数据中暂未发现可识别的人机料法环选择项，请先提升“不良原因分析”字段的填报。",
+                "No recognizable 5M1E selections were found in live ZX data. Complete the Root Cause Analysis field first.",
+            )
+        )
+        return
+
+    order = ["人", "机", "料", "法", "环"]
+    labels = {
+        "人": t("人", "Man"),
+        "机": t("机", "Machine"),
+        "料": t("料", "Material"),
+        "法": t("法", "Method"),
+        "环": t("环", "Environment"),
+    }
+    distribution = selections["category"].value_counts().reindex(order, fill_value=0).rename_axis("category").reset_index(name="count")
+    distribution["share"] = distribution["count"] / distribution["count"].sum()
+    distribution["category_view"] = distribution["category"].map(labels)
+    fig = px.bar(
+        distribution,
+        x="category_view",
+        y="share",
+        text=distribution["share"].map(lambda value: f"{value:.1%}"),
+        color="category",
+        category_orders={"category_view": [labels[item] for item in order]},
+        color_discrete_map={
+            "人": "#0b6dcc",
+            "机": "#7557d5",
+            "料": "#dc6803",
+            "法": "#00a7a0",
+            "环": "#168a5b",
+        },
+        labels={"category_view": t("原因类别", "Cause Category"), "share": t("占比", "Share")},
+    )
+    fig.update_yaxes(tickformat=".0%")
+    fig.update_layout(height=380, margin=dict(l=16, r=16, t=20, b=20), showlegend=False)
+    st.plotly_chart(fig, width="stretch")
+    table = distribution[["category_view", "count", "share"]].rename(
+        columns={
+            "category_view": t("原因类别", "Cause Category"),
+            "count": t("原因项数量", "Cause Selections"),
+            "share": t("占比", "Share"),
+        }
+    )
+    table[t("占比", "Share")] = table[t("占比", "Share")] * 100
+    st.dataframe(
+        table,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            t("占比", "Share"): st.column_config.NumberColumn(format="%.1f%%")
+        },
+    )
+
+
+def render_zx_defect_severity_analysis() -> None:
+    fqc, _meta = render_gloves_live_api_loader(("ZX",), "zx_defect_severity")
+    if fqc.empty:
+        return
+    view = fqc[fqc.get("factory", "").eq("ZX")].copy()
+    period = st.segmented_control(
+        t("统计周期", "Period"),
+        ["R12M", "YTD", "ALL"],
+        default="R12M",
+        format_func=lambda value: {
+            "R12M": t("近 12 个月", "R12M"),
+            "YTD": t("本年度", "YTD"),
+            "ALL": t("全部", "All"),
+        }[value],
+        key=f"zx_defect_severity_period_{language_query_code()}",
+    )
+    view = filter_analysis_period(view, period or "R12M")
+    if view.empty:
+        st.info(t("当前周期没有 ZX FQC 记录。", "No ZX FQC records exist in this period."))
+        return
+    view["date"] = pd.to_datetime(view["date"], errors="coerce", utc=True).dt.tz_convert(BEIJING_TZ).dt.tz_localize(None)
+    severity_columns = {
+        "Critical": "critical_defects",
+        "Major": "major_defects",
+        "Minor": "minor_defects",
+    }
+    totals = {
+        severity: float(pd.to_numeric(view.get(column, 0), errors="coerce").fillna(0).sum())
+        for severity, column in severity_columns.items()
+    }
+    affected_records = {
+        severity: int(pd.to_numeric(view.get(column, 0), errors="coerce").fillna(0).gt(0).sum())
+        for severity, column in severity_columns.items()
+    }
+    colors = {"Critical": "#c01048", "Major": "#dc6803", "Minor": "#d99a00"}
+    metric_columns = st.columns(3)
+    for column, severity in zip(metric_columns, severity_columns):
+        column.metric(
+            severity,
+            f"{totals[severity]:,.0f}",
+            t(
+                f"涉及 {affected_records[severity]:,} 条验货记录",
+                f"{affected_records[severity]:,} affected inspection records",
+            ),
+            delta_color="off",
+        )
+    st.caption(
+        t(
+            "主数值是简道云汇总字段中的疵点数量；下方同时给出至少包含一个该等级疵点的验货记录数。",
+            "The primary values are defect quantities from Jiandaoyun summary fields; affected inspection-record counts are shown separately.",
+        )
+    )
+
+    severity_df = pd.DataFrame(
+        {
+            "severity": list(severity_columns),
+            "defects": [totals[severity] for severity in severity_columns],
+        }
+    )
+    chart_col, trend_col = st.columns([0.36, 0.64])
+    with chart_col:
+        fig = px.pie(
+            severity_df,
+            names="severity",
+            values="defects",
+            hole=0.58,
+            color="severity",
+            color_discrete_map=colors,
+        )
+        fig.update_traces(textposition="inside", textinfo="label+percent")
+        fig.update_layout(height=360, margin=dict(l=8, r=8, t=18, b=18), showlegend=False)
+        st.plotly_chart(fig, width="stretch")
+    with trend_col:
+        trend_source = view.copy()
+        trend_source["month"] = trend_source["date"].dt.to_period("M").astype(str)
+        trend = (
+            trend_source.groupby("month", as_index=False)[list(severity_columns.values())]
+            .sum()
+            .melt(id_vars="month", var_name="severity_column", value_name="defects")
+        )
+        reverse_columns = {column: severity for severity, column in severity_columns.items()}
+        trend["severity"] = trend["severity_column"].map(reverse_columns)
+        fig = px.bar(
+            trend,
+            x="month",
+            y="defects",
+            color="severity",
+            barmode="stack",
+            color_discrete_map=colors,
+            labels={
+                "month": t("月份", "Month"),
+                "defects": t("疵点数量", "Defect Quantity"),
+                "severity": t("等级", "Severity"),
+            },
+        )
+        fig.update_layout(height=360, margin=dict(l=16, r=16, t=18, b=18), legend_title_text="")
+        st.plotly_chart(fig, width="stretch")
+
+    with st.expander(
+        t(
+            f"Critical 问题明细（{affected_records['Critical']:,} 条记录）",
+            f"Critical Issue Detail ({affected_records['Critical']:,} records)",
+        ),
+        expanded=True,
+    ):
+        critical_rows = view[
+            pd.to_numeric(view.get("critical_defects", 0), errors="coerce").fillna(0).gt(0)
+        ].copy()
+        if critical_rows.empty:
+            st.success(t("当前周期没有 Critical 问题。", "No Critical issues exist in this period."))
+        else:
+            critical_rows = critical_rows.sort_values(["date", "critical_defects"], ascending=[False, False])
+            detail = critical_rows[
+                [
+                    "date",
+                    "inspector",
+                    "po",
+                    "cc",
+                    "model",
+                    "critical_defects",
+                    "major_defects",
+                    "minor_defects",
+                    "result",
+                    "important_issue",
+                ]
+            ].copy()
+            detail["date"] = detail["date"].dt.strftime("%Y-%m-%d")
+            detail = detail.rename(
+                columns={
+                    "date": t("验货日期", "Inspection Date"),
+                    "inspector": t("检验员", "Inspector"),
+                    "po": "PO",
+                    "cc": "CC",
+                    "model": "Model",
+                    "critical_defects": "Critical",
+                    "major_defects": "Major",
+                    "minor_defects": "Minor",
+                    "result": t("结果", "Result"),
+                    "important_issue": t("整单重要疵点备注", "Key Defect Note"),
+                }
+            )
+            st.dataframe(detail, hide_index=True, width="stretch", height=460)
 
 
 TU_COMMUNITY_AI_PROMPT_VERSION = "tu-community-qm-v6-guardrailed"
@@ -11411,6 +12079,9 @@ def render_community_cockpit(
                 "process": t("工序", "Process"),
                 "worker": t("工人", "Worker"),
                 "material": t("原辅料", "Material"),
+                "third_party_qc": t("三方 QC 效率", "Third-party QC Efficiency"),
+                "five_m_one_e": t("人机料法环", "5M1E"),
+                "defect_severity": t("缺陷等级", "Defect Severity"),
                 "ai": t("AI 总结报告", "AI Summary Report"),
             }
             analysis_key = f"zx_more_analysis_{language_query_code()}"
@@ -11434,6 +12105,19 @@ def render_community_cockpit(
             elif selected_analysis == "material":
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
+            elif selected_analysis == "third_party_qc":
+                st.markdown(
+                    f"**{t('Gloves 三方 QC 验货频率与效率', 'Gloves Third-party QC Frequency and Efficiency')}**"
+                )
+                render_third_party_qc_efficiency()
+            elif selected_analysis == "five_m_one_e":
+                st.markdown(f"**{t('ZX 人机料法环原因结构', 'ZX 5M1E Cause Mix')}**")
+                render_zx_5m1e_analysis()
+            elif selected_analysis == "defect_severity":
+                st.markdown(
+                    f"**{t('ZX Critical / Major / Minor 问题结构', 'ZX Critical / Major / Minor Issue Mix')}**"
+                )
+                render_zx_defect_severity_analysis()
             elif selected_analysis == "ai":
                 report_language = st.segmented_control(
                     t("报告语言", "Report Language"),
