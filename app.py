@@ -13614,6 +13614,314 @@ def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
             if parameter["spec_low"].isna().all() and parameter["spec_high"].isna().all():
                 st.warning(t("该参数没有源规格，只展示稳定性，不判 NG。", "This parameter has no source specification. Stability is shown without judging NG."))
+
+
+def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
+    """Render BME with the same vertical analysis chain as the main ZX cockpit."""
+    st.markdown(
+        f"""
+        <div class="hero" style="margin-bottom:18px;">
+          <div class="hero-kicker">BME · BIKE COMMUNITY</div>
+          <div class="hero-title">{html.escape(t('自行车工厂质量分析', 'Bike Factory Quality Analysis'))}</div>
+          <div class="hero-subtitle">{html.escape(t('数据地图 → 聚类 → 重点提取 → Pareto → 趋势 → 更多分析', 'Data map → cluster → focus extraction → Pareto → trend → more analysis'))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if events.empty:
+        st.error(t("未读取到 BME 数据，请检查 BME Database 文件夹。", "No BME data was loaded. Check the BME Database folder."))
+        return
+
+    suppliers = sorted(events["supplier"].dropna().astype(str).unique())
+    stages = [stage for stage in ["IQC", "PQC", "AQL", "DKL", "MACHINE", "LAB", "REWORK"] if stage in set(events["stage"])]
+    dated = events["date"].dropna()
+    today = dt.date.today()
+    min_date = dated.min().date() if not dated.empty else today
+    max_date = min(dated.max().date(), today) if not dated.empty else today
+    default_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(t("**BME 筛选条件**", "**BME Filters**"))
+    with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
+        selected_suppliers = st.multiselect(
+            t("供应商", "Supplier"), suppliers, default=suppliers, key="bme_v3_supplier_filter"
+        )
+        selected_stages = st.multiselect(
+            t("质量关卡", "Quality Gate"), stages, default=stages, key="bme_v3_stage_filter"
+        )
+        selected_dates = st.date_input(
+            t("数据周期", "Period"),
+            value=(default_start, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="bme_v3_date_filter",
+        )
+
+    view = events[
+        events["supplier"].isin(selected_suppliers)
+        & events["stage"].isin(selected_stages)
+    ].copy()
+    if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+        start_date, end_date = selected_dates
+        view = view[view["date"].isna() | view["date"].dt.date.between(start_date, end_date)]
+    if view.empty:
+        st.warning(t("当前筛选条件下没有 BME 数据。", "No BME data under the current filters."))
+        return
+
+    alerts = view[view["is_alert"]].copy()
+    source_label = "BME Database · FSD / CMW / TEKTRO"
+
+    render_chart_heading(
+        "01 数据地图",
+        "01 Data Map",
+        "先确认每家供应商各质量关卡的数据是否接入、覆盖多少记录。",
+        "Confirm source availability and record coverage by supplier and quality gate first.",
+        "按供应商、质量关卡和源指标口径汇总记录数。",
+        "Aggregate records by supplier, quality gate, and source metric scope.",
+        "空白关卡代表数据不可用，不用其他检验类型代替。",
+        "Blank gates mean unavailable data and are not replaced by another inspection type.",
+        source_label,
+        "bme_v3_data_map",
+    )
+    coverage = view.groupby(["supplier", "stage", "metric_scope"], as_index=False).agg(
+        records=("source_row", "count"),
+        dated=("date", lambda values: int(values.notna().sum())),
+        with_po=("order_po", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
+        with_model=("model_item_code", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
+        with_status=("status_available", "sum"),
+    )
+    map_source = coverage.groupby(["supplier", "stage"], as_index=False)["records"].sum()
+    map_pivot = map_source.pivot(index="supplier", columns="stage", values="records").reindex(index=suppliers, columns=stages)
+    map_text = map_pivot.map(lambda value: f"{int(value):,}" if pd.notna(value) else "-")
+    fig = go.Figure(go.Heatmap(
+        z=map_pivot.fillna(0).values,
+        x=map_pivot.columns,
+        y=map_pivot.index,
+        text=map_text.values,
+        texttemplate="%{text}",
+        colorscale=[[0, "#f1f4f8"], [0.35, "#b9c4ff"], [1, "#3341c4"]],
+        colorbar=dict(title=t("记录数", "Records")),
+        hovertemplate="Supplier=%{y}<br>Gate=%{x}<br>Records=%{text}<extra></extra>",
+    ))
+    fig.update_layout(height=320, margin=dict(l=40, r=20, t=20, b=30), paper_bgcolor="#ffffff")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with st.expander(t("查看数据覆盖明细", "View Coverage Detail"), expanded=False):
+        dataframe_with_format(coverage, height=360)
+        st.info(
+            t(
+                "FSD 没有 End of QC Sheet；AQL 和 DKL 保持独立，不补造 End of QC。",
+                "FSD has no End of QC sheet; AQL and DKL remain separate and do not fabricate End of QC.",
+            ),
+            icon=":material/info:",
+        )
+
+    render_chart_heading(
+        "02 供应商 × 质量关卡聚类分析",
+        "02 Supplier × Quality-Gate Cluster Analysis",
+        "找出 Alert 占比和 Alert 数量同时偏高的供应商制程组合。",
+        "Locate supplier-process combinations with both elevated alert share and alert volume.",
+        "以 Alert 记录占比和 Alert 数量为两轴做确定性 K-means 聚类。",
+        "Use deterministic K-means on alert-record share and alert volume.",
+        "气泡大小代表源记录量；聚类用于分组，不代替真实规格判定。",
+        "Bubble size represents source volume; clustering groups risk patterns and does not replace specification judgment.",
+        source_label,
+        "bme_v3_cluster",
+    )
+    cluster_view = view.groupby(["supplier", "stage"], as_index=False).agg(
+        records=("source_row", "count"),
+        alerts=("is_alert", "sum"),
+        defects=("defect_qty", "sum"),
+    )
+    cluster_view["alert_share"] = cluster_view["alerts"] / cluster_view["records"].replace(0, np.nan)
+    cluster_points = np.column_stack([
+        cluster_view["alert_share"].fillna(0).to_numpy(dtype=float) * 100,
+        np.log1p(cluster_view["alerts"].fillna(0).to_numpy(dtype=float)),
+    ])
+    cluster_labels, _ = deterministic_kmeans(cluster_points, cluster_count=min(4, len(cluster_view)))
+    cluster_view["cluster_id"] = cluster_labels
+    cluster_rank = (
+        cluster_view.groupby("cluster_id", as_index=False)
+        .agg(alert_share=("alert_share", "mean"), alerts=("alerts", "sum"))
+    )
+    cluster_rank["priority"] = cluster_rank["alert_share"].fillna(0) * 100 + np.log1p(cluster_rank["alerts"])
+    ordered_clusters = cluster_rank.sort_values("priority")["cluster_id"].astype(int).tolist()
+    cluster_name_sets = {
+        1: [t("观察", "Monitor")],
+        2: [t("稳定", "Stable"), t("优先改善", "Priority Improvement")],
+        3: [t("稳定", "Stable"), t("关注", "Attention"), t("优先改善", "Priority Improvement")],
+        4: [t("稳定", "Stable"), t("观察", "Monitor"), t("关注", "Attention"), t("优先改善", "Priority Improvement")],
+    }
+    cluster_names = cluster_name_sets[len(ordered_clusters)]
+    cluster_name_map = {
+        cluster_id: cluster_names[rank]
+        for rank, cluster_id in enumerate(ordered_clusters)
+    }
+    cluster_view["cluster"] = cluster_view["cluster_id"].map(cluster_name_map)
+    cluster_view["gate_label"] = cluster_view["supplier"] + " · " + cluster_view["stage"]
+    fig = px.scatter(
+        cluster_view,
+        x="alerts",
+        y="alert_share",
+        size="records",
+        color="cluster",
+        text="gate_label",
+        hover_data={"supplier": True, "stage": True, "records": True, "defects": True, "alert_share": ":.1%"},
+        labels={"alerts": t("Alert 记录数", "Alert Records"), "alert_share": t("Alert 记录占比", "Alert-record Share"), "cluster": t("聚类", "Cluster")},
+        color_discrete_sequence=["#168a5b", "#60a5fa", "#d99a00", "#c01048"],
+        size_max=48,
+    )
+    fig.update_traces(textposition="top center")
+    fig.update_yaxes(tickformat=".0%", rangemode="tozero")
+    fig.update_layout(height=520, margin=dict(l=30, r=30, t=30, b=35))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    render_chart_heading(
+        "03 重点数据提取",
+        "03 Priority Data Extraction",
+        "把聚类中最需要优先复盘的供应商与质量关卡直接提取出来。",
+        "Extract the supplier and quality-gate combinations requiring review first.",
+        "按聚类优先级、Alert 占比和 Alert 数量排序。",
+        "Rank by cluster priority, alert-record share, and alert volume.",
+        "这里只做优先级排序，最终结论仍回到源结果、NC、规格和流程状态。",
+        "This is prioritization only; final conclusions remain grounded in source results, NC, specifications, and workflow status.",
+        source_label,
+        "bme_v3_extract",
+    )
+    cluster_priority_map = {cluster_id: rank for rank, cluster_id in enumerate(ordered_clusters)}
+    priority_view = cluster_view.assign(
+        priority_rank=cluster_view["cluster_id"].map(cluster_priority_map)
+    ).sort_values(["priority_rank", "alert_share", "alerts"], ascending=False)
+    priority_cards = []
+    for _, row in priority_view.head(4).iterrows():
+        priority_cards.append({
+            "label": row["gate_label"],
+            "value": f"{int(row['alerts']):,}",
+            "note": t(f"Alert占比 {row['alert_share']:.1%} · 源记录 {int(row['records']):,}", f"Alert share {row['alert_share']:.1%} · {int(row['records']):,} source records"),
+            "level": "high" if row["cluster"] == t("优先改善", "Priority Improvement") else "medium",
+        })
+    render_kpi_cards(priority_cards)
+    dataframe_with_format(
+        priority_view[["supplier", "stage", "cluster", "records", "alerts", "alert_share", "defects"]].head(12),
+        column_config={"alert_share": st.column_config.ProgressColumn(t("Alert记录占比", "Alert-record Share"), format="%.1f%%", min_value=0, max_value=1)},
+        height=330,
+    )
+
+    render_chart_heading(
+        "04 Top 问题 Pareto",
+        "04 Top Issue Pareto",
+        "找出当前筛选范围内贡献最大的真实问题和检查点。",
+        "Identify the real issues and checkpoints contributing most in the current scope.",
+        "只对已触发 Alert 的记录按问题字段汇总。",
+        "Aggregate only alert-triggering records by source issue field.",
+        "柱形为 Alert 记录数，不把记录数解释成不良件数。",
+        "Bars show alert records and are not interpreted as defective-piece counts.",
+        source_label,
+        "bme_v3_pareto",
+    )
+    pareto = alerts.assign(issue_driver=alerts["issue_driver"].replace("", t("未记录", "Not recorded")))
+    pareto = pareto.groupby(["supplier", "issue_driver"], as_index=False).agg(alerts=("source_row", "count"), defects=("defect_qty", "sum"))
+    pareto = pareto.sort_values(["alerts", "defects"], ascending=False).head(20).sort_values("alerts")
+    if pareto.empty:
+        st.info(t("当前没有问题 Pareto 数据。", "No issue Pareto data is available."))
+    else:
+        fig = px.bar(
+            pareto,
+            x="alerts",
+            y="issue_driver",
+            color="supplier",
+            orientation="h",
+            labels={"alerts": t("Alert记录数", "Alert Records"), "issue_driver": t("问题 / 检查点", "Issue / Checkpoint")},
+            color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"],
+        )
+        fig.update_layout(height=560, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    render_chart_heading(
+        "05 Alert 趋势",
+        "05 Alert Trend",
+        "按月观察各供应商风险记录是否改善或恶化。",
+        "Track whether supplier alert records improve or worsen by month.",
+        "按月和供应商汇总有日期的 Alert 记录。",
+        "Aggregate dated alert records by month and supplier.",
+        "趋势只反映当前数据覆盖范围，数据缺口在数据地图中单独展示。",
+        "The trend reflects only current data coverage; gaps remain visible in the data map.",
+        source_label,
+        "bme_v3_trend",
+    )
+    trend = alerts.dropna(subset=["date"]).copy()
+    if trend.empty:
+        st.info(t("当前筛选没有可用日期趋势。", "No dated trend under the current filters."))
+    else:
+        trend["month"] = trend["date"].dt.to_period("M").dt.to_timestamp()
+        monthly = trend.groupby(["month", "supplier"], as_index=False).size().rename(columns={"size": "alerts"})
+        fig = px.line(monthly, x="month", y="alerts", color="supplier", markers=True, color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"])
+        fig.update_layout(height=400, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    with st.expander(t("更多分析", "More Analysis"), expanded=False):
+        more_labels = {
+            "parameter": t("参数 / 控制图", "Parameter / Control Chart"),
+            "rework": t("返工状态", "Rework Status"),
+            "detail": t("可审计明细", "Auditable Detail"),
+        }
+        selected_more = st.segmented_control(
+            t("分析模块", "Analysis Module"),
+            list(more_labels),
+            default="parameter",
+            format_func=lambda value: more_labels[value],
+            key="bme_v3_more_analysis",
+            width="stretch",
+        ) or "parameter"
+        if selected_more == "parameter":
+            parameter = view[view["measured_value"].notna()].copy()
+            parameter_label = parameter["process"].where(parameter["process"].ne(""), parameter["issue_driver"])
+            choices = sorted((parameter["supplier"] + " · " + parameter_label).dropna().unique())
+            if not choices:
+                st.info(t("当前筛选没有连续参数。", "No continuous parameter exists under the current filters."))
+            else:
+                selected_parameter = st.selectbox(t("参数", "Parameter"), choices, key="bme_v3_parameter_choice")
+                supplier_name, process_name = selected_parameter.split(" · ", 1)
+                parameter = parameter[(parameter["supplier"].eq(supplier_name)) & ((parameter["process"].eq(process_name)) | (parameter["issue_driver"].eq(process_name)))].copy()
+                parameter = parameter.sort_values(["date", "source_row"]).tail(300)
+                parameter["sequence"] = np.arange(1, len(parameter) + 1)
+                parameter["moving_range"] = parameter["measured_value"].diff().abs()
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12, row_heights=[0.68, 0.32])
+                fig.add_trace(go.Scatter(x=parameter["sequence"], y=parameter["measured_value"], mode="lines+markers", name=t("实测值", "Measured value"), line=dict(color="#3341c4")), row=1, col=1)
+                fig.add_trace(go.Scatter(x=parameter["sequence"], y=parameter["moving_range"], mode="lines+markers", name=t("移动极差", "Moving range"), line=dict(color="#d99a00")), row=2, col=1)
+                if parameter["measured_value"].notna().sum() >= 5:
+                    center = float(parameter["measured_value"].mean())
+                    mr_bar = float(parameter["moving_range"].dropna().mean())
+                    sigma = mr_bar / 1.128 if mr_bar > 0 else 0.0
+                    fig.add_hline(y=center, line_color="#168a5b", annotation_text="CL", row=1, col=1)
+                    fig.add_hline(y=center + 3 * sigma, line_dash="dot", line_color="#c01048", annotation_text="UCL", row=1, col=1)
+                    fig.add_hline(y=center - 3 * sigma, line_dash="dot", line_color="#c01048", annotation_text="LCL", row=1, col=1)
+                if parameter["spec_low"].notna().any():
+                    fig.add_hline(y=float(parameter["spec_low"].dropna().median()), line_dash="dash", line_color="#d99a00", annotation_text="LSL", row=1, col=1)
+                if parameter["spec_high"].notna().any():
+                    fig.add_hline(y=float(parameter["spec_high"].dropna().median()), line_dash="dash", line_color="#d99a00", annotation_text="USL", row=1, col=1)
+                fig.update_layout(title=f"{supplier_name} · {process_name} · I-MR", height=560, margin=dict(l=20, r=20, t=70, b=30), legend=dict(orientation="h"))
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
+                if parameter["spec_low"].isna().all() and parameter["spec_high"].isna().all():
+                    st.warning(t("该参数没有源规格，只展示稳定性，不判 NG。", "This parameter has no source specification. Stability is shown without judging NG."))
+        elif selected_more == "rework":
+            rework = view[view["stage"].eq("REWORK")].copy()
+            if rework.empty:
+                st.info(t("当前筛选没有返工数据。", "No rework data under the current filters."))
+            else:
+                render_kpi_cards([
+                    {"label": t("返工记录", "Rework Records"), "value": f"{len(rework):,}", "note": t("保留源流程状态", "Source workflow status retained"), "level": "medium"},
+                    {"label": t("未关闭返工", "Rework Not Closed"), "value": f"{int((~rework['status'].eq('Closed')).sum()):,}", "note": t("不推断缺失状态", "Missing status is not inferred"), "level": "high"},
+                ])
+                dataframe_with_format(rework[["supplier", "date", "order_po", "model_item_code", "item_name", "issue_driver", "status", "source_file"]], height=380)
+        else:
+            display_cols = ["supplier", "stage", "date", "order_po", "model_item_code", "item_name", "process", "issue_driver", "inspected_qty", "defect_qty", "result", "spec_text", "measured_value", "status", "metric_scope", "source_file", "source_sheet", "source_row"]
+            dataframe_with_format(view[display_cols].sort_values("date", ascending=False), height=560)
+            st.download_button(
+                t("下载当前 BME 明细", "Download Current BME Detail"),
+                view[display_cols].to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"BME_quality_detail_{dt.date.today():%Y%m%d}.csv",
+                mime="text/csv",
+            )
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),
     "PQC": ("PQC 过程预警", "PQC Alert"),
@@ -15610,7 +15918,7 @@ st.sidebar.markdown(
 )
 
 if active_scope_key == "BME_CMW":
-    render_bme_bike_quality_dashboard(bme_events)
+    render_bme_bike_quality_dashboard_v3(bme_events)
     st.stop()
 
 if active_scope_key == "QUALITY_ALERT":
