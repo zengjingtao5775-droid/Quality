@@ -13992,8 +13992,8 @@ def render_bme_bike_quality_dashboard_v3(
     st.sidebar.markdown(t("**BME 筛选条件**", "**BME Filters**"))
     with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
         selected_suppliers = st.multiselect(t("供应商", "Supplier"), suppliers, default=suppliers, key="bme_v4_supplier")
-        selected_stages = st.multiselect(t("质量关卡", "Quality Gate"), stages, default=stages, key="bme_v4_stage")
-        selected_dates = st.date_input(t("数据周期", "Period"), value=(default_start, max_date), min_value=min_date, max_value=max_date, key="bme_v4_dates")
+        selected_stages = st.multiselect(t("质量环节", "Quality Gate"), stages, default=stages, key="bme_v4_stage")
+        selected_dates = st.date_input(t("日期范围", "Period"), value=(default_start, max_date), min_value=min_date, max_value=max_date, key="bme_v4_dates")
     start_date, end_date = default_start, max_date
     if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
         start_date, end_date = selected_dates
@@ -14012,17 +14012,17 @@ def render_bme_bike_quality_dashboard_v3(
             f"No dated BME records exist in this period; {undated_records:,} undated records in the selected scope are excluded from period analysis.",
         ))
         return
-    st.subheader(t("1 · 数据地图与可信度", "1 · Data Map & Confidence"))
-    with st.expander(t("数据地图", "Data Map"), expanded=True):
+    st.subheader(t("1 · 数据来源与完整性", "1 · Data Map & Confidence"))
+    with st.expander(t("查看数据情况", "Data Map"), expanded=True):
         _render_bme_data_map(view)
         if undated_records:
             st.warning(t(
-                f"当前供应商 / 关卡范围另有 {undated_records:,} 条记录缺少日期，已从本周期 KPI 和图表排除。",
+                f"当前供应商和质量环节中，另有 {undated_records:,} 条记录没有日期，因此没有计入本期 KPI 和图表。",
                 f"Another {undated_records:,} records in the selected supplier/gate scope have no date and are excluded from period KPIs and charts.",
             ))
         st.caption(t("缺少规格或分母时，系统保留数据，但不生成不适用的能力或不良率结论；缺少日期的记录不进入周期统计。", "Records missing specifications or denominators remain available without generating inapplicable capability or defect-rate conclusions; undated records do not enter period statistics."))
 
-    st.subheader(t("2 · 质量信号总览", "2 · Quality Signal Overview"))
+    st.subheader(t("2 · 当前质量情况", "2 · Quality Signal Overview"))
     for optional_column, default_value in {
         "event_timestamp": pd.NaT,
         "workflow_end_date": pd.NaT,
@@ -14047,13 +14047,13 @@ def render_bme_bike_quality_dashboard_v3(
     cmw_iqc = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("IQC"))]
     return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
     render_kpi_cards([
-        {"label": t("FSD 检验 NC率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "note": t("AQL / DKL 有检验分母记录", "AQL / DKL records with denominators"), "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"},
+        {"label": t("FSD 检验不合格率（NC率）", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "note": t("按 AQL / DKL 检验数量计算", "AQL / DKL records with denominators"), "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"},
         {"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "note": t("退货数量 / 来料数量", "Return quantity / incoming quantity"), "level": "medium"},
-        {"label": t("未关闭返工", "Open Rework"), "value": f"{len(open_rework):,}", "note": t("流程状态，不等同返工工时", "Workflow state, not physical rework hours"), "level": "high" if len(open_rework) else "low"},
-        {"label": t("参数录入疑点", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "note": t("图中保留，控制限估计排除", "Shown in charts, excluded from limit estimation"), "level": "high" if torque_suspects else "low"},
+        {"label": t("未结案返工", "Open Rework"), "value": f"{len(open_rework):,}", "note": t("表示流程还没结案，不是返工用时", "Workflow state, not physical rework hours"), "level": "high" if len(open_rework) else "low"},
+        {"label": t("疑似录入错误", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "note": t("图上仍显示，但不参与控制限计算", "Shown in charts, excluded from limit estimation"), "level": "high" if torque_suspects else "low"},
     ])
 
-    st.subheader(t("3 · SPC 与属性控制", "3 · SPC & Attribute Control"))
+    st.subheader(t("3 · SPC 过程控制", "3 · SPC & Attribute Control"))
     method_options: dict[str, tuple[str, pd.DataFrame]] = {}
     for keys, group in cmw_torque.groupby(["model_item_code", "process", "spec_low", "spec_high", "unit"], dropna=False):
         if len(group) >= 5:
@@ -14110,7 +14110,7 @@ def render_bme_bike_quality_dashboard_v3(
             key=lambda label: (*spc_risk_key(method_options[label]), -len(method_options[label][1]), label),
         )
         selected_method = st.selectbox(
-            t("选择同质过程 / 检验范围（高风险优先）", "Select homogeneous process / inspection scope (highest risk first)"),
+            t("选择要查看的过程 / 检验范围（高风险优先）", "Select homogeneous process / inspection scope (highest risk first)"),
             ranked_methods,
             key="bme_v4_spc",
         )
@@ -14155,10 +14155,10 @@ def render_bme_bike_quality_dashboard_v3(
             fig.update_layout(height=570, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
             if limits:
-                status_text = t("稳定", "Stable") if limits.get("stable") else t("存在特殊原因信号", "Special-cause signals detected")
+                status_text = t("过程稳定", "Stable") if limits.get("stable") else t("发现特殊原因信号", "Special-cause signals detected")
                 capability = f" · Ppk {limits['ppk']:.2f}" if "ppk" in limits else ""
                 signal_summary = t(
-                    f"信号事件 {int(chart['signal'].sum())} 个（3σ {int(chart['beyond_3sigma'].sum())}、8点同侧 {int(chart['eight_one_side'].sum())}、6点趋势 {int(chart['six_trend'].sum())}）",
+                    f"共 {int(chart['signal'].sum())} 个触发点（超出3σ {int(chart['beyond_3sigma'].sum())}、连续8点在中心线同侧 {int(chart['eight_one_side'].sum())}、连续6点上升或下降 {int(chart['six_trend'].sum())}）",
                     f"{int(chart['signal'].sum())} signal events ({int(chart['beyond_3sigma'].sum())} beyond 3σ, {int(chart['eight_one_side'].sum())} eight-on-one-side, {int(chart['six_trend'].sum())} six-point trends)",
                 )
                 st.info(f"{status_text}{capability} · {signal_summary}")
@@ -14166,7 +14166,7 @@ def render_bme_bike_quality_dashboard_v3(
                 st.warning(t("源数据没有规格：这里只判断稳定性，不判定 NG，也不计算能力指数。", "Source specifications are unavailable: this view assesses stability only, without NG decisions or capability indices."))
             suspects = chart[chart["data_quality_flag"].fillna("").ne("")]
             if not suspects.empty:
-                st.warning(t(f"{len(suspects)} 个录入疑点已从控制限估计排除，但仍显示在图和明细中。", f"{len(suspects)} data-entry suspects are excluded from limit estimation but remain visible in the chart and detail."))
+                st.warning(t(f"发现 {len(suspects)} 个疑似录入错误：图上仍然显示，但不参与控制限计算。", f"{len(suspects)} data-entry suspects are excluded from limit estimation but remain visible in the chart and detail."))
         elif method == "pchart":
             chart, limits = build_p_chart_data(data)
             fig = go.Figure()
@@ -14224,11 +14224,11 @@ def render_bme_bike_quality_dashboard_v3(
         lambda value: value if len(value) <= 34 else value[:33] + "…"
     )
     if pareto.empty:
-        st.subheader(t("4 · Top 问题 Pareto", "4 · Top Issue Pareto"))
+        st.subheader(t("4 · 主要质量问题 Pareto", "4 · Top Issue Pareto"))
         st.info(t("当前没有问题 Pareto 数据。", "No issue Pareto data is available."))
     else:
         render_chart_heading(
-            "4 · Top 问题 Pareto",
+            "4 · 主要质量问题 Pareto",
             "4 · Top Issue Pareto",
             "直接识别当前筛选范围内贡献最大的真实问题和检查点。",
             "Directly identify the real issues and checkpoints contributing most in the current scope.",
@@ -14249,13 +14249,13 @@ def render_bme_bike_quality_dashboard_v3(
             f"Top issue: {top_issue['issue_driver']} with {top_issue['defect_qty']:,.0f} defects ({top_issue['defect_qty'] / total_defects:.1%} of defects shown); {missing_issue_alerts:,} alerts without a specific issue are excluded from the ranking.",
         ))
 
-    st.subheader(t("5 · 客户质量", "5 · Customer Quality"))
+    st.subheader(t("5 · 客诉质量情况", "5 · Customer Quality"))
     scoped_nc = customer_nc[customer_nc["supplier"].isin(selected_suppliers) & pd.to_datetime(customer_nc["date"], errors="coerce").dt.date.between(start_date, end_date)].copy() if not customer_nc.empty else pd.DataFrame()
     ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
     tektro_nc = scoped_nc[scoped_nc["supplier"].eq("TEKTRO")] if not scoped_nc.empty else pd.DataFrame()
     render_kpi_cards([
-        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"PO关联覆盖 {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked coverage {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "medium"},
-        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"唯一PO订单量 {ppm['ordered_qty']:,.0f}", f"Unique-PO ordered qty {ppm['ordered_qty']:,.0f}"), "level": "medium"},
+        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"已关联PO的NC占比 {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked coverage {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "medium"},
+        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"用于计算的FSD订单量 {ppm['ordered_qty']:,.0f}", f"Unique-PO ordered qty {ppm['ordered_qty']:,.0f}"), "level": "medium"},
         {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("无订单量分母，不计算 PPM", "No order-quantity denominator; PPM not calculated"), "level": "medium"},
     ])
     if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
@@ -14279,7 +14279,7 @@ def render_bme_bike_quality_dashboard_v3(
         fig.update_layout(height=480, margin=dict(l=20, r=20, t=25, b=30), legend_title_text="")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         st.caption(t("Defect Code 保留源编码，不推断 W / V / M / D 的含义。", "Defect Codes retain source values; meanings of W / V / M / D are not inferred."))
-    st.subheader(t("6 · 制程与返工分析", "6 · Process & Rework Analysis"))
+    st.subheader(t("6 · 生产过程与返工分析", "6 · Process & Rework Analysis"))
     if not cmw_iqc.empty:
         incoming = cmw_iqc.groupby("material_supplier", as_index=False).agg(
             receipts=("source_row", "count"),
@@ -14299,7 +14299,7 @@ def render_bme_bike_quality_dashboard_v3(
             render_chart_heading(
                 "CMW 来料供应商退货 PPM",
                 "CMW Incoming-Supplier Return PPM",
-                "直接比较有真实退货记录的来料供应商质量表现。",
+                "比较各来料供应商的退货情况，优先找出需要改善的供应商。",
                 "Directly compare incoming suppliers with recorded return quantities.",
                 "用退货数量÷来料数量×1,000,000 计算 PPM，并按 PPM 排序。",
                 "Calculate PPM as return quantity divided by incoming quantity times 1,000,000 and rank by PPM.",
@@ -14344,7 +14344,7 @@ def render_bme_bike_quality_dashboard_v3(
             render_chart_heading(
                 "CMW 返工流程周期趋势",
                 "CMW Rework Workflow Lead-Time Trend",
-                "观察已关闭返工申请的流程周期是否改善，并同时保留月度处理量。",
+                "看每个月结案的返工申请用了多久，以及当月处理了多少单。",
                 "Track whether closed rework-application workflow lead time is improving while retaining monthly throughput.",
                 "按申请月份计算已关闭记录的中位数；仅当月样本不少于 5 条时显示 P90。处理量在下方独立成图。",
                 "Calculate the median for closed records by application month; show P90 only for months with at least five records. Throughput is charted separately below.",
@@ -14386,7 +14386,7 @@ def render_bme_bike_quality_dashboard_v3(
             render_chart_heading(
                 "CMW 未关闭返工老化",
                 "CMW Open-Rework Aging",
-                "直接看到仍未关闭的返工申请及其持续时间。",
+                "查看哪些返工申请还没有结案，以及已经持续了多少天。",
                 "Directly show rework applications that remain open and their elapsed time.",
                 "未关闭天数为当前时间减申请时间，按型号逐条展示。",
                 "Open days equal current time minus application time and are shown by model for each record.",
@@ -14854,16 +14854,16 @@ def _render_bme_data_map(events: pd.DataFrame) -> None:
     api_count = int(access[t("接入方式", "Access Method")].eq("API").sum())
     missing_count = len(expected_stages) - len(connected.intersection(expected_stages))
 
-    st.markdown(f"### {t('BME 数据接入地图', 'BME Data Connection Map')}")
+    st.markdown(f"### {t('BME 数据来源与覆盖情况', 'BME Data Connection Map')}")
     st.caption(t(
-        "按当前供应商、质量关卡和日期筛选展示数据覆盖；本地工作簿属于手动 Excel，不等同于 API 自动同步。",
+        "这里显示当前筛选范围内，各供应商有哪些质量数据。现在的数据来自人工更新的 Excel，并不是系统自动同步。",
         "Data coverage follows the current supplier, quality-gate, and date filters. Local workbooks are Manual Excel, not API synchronization.",
     ))
     render_kpi_cards([
-        {"label": t("已接入数据类型", "Connected Data Types"), "value": f"{len(connected.intersection(expected_stages))}/{len(expected_stages)}", "note": t("按质量关卡计", "By quality gate"), "level": "medium"},
-        {"label": t("手动 Excel", "Manual Excel"), "value": f"{manual_count}", "note": t("需要人工更新文件", "Requires file refresh"), "level": "medium"},
+        {"label": t("已有数据的环节", "Connected Data Types"), "value": f"{len(connected.intersection(expected_stages))}/{len(expected_stages)}", "note": t("按质量环节统计", "By quality gate"), "level": "medium"},
+        {"label": t("Excel 手工更新", "Manual Excel"), "value": f"{manual_count}", "note": t("需要人工更新文件", "Requires file refresh"), "level": "medium"},
         {"label": "API", "value": f"{api_count}", "note": t("当前尚无 BME API", "No BME API currently"), "level": "high" if api_count == 0 else "low"},
-        {"label": t("未接入类型", "Missing Types"), "value": f"{missing_count}", "note": t("缺失不代表无风险", "Missing is not no risk"), "level": "high" if missing_count else "low"},
+        {"label": t("暂无数据的环节", "Missing Types"), "value": f"{missing_count}", "note": t("没有数据不代表没有质量风险", "Missing is not no risk"), "level": "high" if missing_count else "low"},
     ])
 
     if suppliers:
@@ -14872,13 +14872,13 @@ def _render_bme_data_map(events: pd.DataFrame) -> None:
         text_values = pivot.map(lambda value: f"{int(value):,}" if pd.notna(value) else "-")
         source_files = sorted(events.get("source_file", pd.Series(dtype=object)).dropna().astype(str).loc[lambda values: values.ne("")].unique())
         render_chart_heading(
-            "供应商 × 数据类型覆盖热力图",
+            "各供应商现有数据量",
             "Supplier × Data-Type Coverage Heatmap",
-            "一眼确认每个 BME 供应商当前有哪些质量关卡数据，以及数据量是否足够。",
+            "查看每个 BME 供应商目前有哪些质量环节的数据，以及各有多少条。",
             "See which quality-gate sources are currently available for each BME supplier and whether the volume is sufficient.",
-            "按供应商和质量关卡汇总源记录数；颜色使用对数密度，避免单一大数据源把其他有效来源全部压成浅色。",
+            "按供应商和质量环节统计记录数；颜色经过调整，避免数据量最大的一个环节让其他数据看不清。",
             "Aggregate source-record count by supplier and quality gate; logarithmic density prevents one large source from washing out smaller valid sources.",
-            "单元格显示真实记录数；“-”代表当前没有接入数据，不代表没有质量风险。End of QC 不用 AQL 或 DKL 补造。",
+            "格子里的数字是真实记录数；“-”表示当前没有数据，不代表没有质量风险。End of QC 不会用 AQL 或 DKL 数据代替。",
             "Cells show actual record counts. A dash means the source is not connected, not that quality risk is absent. End of QC is not fabricated from AQL or DKL.",
             " + ".join(source_files) if source_files else "BME Database",
             "bme_v4_data_map_info",
