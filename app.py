@@ -13618,16 +13618,6 @@ def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
 
 def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
     """Render BME with the same vertical analysis chain as the main ZX cockpit."""
-    st.markdown(
-        f"""
-        <div class="hero" style="margin-bottom:18px;">
-          <div class="hero-kicker">BME · BIKE COMMUNITY</div>
-          <div class="hero-title">{html.escape(t('自行车工厂质量分析', 'Bike Factory Quality Analysis'))}</div>
-          <div class="hero-subtitle">{html.escape(t('数据地图 → 聚类 → 重点提取 → Pareto → 趋势 → 更多分析', 'Data map → cluster → focus extraction → Pareto → trend → more analysis'))}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
     if events.empty:
         st.error(t("未读取到 BME 数据，请检查 BME Database 文件夹。", "No BME data was loaded. Check the BME Database folder."))
         return
@@ -13639,6 +13629,20 @@ def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
     min_date = dated.min().date() if not dated.empty else today
     max_date = min(dated.max().date(), today) if not dated.empty else today
     default_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
+
+    st.markdown(
+        f"""
+        <div class="hero" style="margin-bottom:14px;">
+          <div class="hero-kicker">NEA {html.escape(t('质量管理平台', 'QUALITY PLATFORM'))}</div>
+          <div class="hero-title">BME Alert {html.escape(t('看板', 'Dashboard'))}</div>
+          <div class="hero-meta">
+            <span class="hero-chip">{html.escape(t('供应商', 'Suppliers'))}: FSD · CMW · TEKTRO</span>
+            <span class="hero-chip">{html.escape(t('数据周期', 'Data period'))}: {default_start} - {max_date}</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.sidebar.markdown("---")
     st.sidebar.markdown(t("**BME 筛选条件**", "**BME Filters**"))
@@ -13671,68 +13675,73 @@ def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
     alerts = view[view["is_alert"]].copy()
     source_label = "BME Database · FSD / CMW / TEKTRO"
 
-    render_chart_heading(
-        "01 数据地图",
-        "01 Data Map",
-        "先确认每家供应商各质量关卡的数据是否接入、覆盖多少记录。",
-        "Confirm source availability and record coverage by supplier and quality gate first.",
-        "按供应商、质量关卡和源指标口径汇总记录数。",
-        "Aggregate records by supplier, quality gate, and source metric scope.",
-        "空白关卡代表数据不可用，不用其他检验类型代替。",
-        "Blank gates mean unavailable data and are not replaced by another inspection type.",
-        source_label,
-        "bme_v3_data_map",
+    with st.expander(t("数据地图", "Data Map"), expanded=False):
+        _render_bme_data_map(events)
+
+    result_text = view["result"].fillna("").astype(str).str.strip()
+    explicit_results = view[result_text.ne("")].copy()
+    explicit_pass = (
+        explicit_results["result"].astype(str).str.upper().str.contains(r"^OK$|^PASS|合格|通过", regex=True).mean()
+        if not explicit_results.empty else np.nan
     )
-    coverage = view.groupby(["supplier", "stage", "metric_scope"], as_index=False).agg(
-        records=("source_row", "count"),
-        dated=("date", lambda values: int(values.notna().sum())),
-        with_po=("order_po", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
-        with_model=("model_item_code", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
-        with_status=("status_available", "sum"),
-    )
-    map_source = coverage.groupby(["supplier", "stage"], as_index=False)["records"].sum()
-    map_pivot = map_source.pivot(index="supplier", columns="stage", values="records").reindex(index=suppliers, columns=stages)
-    map_text = map_pivot.map(lambda value: f"{int(value):,}" if pd.notna(value) else "-")
-    fig = go.Figure(go.Heatmap(
-        z=map_pivot.fillna(0).values,
-        x=map_pivot.columns,
-        y=map_pivot.index,
-        text=map_text.values,
-        texttemplate="%{text}",
-        colorscale=[[0, "#f1f4f8"], [0.35, "#b9c4ff"], [1, "#3341c4"]],
-        colorbar=dict(title=t("记录数", "Records")),
-        hovertemplate="Supplier=%{y}<br>Gate=%{x}<br>Records=%{text}<extra></extra>",
-    ))
-    fig.update_layout(height=320, margin=dict(l=40, r=20, t=20, b=30), paper_bgcolor="#ffffff")
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    with st.expander(t("查看数据覆盖明细", "View Coverage Detail"), expanded=False):
-        dataframe_with_format(coverage, height=360)
-        st.info(
-            t(
-                "FSD 没有 End of QC Sheet；AQL 和 DKL 保持独立，不补造 End of QC。",
-                "FSD has no End of QC sheet; AQL and DKL remain separate and do not fabricate End of QC.",
-            ),
-            icon=":material/info:",
+    measured = view[view["measured_value"].notna()].copy()
+    specified = measured[measured["spec_low"].notna() | measured["spec_high"].notna()].copy()
+    if specified.empty:
+        parameter_compliance = np.nan
+    else:
+        parameter_ng = (
+            (specified["spec_low"].notna() & specified["measured_value"].lt(specified["spec_low"]))
+            | (specified["spec_high"].notna() & specified["measured_value"].gt(specified["spec_high"]))
         )
+        parameter_compliance = 1 - float(parameter_ng.mean())
+    rework = view[view["stage"].eq("REWORK")]
+    open_rework = int((~rework["status"].eq("Closed")).sum()) if not rework.empty else 0
+    identified_items = view["model_item_code"].fillna("").astype(str).str.strip().ne("")
+    render_kpi_cards(
+        [
+            {"label": t("明确结果通过率", "Explicit Result Pass Rate"), "value": pct(explicit_pass) if pd.notna(explicit_pass) else "N/A", "note": t(f"有明确结果 {len(explicit_results):,} 条", f"{len(explicit_results):,} records with explicit results"), "level": "low" if pd.notna(explicit_pass) and explicit_pass >= 0.95 else "medium"},
+            {"label": t("参数规格符合率", "Parameter Compliance"), "value": pct(parameter_compliance) if pd.notna(parameter_compliance) else "N/A", "note": t(f"有源规格 {len(specified):,} 条", f"{len(specified):,} records with source limits"), "level": "low" if pd.notna(parameter_compliance) and parameter_compliance >= 0.98 else "medium"},
+            {"label": t("Alert 记录占比", "Alert-record Share"), "value": pct(len(alerts) / len(view)) if len(view) else "N/A", "note": t(f"{len(alerts):,} / {len(view):,} 条源记录", f"{len(alerts):,} / {len(view):,} source records"), "level": "high" if len(alerts) / len(view) >= 0.1 else "medium"},
+            {"label": t("触发 Alert", "Triggered Alerts"), "value": f"{len(alerts):,}", "note": t("按源结果、NC、规格或流程状态", "From source result, NC, specification, or workflow status"), "level": "high" if len(alerts) else "low"},
+            {"label": t("未关闭返工", "Rework Not Closed"), "value": f"{open_rework:,}", "note": t("保留源流程状态", "Source workflow status retained"), "level": "high" if open_rework else "low"},
+            {"label": t("Model / Item 覆盖率", "Model / Item Coverage"), "value": pct(float(identified_items.mean())) if len(view) else "N/A", "note": t(f"已识别 {int(identified_items.sum()):,} / {len(view):,}", f"Identified {int(identified_items.sum()):,} / {len(view):,}"), "level": "low" if len(view) and identified_items.mean() >= 0.95 else "medium"},
+        ],
+        variant="zx-top",
+    )
 
     render_chart_heading(
-        "02 供应商 × 质量关卡聚类分析",
-        "02 Supplier × Quality-Gate Cluster Analysis",
-        "找出 Alert 占比和 Alert 数量同时偏高的供应商制程组合。",
-        "Locate supplier-process combinations with both elevated alert share and alert volume.",
-        "以 Alert 记录占比和 Alert 数量为两轴做确定性 K-means 聚类。",
-        "Use deterministic K-means on alert-record share and alert volume.",
-        "气泡大小代表源记录量；聚类用于分组，不代替真实规格判定。",
-        "Bubble size represents source volume; clustering groups risk patterns and does not replace specification judgment.",
+        "高风险产品聚类分析",
+        "High-Risk Product Cluster Analysis",
+        "像 Textile ZX 一样，优先定位 Alert 占比和 Alert 数量同时偏高的 Model / Item。",
+        "As on Textile ZX, prioritize models/items with both elevated alert share and alert volume.",
+        "以 Model / Item 的收缩后 Alert 占比和 Alert 数量为两轴做确定性 K-means 聚类；20 条先验记录用于降低单条记录的极端值。",
+        "Use deterministic K-means on Bayesian-shrunk model/item alert share and alert volume; a 20-record prior reduces single-record extremes.",
+        "气泡大小代表源记录量；聚类用于分组，不代替真实规格判定，原始占比仍保留在悬停信息中。",
+        "Bubble size represents source volume. Clustering groups risk patterns and does not replace specification judgment; raw share remains in hover detail.",
         source_label,
         "bme_v3_cluster",
     )
-    cluster_view = view.groupby(["supplier", "stage"], as_index=False).agg(
+    cluster_source = view.copy()
+    cluster_source["risk_item"] = cluster_source["model_item_code"].fillna("").astype(str).str.strip()
+    missing_item = cluster_source["risk_item"].eq("")
+    cluster_source.loc[missing_item, "risk_item"] = cluster_source.loc[missing_item, "item_name"].fillna("").astype(str).str.strip()
+    missing_item = cluster_source["risk_item"].eq("")
+    cluster_source.loc[missing_item, "risk_item"] = (
+        cluster_source.loc[missing_item, "supplier"].astype(str)
+        + " · "
+        + cluster_source.loc[missing_item, "stage"].astype(str)
+    )
+    cluster_view = cluster_source.groupby(["supplier", "risk_item"], as_index=False).agg(
         records=("source_row", "count"),
         alerts=("is_alert", "sum"),
         defects=("defect_qty", "sum"),
     )
-    cluster_view["alert_share"] = cluster_view["alerts"] / cluster_view["records"].replace(0, np.nan)
+    global_alert_share = float(cluster_view["alerts"].sum() / cluster_view["records"].sum()) if cluster_view["records"].sum() else 0.0
+    prior_records = 20.0
+    cluster_view["raw_alert_share"] = cluster_view["alerts"] / cluster_view["records"].replace(0, np.nan)
+    cluster_view["alert_share"] = (
+        cluster_view["alerts"] + prior_records * global_alert_share
+    ) / (cluster_view["records"] + prior_records)
     cluster_points = np.column_stack([
         cluster_view["alert_share"].fillna(0).to_numpy(dtype=float) * 100,
         np.log1p(cluster_view["alerts"].fillna(0).to_numpy(dtype=float)),
@@ -13757,15 +13766,15 @@ def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
         for rank, cluster_id in enumerate(ordered_clusters)
     }
     cluster_view["cluster"] = cluster_view["cluster_id"].map(cluster_name_map)
-    cluster_view["gate_label"] = cluster_view["supplier"] + " · " + cluster_view["stage"]
+    cluster_view["item_label"] = cluster_view["supplier"] + " · " + cluster_view["risk_item"]
     fig = px.scatter(
         cluster_view,
         x="alerts",
         y="alert_share",
         size="records",
         color="cluster",
-        text="gate_label",
-        hover_data={"supplier": True, "stage": True, "records": True, "defects": True, "alert_share": ":.1%"},
+        text="risk_item",
+        hover_data={"supplier": True, "risk_item": True, "records": True, "defects": True, "raw_alert_share": ":.1%", "alert_share": ":.1%"},
         labels={"alerts": t("Alert 记录数", "Alert Records"), "alert_share": t("Alert 记录占比", "Alert-record Share"), "cluster": t("聚类", "Cluster")},
         color_discrete_sequence=["#168a5b", "#60a5fa", "#d99a00", "#c01048"],
         size_max=48,
@@ -13776,12 +13785,12 @@ def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     render_chart_heading(
-        "03 重点数据提取",
-        "03 Priority Data Extraction",
-        "把聚类中最需要优先复盘的供应商与质量关卡直接提取出来。",
-        "Extract the supplier and quality-gate combinations requiring review first.",
-        "按聚类优先级、Alert 占比和 Alert 数量排序。",
-        "Rank by cluster priority, alert-record share, and alert volume.",
+        "Top 风险 Model / Item 帕累托",
+        "Top Risk Model / Item Pareto",
+        "把聚类中最需要优先复盘的产品直接提取出来。",
+        "Extract the products requiring review first from the cluster analysis.",
+        "沿用聚类的 Model / Item 范围，按 Alert 占比和 Alert 数量形成风险分排序。",
+        "Reuse the clustered model/item scope and rank by a score combining alert share and alert volume.",
         "这里只做优先级排序，最终结论仍回到源结果、NC、规格和流程状态。",
         "This is prioritization only; final conclusions remain grounded in source results, NC, specifications, and workflow status.",
         source_label,
@@ -13791,24 +13800,36 @@ def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
     priority_view = cluster_view.assign(
         priority_rank=cluster_view["cluster_id"].map(cluster_priority_map)
     ).sort_values(["priority_rank", "alert_share", "alerts"], ascending=False)
-    priority_cards = []
-    for _, row in priority_view.head(4).iterrows():
-        priority_cards.append({
-            "label": row["gate_label"],
-            "value": f"{int(row['alerts']):,}",
-            "note": t(f"Alert占比 {row['alert_share']:.1%} · 源记录 {int(row['records']):,}", f"Alert share {row['alert_share']:.1%} · {int(row['records']):,} source records"),
-            "level": "high" if row["cluster"] == t("优先改善", "Priority Improvement") else "medium",
-        })
-    render_kpi_cards(priority_cards)
+    priority_view["risk_score"] = priority_view["alert_share"].fillna(0) * 100 + np.log1p(priority_view["alerts"]) * 5
+    top_count = min(12, max(3, int(np.ceil(len(priority_view) * 0.2))))
+    top_priority = priority_view.head(top_count).sort_values("risk_score")
+    fig = px.bar(
+        top_priority,
+        x="risk_score",
+        y="risk_item",
+        color="supplier",
+        orientation="h",
+        text="risk_score",
+        labels={"risk_score": t("风险分", "Risk Score"), "risk_item": "Model / Item", "supplier": t("供应商", "Supplier")},
+        color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"],
+    )
+    fig.update_traces(texttemplate="%{text:.1f}", textposition="outside", cliponaxis=False)
+    fig.update_layout(height=max(340, 42 * len(top_priority) + 130), margin=dict(l=30, r=35, t=30, b=35), legend_title_text="")
+    fig.update_yaxes(
+        type="category",
+        categoryorder="array",
+        categoryarray=top_priority["risk_item"].astype(str).tolist(),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     dataframe_with_format(
-        priority_view[["supplier", "stage", "cluster", "records", "alerts", "alert_share", "defects"]].head(12),
+        priority_view[["supplier", "risk_item", "cluster", "records", "alerts", "alert_share", "risk_score", "defects"]].head(12),
         column_config={"alert_share": st.column_config.ProgressColumn(t("Alert记录占比", "Alert-record Share"), format="%.1f%%", min_value=0, max_value=1)},
         height=330,
     )
 
     render_chart_heading(
-        "04 Top 问题 Pareto",
-        "04 Top Issue Pareto",
+        "Top 问题 Pareto",
+        "Top Issue Pareto",
         "找出当前筛选范围内贡献最大的真实问题和检查点。",
         "Identify the real issues and checkpoints contributing most in the current scope.",
         "只对已触发 Alert 的记录按问题字段汇总。",
@@ -13837,8 +13858,8 @@ def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     render_chart_heading(
-        "05 Alert 趋势",
-        "05 Alert Trend",
+        "Alert 趋势",
+        "Alert Trend",
         "按月观察各供应商风险记录是否改善或恶化。",
         "Track whether supplier alert records improve or worsen by month.",
         "按月和供应商汇总有日期的 Alert 记录。",
@@ -16121,15 +16142,7 @@ st.sidebar.markdown(
 )
 
 if active_scope_key == "BME_CMW":
-    render_zx_alert_dashboard(
-        pd.DataFrame(),
-        pd.DataFrame(),
-        pd.DataFrame(),
-        extra_alerts=bme_events_to_alerts(bme_events),
-        supplier_scope_options=sorted(bme_events["supplier"].dropna().astype(str).unique()),
-        scope_mode="BME",
-        bme_source_events=bme_events,
-    )
+    render_bme_bike_quality_dashboard_v3(bme_events)
     st.stop()
 
 if active_scope_key == "QUALITY_ALERT":

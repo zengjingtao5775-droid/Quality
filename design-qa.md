@@ -1,102 +1,64 @@
-# ZX Alert DPCP Clone — Design QA
+# BME follows Textile ZX — Design QA
 
-## Source truth and normalized target
+## Source truth and target
 
-- Source visual:
-  `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-734ad47d-0fd0-4569-b349-db3de8e759ea.png`
-- Source pixels: `2824 × 5931`
-- Implementation route:
-  `http://127.0.0.1:8502/?scope=ZX&page=alert&lang=zh`
-- Desktop CSS viewport: `1280 × 720`
-- Browser device pixel ratio: `2`
-- Browser screenshot pixels: `1280 × 720` (browser-normalized capture)
-- Source regions were cropped and downsampled to `1280 × 720` before comparison.
+- Source visual: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-bf32ce3a-f9dc-4a51-8128-9c30f85d4253.png`
+- Source pixels: `2932 × 4166` RGBA.
+- Implementation route: `http://127.0.0.1:8505/?scope=BME_CMW&lang=zh`
+- CSS viewport: `1280 × 720`; device pixel ratio: `2`.
+- Implementation screenshots:
+  - `/private/tmp/bme-textile-style-implementation.png`
+  - `/private/tmp/bme-textile-style-risk-final.png`
+- Same-input comparisons:
+  - `/private/tmp/bme-textile-style-comparison-top.jpg`
+  - `/private/tmp/bme-textile-style-comparison-risk.jpg`
+- State: BME default filters, data map collapsed for the top comparison; risk cluster and Top Risk Model / Item section for the focused comparison.
 
-## Same-input comparison evidence
+## Full-view comparison evidence
 
-- Header / filters / cards comparison:
-  `/private/tmp/zx-alert-dpcp-v2-comparison-top.png`
-- Two-column chart comparison:
-  `/private/tmp/zx-alert-dpcp-v2-comparison-charts.png`
-- Final implementation captures:
-  - `/private/tmp/zx-alert-dpcp-v2-desktop-top-final.jpg`
-  - `/private/tmp/zx-alert-dpcp-v2-desktop-charts-2.jpg`
-  - `/private/tmp/zx-alert-dpcp-v2-desktop-charts-3.jpg`
-- Responsive capture at `635 × 837`:
-  `/private/tmp/zx-alert-dpcp-v2-top-h.jpg`
+The top comparison places the Textile ZX reference and BME implementation in one `2560 × 720` image. Both use the same application sidebar, hero, supplier/period chips, collapsed data-map row, compact KPI grid, pale blue canvas, white cards, Decathlon-blue accents, and the high-risk cluster as the first major analysis section.
+
+The BME KPI content intentionally differs because BME does not currently contain ZX RPM, NQC, IV, HUGSS shipped-PO, or Jiandaoyun FQC denominators. It uses six source-supported KPIs and does not fabricate the two remaining ZX card slots.
+
+## Focused comparison evidence
+
+The risk comparison places the Textile ZX cluster/Pareto region and BME cluster/Pareto region in one image. BME preserves the same cluster-then-Pareto reading order. Its axes are source-supported BME measures: Bayesian-shrunk Alert-record share and Alert volume. Numeric-looking Model / Item codes are forced to a categorical axis in the Pareto chart.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: Source Sans / Arial-style compact hierarchy, weights,
-  line height, number scale, wrapping, and truncation match the reference
-  density. The implementation deliberately keeps ZX business labels instead of
-  copying DPCP order-alert copy.
-- Spacing and layout rhythm: The alert page hides the application sidebar and
-  uses the DPCP blue edge, white header, `9 + 6` filter grid, alert-type strip,
-  `6 × 2` card grid, and paired chart rows. At narrow width the cards become
-  three columns and charts become one column.
-- Colors and tokens: White panels, `#eef1f4` canvas, `#3546c4` Decathlon blue,
-  pale borders, dark figures, and the yellow / cyan / periwinkle / ochre /
-  purple chart palette match the reference.
-- Image and icon fidelity: The source has no photography or illustration.
-  Material Symbols render the settings, checkbox, info, menu, reset, download,
-  and dropdown icons; Plotly supplies the chart action icons.
-- Copy and content: Structure and control language follow DPCP; counts,
-  filters, alert names, charts, and detail records remain truthful ZX quality
-  data.
+- Fonts and typography: Existing project typography, heavy dashboard title, compact KPI labels, large values, bilingual copy hierarchy, line height, and wrapping are reused from Textile ZX.
+- Spacing and layout rhythm: Sidebar width, hero proportions, chips, data-map expander, three-column KPI grid, section gaps, card radii, and chart widths match the existing Textile ZX system. Six BME KPI cards form two complete rows.
+- Colors and visual tokens: Existing blue gradient sidebar, pale blue page background, white panels, blue top borders, semantic green/amber/red risk colors, and Plotly chart palette are reused.
+- Image quality and assets: The reference contains no photography or custom raster illustration. Existing Decathlon branding, Material Symbols, Plotly controls, and code-owned decorative hero treatment are reused; no placeholder or generated asset was introduced.
+- Copy and content: Page title, navigation, data-map placement, KPI hierarchy, high-risk cluster, Top Risk Model / Item Pareto, issue Pareto, trend, and more-analysis structure follow Textile ZX. BME values remain grounded in FSD/CMW/TEKTRO source data.
 
 ## Interaction and runtime checks
 
-- Twelve alert cards expose real query-state links.
-- Critical card drill-down returns `2,237` matching detail rows.
-- Model search updates the dashboard; Reset reliably clears the search.
-- CSV download, date, supplier, inspection-type, material-supplier, PO/model,
-  and risk controls render and remain usable.
-- Six chart panels render at desktop; chart categories are forced to categorical
-  axes so numeric model and PO codes do not distort the layout.
-- AppTest passed Chinese Alert, English Alert, and the existing Reporting page
-  with zero application exceptions.
-- Browser inspection and server output show no visible Streamlit exception or
-  error panel.
-
-## Jiandaoyun demonstration behavior
-
-- Page loads use the last persisted snapshot and never refresh the API
-  automatically.
-- A successful manual refresh writes normalized data and metadata under
-  `.runtime/jiandaoyun_snapshots/`.
-- FQC, all-factory / third-party Gloves FQC, ZX control-plan, HUGSS shipped PO,
-  and derived PO-coverage datasets use the same persistence mechanism.
-- API caches no longer expire on a timer; a changed refresh token is required
-  for another request.
-- An isolated persistence round-trip test passed for CSV data, boolean/date
-  restoration, metadata mode, and cleanup.
+- BME route renders with zero Streamlit exceptions in AppTest and browser.
+- Data-map expander opens and exposes the manual-Excel/API connection method table.
+- Sidebar filters, date range, supplier, and quality-gate controls render and retain BME scope.
+- Cluster and Top Risk Model / Item Pareto render; categorical Model / Item labels no longer become a continuous numeric axis.
+- Top Risk Pareto is capped at 12 items to avoid an unusable oversized chart.
+- The third `QUALITY_ALERT` route still shows `ZX + BME` and the twelve central Alert cards, with no BME-main cluster section.
+- Browser script state reached `notRunning`; no `stException` panel was present.
 
 ## Comparison history
 
 ### Pass 1 — blocked
 
-- P1: Existing blue product sidebar, rounded cards, large page title, five-card
-  layout, and four charts materially differed from DPCP.
-- P2: Filters were large labeled widgets instead of the compact DPCP grid.
-- Fix: Rebuilt the Alert page shell, filter density, alert strip, twelve-card
-  grid, and six-panel chart layout.
+- P1: BME route incorrectly reused the third central Alert page instead of the Textile ZX main-dashboard structure.
+- Fix: Restored the BME-specific vertical dashboard route and rebuilt its top structure to mirror Textile ZX.
 
 ### Pass 2 — blocked
 
-- P2: Material icon ligatures displayed as words.
-- P2: Numeric-looking Model values were interpreted as continuous axes.
-- P2: Reset did not clear a changed Model filter.
-- P2: Narrow action buttons wrapped vertically.
-- Fix: Bound custom icons to Streamlit's Material Symbols font, forced category
-  axes, assigned explicit callback defaults, and rebalanced action columns.
+- P1: Top Risk Model / Item initially selected hundreds of items and numeric-looking codes produced a continuous axis measured in billions.
+- P2: Raw Alert share over-prioritized one-record products at 100%.
+- Fix: Capped the Pareto at 12 items, forced a categorical axis, and applied a transparent 20-record Bayesian prior while retaining raw share in hover detail.
 
 ### Pass 3 — passed
 
-- Post-fix evidence is recorded in the two combined comparison files above.
-- No actionable P0, P1, or P2 visual or interaction issue remains.
-- P3: DPCP contains additional order-domain filters and loading placeholders;
-  the ZX version keeps only truthful quality-domain controls and populated
-  analysis panels.
+- Post-fix top and focused comparison evidence is listed above.
+- No actionable P0, P1, or P2 fidelity or interaction issue remains.
+- Intentional difference: BME uses six truthful KPI cards rather than fabricating ZX-only RPM, NQC, IV, or FQC metrics.
 
 final result: passed
