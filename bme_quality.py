@@ -194,12 +194,14 @@ def spc_run_rule_flags(values: pd.Series, center: float, ucl: float, lcl: float)
     for end in range(7, len(values)):
         window = side.iloc[end - 7:end + 1]
         if (window.eq(1).all() or window.eq(-1).all()):
-            result.loc[end - 7:end, "eight_one_side"] = True
+            # Mark the point that completes the rule, rather than painting the
+            # whole window as eight separate special-cause events.
+            result.loc[end, "eight_one_side"] = True
     for end in range(5, len(values)):
         window = values.iloc[end - 5:end + 1]
         delta = window.diff().dropna()
         if delta.gt(0).all() or delta.lt(0).all():
-            result.loc[end - 5:end, "six_trend"] = True
+            result.loc[end, "six_trend"] = True
     result["signal"] = result.any(axis=1)
     return result
 
@@ -263,7 +265,8 @@ def build_xbar_r_chart_data(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str
         "incomplete_groups": float((~grouped["n"].eq(5)).sum()),
     }
     chart = pd.concat([chart, spc_run_rule_flags(chart["mean"], center, limits["ucl"], limits["lcl"])], axis=1)
-    stable = not bool(chart["signal"].any()) and not bool(chart["range"].gt(limits["r_ucl"]).any())
+    chart["range_signal"] = chart["range"].gt(limits["r_ucl"]) | chart["range"].lt(limits["r_lcl"])
+    stable = not bool(chart["signal"].any()) and not bool(chart["range_signal"].any())
     limits["stable"] = stable
     if stable and len(values) >= 25:
         std = float(values["value"].std(ddof=1))
@@ -356,7 +359,7 @@ def _load_fsd(root: Path) -> list[pd.DataFrame]:
         has_alert = nc.fillna(0).gt(0) | _negative(result) | issue.ne("")
         frames.append(_frame(
             community="BME", supplier="FSD", supplier_code="FSD", stage=stage,
-            date=_iso_week_date(_col(raw, "Year年"), _col(raw, "Week周")),
+            date=_iso_week_date(_col(raw, "Year年", "Year"), _col(raw, "Week周", "Week")),
             order_po=_text(_col(raw, "P.O.forFrameorBike订单号")),
             model_item_code=_text(_col(raw, "ItemforFrameforkonly")),
             item_name=_text(_col(raw, "Name(formularlinkwithDATABASE)车种名", "Modelname")),
@@ -422,6 +425,19 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
     iqc_path = base / "IQC" / "IQC Daily Report-2026.xlsx"
     if iqc_path.exists():
         raw = _clean_columns(_read_excel(iqc_path, header=1))
+        # The workbook contains thousands of preformatted blank template rows.
+        # Keep only rows that carry an actual IQC business identifier or value.
+        business_row = pd.concat(
+            [
+                _col(raw, "FinishedDate检验完成日期", "ReceivingDate收货日期"),
+                _col(raw, "P/O工单号", "P/O"),
+                _col(raw, "Itemcode料号", "Itemcode"),
+                _col(raw, "component零件名称", "component"),
+                _col(raw, "QTY数量", "数量"),
+            ],
+            axis=1,
+        ).notna().any(axis=1)
+        raw = raw[business_row].copy()
         result = _text(_col(raw, "InspectionResult检验结果", "检验结果"))
         inspected = _number(_col(raw, "QTY数量", "数量"), None)
         defects = _number(_col(raw, "ReturnQTY退货数量", "退货数量"), 0)
@@ -627,8 +643,19 @@ def load_bme_customer_quality(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         "ordered_qty": _number(_col(order_raw, "OrderedQty"), None),
         "model": _text(_col(order_raw, "Model")),
         "item_code": _text(_col(order_raw, "ItemCode")),
+        "subcontractor": _text(_col(order_raw, "SubContractor", "Subcontractor", "SubContractorName")),
     })
-    orders = orders[orders["po"].ne("")].sort_values("ehd").drop_duplicates("po", keep="last").reset_index(drop=True)
+    fsd_name = orders["subcontractor"].str.contains(r"TIANJIN\s*FUJI|FUJI[- ]?TA", case=False, regex=True, na=False)
+    orders = orders[orders["po"].ne("") & fsd_name].copy()
+    # A PO may legitimately contain several FSD model/item lines. Aggregate
+    # their quantities instead of retaining an arbitrary final line.
+    orders = orders.groupby("po", as_index=False).agg(
+        ehd=("ehd", "max"),
+        ordered_qty=("ordered_qty", "sum"),
+        model=("model", lambda values: " / ".join(dict.fromkeys(value for value in values if value))),
+        item_code=("item_code", lambda values: " / ".join(dict.fromkeys(value for value in values if value))),
+        subcontractor=("subcontractor", "first"),
+    )
     return nc, orders
 
 

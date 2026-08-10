@@ -41,6 +41,8 @@ class BmeAnalysisFormulaTest(unittest.TestCase):
         flags = spc_run_rule_flags(pd.Series(range(1, 10)), center=0, ucl=100, lcl=-100)
         self.assertTrue(flags["eight_one_side"].any())
         self.assertTrue(flags["six_trend"].any())
+        self.assertEqual(int(flags["eight_one_side"].sum()), 2)
+        self.assertEqual(int(flags["six_trend"].sum()), 4)
 
     def test_p_chart_uses_weighted_center_and_variable_limits(self) -> None:
         source = pd.DataFrame({"date": pd.to_datetime(["2026-01-01", "2026-01-08"]), "inspected_qty": [10, 100], "defect_qty": [1, 2]})
@@ -58,6 +60,12 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
     def test_fsd_dkl_excludes_other_parts_suppliers(self) -> None:
         dkl = self.events[(self.events["supplier"].eq("FSD")) & (self.events["stage"].eq("DKL"))]
         self.assertEqual(len(dkl), 335)
+        self.assertEqual(int(dkl["date"].notna().sum()), 335)
+
+    def test_cmw_iqc_blank_template_rows_are_excluded(self) -> None:
+        iqc = self.events[(self.events["supplier"].eq("CMW")) & (self.events["stage"].eq("IQC"))]
+        self.assertEqual(len(iqc), 3329)
+        self.assertFalse(iqc["date"].isna().any())
 
     def test_tektro_parameter_retains_hose_length(self) -> None:
         pqc = self.events[(self.events["supplier"].eq("TEKTRO")) & (self.events["stage"].eq("PQC"))]
@@ -69,12 +77,30 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         result = calculate_fsd_customer_ppm(self.customer, self.orders, "2024-01-01", "2026-12-31")
         self.assertGreaterEqual(result["coverage"], 0.90)
         self.assertTrue(np.isfinite(result["ppm"]))
+        self.assertTrue(self.orders["subcontractor"].str.contains("FUJI-TA", case=False).all())
+        self.assertEqual(float(self.orders.loc[self.orders["po"].eq("751701224"), "ordered_qty"].iloc[0]), 192.0)
+
+    def test_current_period_fsd_kpis_match_source_recalculation(self) -> None:
+        start, end = pd.Timestamp("2025-08-10"), pd.Timestamp("2026-08-10")
+        period = self.events[self.events["date"].notna() & self.events["date"].between(start, end)]
+        inspected = period[
+            period["supplier"].eq("FSD")
+            & period["stage"].isin(["AQL", "DKL"])
+            & period["inspected_qty"].gt(0)
+        ]
+        self.assertEqual(float(inspected["defect_qty"].sum()), 746.0)
+        self.assertEqual(float(inspected["inspected_qty"].sum()), 13826.0)
+        ppm = calculate_fsd_customer_ppm(self.customer, self.orders, start, end)
+        self.assertEqual(ppm["nc_qty"], 7875.0)
+        self.assertEqual(ppm["ordered_qty"], 2320884.0)
+        self.assertAlmostEqual(ppm["ppm"], 3393.103662225256)
 
     def test_tektro_lab_uses_complete_subgroups_of_five(self) -> None:
         lab = self.events[(self.events["supplier"].eq("TEKTRO")) & (self.events["stage"].eq("LAB"))]
         chart, limits = build_xbar_r_chart_data(lab)
         self.assertEqual(len(chart), 164)
         self.assertEqual(int(limits["incomplete_groups"]), 8)
+        self.assertIn("range_signal", chart.columns)
 
     def test_torque_suspects_remain_visible_but_are_flagged(self) -> None:
         torque = self.events[(self.events["supplier"].eq("CMW")) & (self.events["stage"].eq("MACHINE"))]
