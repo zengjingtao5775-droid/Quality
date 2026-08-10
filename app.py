@@ -25,6 +25,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from openpyxl import load_workbook
+from plotly.subplots import make_subplots
+
+from bme_quality import (
+    bme_events_to_alerts,
+    bme_source_fingerprint,
+    load_bme_quality_events,
+)
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -1792,11 +1799,11 @@ FACTORIES = {
         "incoming": None,
     },
     "BME_CMW": {
-        "name": "BME / CMW 自行车",
+        "name": "BME / 自行车工厂",
         "community": "BME",
         "community_name": "BME / Bikes",
-        "supplier": "CMW",
-        "location": "BME-CMW",
+        "supplier": "FSD + CMW + TEKTRO",
+        "location": "BME",
         "finished": None,
         "finished_files": [
             Path("BME Database/FQC Daily Report_2026.xlsx"),
@@ -1854,13 +1861,23 @@ DASHBOARD_SCOPES = {
     },
     "BME_CMW": {
         "code": "BME",
-        "label_cn": "BME / CMW 自行车",
-        "label_en": "BME / CMW Bikes",
-        "subtitle_cn": "Bike community",
-        "subtitle_en": "Bike community",
+        "label_cn": "BME 自行车质量",
+        "label_en": "BME Bike Quality",
+        "subtitle_cn": "FSD · CMW · TEKTRO",
+        "subtitle_en": "FSD · CMW · TEKTRO",
         "factories": ["BME_CMW"],
         "section_cn": "Community",
         "section_en": "Community",
+    },
+    "QUALITY_ALERT": {
+        "code": "AL",
+        "label_cn": "质量 Alert 总览",
+        "label_en": "Quality Alert Overview",
+        "subtitle_cn": "ZX + BME",
+        "subtitle_en": "ZX + BME",
+        "factories": ["ZX"],
+        "section_cn": "Cockpit",
+        "section_en": "Cockpit",
     },
     "SE_TENT": {
         "code": "SE",
@@ -1881,7 +1898,8 @@ DASHBOARD_VISIBILITY = {
     "GENERAL": False,
     "ZX": True,
     "ZX_V2": False,
-    "BME_CMW": False,
+    "BME_CMW": True,
+    "QUALITY_ALERT": True,
     "SE_TENT": False,
 }
 DEFAULT_DASHBOARD_SCOPE = "ZX"
@@ -13283,23 +13301,238 @@ def build_product_qc_provenance(finished: pd.DataFrame, product_codes: list[str]
     return detail.sort_values(["cc_order", "defect_qty"], ascending=[True, False]).drop(columns=["cc_order"])
 
 
+@st.cache_data(show_spinner=False)
+def load_bme_quality_events_cached(
+    fingerprint: tuple[tuple[str, int, int], ...],
+) -> pd.DataFrame:
+    _ = fingerprint
+    return load_bme_quality_events(ROOT)
+
+
+def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
+    st.markdown(
+        f"""
+        <div class="hero" style="margin-bottom:18px;">
+          <div class="hero-kicker">BME · BIKE COMMUNITY</div>
+          <div class="hero-title">{html.escape(t('自行车工厂质量总览', 'Bike Factory Quality Overview'))}</div>
+          <div class="hero-subtitle">{html.escape(t('FSD、CMW、TEKTRO · 管理总览 + 工程下钻', 'FSD, CMW, TEKTRO · management overview + engineering drill-down'))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if events.empty:
+        st.error(t("未读取到 BME 数据，请检查 BME Database 文件夹。", "No BME data was loaded. Check the BME Database folder."))
+        return
+
+    suppliers = sorted(events["supplier"].dropna().astype(str).unique())
+    stages = [stage for stage in ["IQC", "PQC", "AQL", "DKL", "MACHINE", "LAB", "REWORK"] if stage in set(events["stage"])]
+    dated = events["date"].dropna()
+    min_date = dated.min().date() if not dated.empty else dt.date.today()
+    today = dt.date.today()
+    max_date = min(dated.max().date(), today) if not dated.empty else today
+    future_records = int((dated.dt.date > today).sum()) if not dated.empty else 0
+    default_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
+
+    filter_cols = st.columns([1.1, 1.2, 1.35], gap="small")
+    selected_suppliers = filter_cols[0].multiselect(
+        t("供应商", "Supplier"), suppliers, default=suppliers, key="bme_supplier_filter"
+    )
+    selected_stages = filter_cols[1].multiselect(
+        t("质量关卡", "Quality Gate"), stages, default=stages, key="bme_stage_filter"
+    )
+    selected_dates = filter_cols[2].date_input(
+        t("数据周期", "Period"), value=(default_start, max_date), min_value=min_date,
+        max_value=max_date, key="bme_date_filter"
+    )
+    view = events[events["supplier"].isin(selected_suppliers) & events["stage"].isin(selected_stages)].copy()
+    if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+        start_date, end_date = selected_dates
+        view = view[view["date"].isna() | view["date"].dt.date.between(start_date, end_date)]
+
+    alerts = view[view["is_alert"]].copy()
+    _text_result = view["result"].fillna("").astype(str).str.strip()
+    result_records = view[_text_result.ne("")]
+    pass_share = (
+        result_records["result"].astype(str).str.upper().str.contains(r"^OK$|^PASS|合格|通过", regex=True).mean()
+        if not result_records.empty else np.nan
+    )
+    measured = view[view["measured_value"].notna()]
+    spec_covered = measured[measured["spec_low"].notna() | measured["spec_high"].notna()]
+    if not spec_covered.empty:
+        outside_spec = (
+            (spec_covered["spec_low"].notna() & spec_covered["measured_value"].lt(spec_covered["spec_low"]))
+            | (spec_covered["spec_high"].notna() & spec_covered["measured_value"].gt(spec_covered["spec_high"]))
+        )
+        spec_compliance = 1 - outside_spec.mean()
+    else:
+        spec_compliance = np.nan
+    rework = view[view["stage"].eq("REWORK")]
+    open_rework = int((~rework["status"].eq("Closed")).sum()) if not rework.empty else 0
+    effective_dated = dated[dated.dt.date <= today]
+    latest = effective_dated.max().strftime("%Y-%m-%d") if not effective_dated.empty else "-"
+    render_kpi_cards(
+        [
+            {"label": t("覆盖供应商", "Suppliers"), "value": f"{view['supplier'].nunique():,}", "note": "FSD · CMW · TEKTRO", "level": "low"},
+            {"label": t("触发 Alert", "Triggered Alerts"), "value": f"{len(alerts):,}", "note": t("按源结果、NC或规格判断", "From source result, NC, or specification"), "level": "high" if len(alerts) else "low"},
+            {"label": t("明确结果通过率", "Explicit Result Pass Share"), "value": pct(pass_share) if pd.notna(pass_share) else "N/A", "note": t("仅含有明确结果的记录", "Only records with explicit results"), "level": "low" if pd.notna(pass_share) and pass_share >= 0.95 else "medium"},
+            {"label": t("参数规格符合率", "Parameter Compliance"), "value": pct(spec_compliance) if pd.notna(spec_compliance) else "N/A", "note": t("只计算存在规格上下限的数据", "Only measurements with source limits"), "level": "low" if pd.notna(spec_compliance) and spec_compliance >= 0.98 else "medium"},
+            {"label": t("未关闭返工", "Rework Not Closed"), "value": f"{open_rework:,}", "note": t("保留源流程状态", "Source workflow status retained"), "level": "high" if open_rework else "low"},
+            {"label": t("最新有效日期", "Latest Dated Record"), "value": latest, "note": t(f"未来日期记录 {future_records:,} 条，默认排除", f"{future_records:,} future-dated records excluded by default"), "level": "medium" if future_records else "low"},
+        ]
+    )
+
+    st.info(
+        t(
+            "FSD 工作簿没有 End of QC Sheet，本页明确标记为 Data unavailable；AQL 和 DKL 保持独立，不替代 End of QC。",
+            "The FSD workbook has no End of QC sheet. It is marked Data unavailable; AQL and DKL remain separate and do not substitute for End of QC.",
+        ),
+        icon=":material/info:",
+    )
+
+    st.markdown(f"### {t('供应商 × 质量关卡', 'Supplier × Quality Gate')}")
+    matrix_source = (
+        view.groupby(["supplier", "stage"], as_index=False)
+        .agg(records=("source_row", "count"), alerts=("is_alert", "sum"))
+    )
+    if not matrix_source.empty:
+        matrix_source["alert_share"] = matrix_source["alerts"] / matrix_source["records"].replace(0, np.nan)
+        pivot = matrix_source.pivot(index="supplier", columns="stage", values="alert_share").reindex(index=suppliers, columns=stages)
+        text_values = matrix_source.copy()
+        text_values["label"] = text_values.apply(lambda row: f"{int(row['alerts']):,} / {int(row['records']):,}", axis=1)
+        text_pivot = text_values.pivot(index="supplier", columns="stage", values="label").reindex(index=suppliers, columns=stages).fillna("-")
+        fig = go.Figure(data=go.Heatmap(
+            z=pivot.values, x=pivot.columns, y=pivot.index, text=text_pivot.values,
+            texttemplate="%{text}", colorscale=[[0, "#e8f7f0"], [0.2, "#f7d66d"], [1, "#c01048"]],
+            zmin=0, zmax=1, colorbar=dict(title=t("Alert记录占比", "Alert-record share"), tickformat=".0%"),
+            hovertemplate="Supplier=%{y}<br>Gate=%{x}<br>Alert share=%{z:.1%}<br>Alerts / records=%{text}<extra></extra>",
+        ))
+        fig.update_layout(height=330, margin=dict(l=40, r=20, t=20, b=30), paper_bgcolor="#ffffff")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.caption(t("单元格为 Alert记录数 / 当前源记录数；它用于定位关卡，不等同于跨供应商不良率。", "Cells show alert records / source records. This locates gates and is not a cross-supplier defect rate."))
+
+    left, right = st.columns(2, gap="small")
+    with left:
+        summary = alerts.groupby(["supplier", "stage"], as_index=False).size().rename(columns={"size": "alerts"})
+        if summary.empty:
+            st.info(t("当前筛选没有 Alert。", "No alerts under the current filters."))
+        else:
+            fig = px.bar(summary, x="supplier", y="alerts", color="stage", barmode="stack",
+                         title=t("Alert 按供应商与关卡", "Alerts by Supplier and Gate"),
+                         color_discrete_sequence=["#3341c4", "#1698c4", "#d99a00", "#7c3aed", "#c01048", "#168a5b", "#e85d68"])
+            fig.update_layout(height=360, margin=dict(l=20, r=20, t=60, b=30), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with right:
+        trend = alerts.dropna(subset=["date"]).copy()
+        if trend.empty:
+            st.info(t("当前筛选没有可用日期趋势。", "No dated trend under the current filters."))
+        else:
+            trend["month"] = trend["date"].dt.to_period("M").dt.to_timestamp()
+            monthly = trend.groupby(["month", "supplier"], as_index=False).size().rename(columns={"size": "alerts"})
+            fig = px.line(monthly, x="month", y="alerts", color="supplier", markers=True,
+                          title=t("月度 Alert 趋势", "Monthly Alert Trend"),
+                          color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"])
+            fig.update_layout(height=360, margin=dict(l=20, r=20, t=60, b=30), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    analysis_labels = {
+        "pareto": t("问题 Pareto", "Issue Pareto"),
+        "parameter": t("参数 / 控制图", "Parameter / Control Chart"),
+        "detail": t("可审计明细", "Auditable Detail"),
+        "coverage": t("数据覆盖", "Data Coverage"),
+    }
+    selected_analysis = st.segmented_control(
+        t("工程下钻", "Engineering Drill-down"), list(analysis_labels), default="pareto",
+        format_func=lambda value: analysis_labels[value], key="bme_analysis_module", width="stretch"
+    ) or "pareto"
+    if selected_analysis == "pareto":
+        pareto = alerts.assign(issue_driver=alerts["issue_driver"].replace("", t("未记录", "Not recorded")))
+        pareto = pareto.groupby(["supplier", "issue_driver"], as_index=False).agg(alerts=("source_row", "count"), defects=("defect_qty", "sum"))
+        pareto = pareto.sort_values(["alerts", "defects"], ascending=False).head(20).sort_values("alerts")
+        if pareto.empty:
+            st.info(t("当前没有问题 Pareto 数据。", "No issue Pareto data is available."))
+        else:
+            fig = px.bar(pareto, x="alerts", y="issue_driver", color="supplier", orientation="h",
+                         labels={"alerts": t("Alert记录数", "Alert records"), "issue_driver": t("问题 / 检查点", "Issue / Checkpoint")})
+            fig.update_layout(height=560, margin=dict(l=20, r=20, t=30, b=30), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    elif selected_analysis == "parameter":
+        parameter = view[view["measured_value"].notna()].copy()
+        parameter_label = parameter["process"].where(parameter["process"].ne(""), parameter["issue_driver"])
+        choices = sorted((parameter["supplier"] + " · " + parameter_label).dropna().unique())
+        if not choices:
+            st.info(t("当前筛选没有连续参数。", "No continuous parameter exists under the current filters."))
+        else:
+            selected_parameter = st.selectbox(t("参数", "Parameter"), choices, key="bme_parameter_choice")
+            supplier_name, process_name = selected_parameter.split(" · ", 1)
+            parameter = parameter[(parameter["supplier"].eq(supplier_name)) & ((parameter["process"].eq(process_name)) | (parameter["issue_driver"].eq(process_name)))].copy()
+            parameter = parameter.sort_values(["date", "source_row"]).tail(300)
+            parameter["sequence"] = np.arange(1, len(parameter) + 1)
+            parameter["moving_range"] = parameter["measured_value"].diff().abs()
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.12, row_heights=[0.68, 0.32])
+            fig.add_trace(go.Scatter(x=parameter["sequence"], y=parameter["measured_value"], mode="lines+markers", name=t("实测值", "Measured value"), line=dict(color="#3341c4")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=parameter["sequence"], y=parameter["moving_range"], mode="lines+markers", name=t("移动极差", "Moving range"), line=dict(color="#d99a00")), row=2, col=1)
+            if parameter["measured_value"].notna().sum() >= 5:
+                center = float(parameter["measured_value"].mean())
+                mr_bar = float(parameter["moving_range"].dropna().mean())
+                sigma = mr_bar / 1.128 if mr_bar > 0 else 0.0
+                fig.add_hline(y=center, line_color="#168a5b", annotation_text="CL", row=1, col=1)
+                fig.add_hline(y=center + 3 * sigma, line_dash="dot", line_color="#c01048", annotation_text="UCL", row=1, col=1)
+                fig.add_hline(y=center - 3 * sigma, line_dash="dot", line_color="#c01048", annotation_text="LCL", row=1, col=1)
+                fig.add_hline(y=mr_bar, line_color="#168a5b", annotation_text="MR CL", row=2, col=1)
+                fig.add_hline(y=mr_bar * 3.267, line_dash="dot", line_color="#c01048", annotation_text="MR UCL", row=2, col=1)
+            if parameter["spec_low"].notna().any():
+                fig.add_hline(y=float(parameter["spec_low"].dropna().median()), line_dash="dash", line_color="#d99a00", annotation_text="LSL", row=1, col=1)
+            if parameter["spec_high"].notna().any():
+                fig.add_hline(y=float(parameter["spec_high"].dropna().median()), line_dash="dash", line_color="#d99a00", annotation_text="USL", row=1, col=1)
+            fig.update_yaxes(title_text=t("实测值", "Measured value"), row=1, col=1)
+            fig.update_yaxes(title_text="MR", row=2, col=1)
+            fig.update_xaxes(title_text=t("记录顺序", "Record sequence"), row=2, col=1)
+            fig.update_layout(title=f"{supplier_name} · {process_name} · I-MR", height=560, margin=dict(l=20, r=20, t=70, b=30), legend=dict(orientation="h"))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
+            if parameter["spec_low"].isna().all() and parameter["spec_high"].isna().all():
+                st.warning(t("该参数没有源规格，只展示稳定性，不判 NG。", "This parameter has no source specification. Stability is shown without judging NG."))
+    elif selected_analysis == "coverage":
+        coverage = view.groupby(["supplier", "stage", "metric_scope"], as_index=False).agg(
+            records=("source_row", "count"), dated=("date", lambda values: int(values.notna().sum())),
+            with_po=("order_po", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
+            with_model=("model_item_code", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
+            with_status=("status_available", "sum"),
+        )
+        dataframe_with_format(coverage, height=420)
+    else:
+        display_cols = ["supplier", "stage", "date", "order_po", "model_item_code", "item_name", "process", "issue_driver", "inspected_qty", "defect_qty", "result", "spec_text", "measured_value", "status", "metric_scope", "source_file", "source_sheet", "source_row"]
+        dataframe_with_format(view[display_cols].sort_values("date", ascending=False), height=560)
+        st.download_button(
+            t("下载当前 BME 明细", "Download Current BME Detail"),
+            view[display_cols].to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"BME_quality_detail_{dt.date.today():%Y%m%d}.csv", mime="text/csv",
+        )
+
+
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),
     "PQC": ("PQC 过程预警", "PQC Alert"),
     "END_QC": ("End of QC 预警", "End of QC Alert"),
     "AQL": ("AQL 验货预警", "AQL Inspection Alert"),
+    "DKL": ("DKL 验货预警", "DKL Inspection Alert"),
+    "MACHINE": ("机器 / 参数预警", "Machine / Parameter Alert"),
     "LAB": ("实验室测试预警", "Lab Test Alert"),
+    "REWORK": ("返工预警", "Rework Alert"),
 }
 
 ZX_ALERT_CARD_LABELS = {
-    **ZX_ALERT_TYPES,
+    "IQC": ZX_ALERT_TYPES["IQC"],
+    "PQC": ZX_ALERT_TYPES["PQC"],
+    "END_QC": ZX_ALERT_TYPES["END_QC"],
+    "AQL_DKL": ("AQL / DKL 预警", "AQL / DKL Alert"),
+    "MACHINE": ZX_ALERT_TYPES["MACHINE"],
+    "LAB": ZX_ALERT_TYPES["LAB"],
+    "REWORK": ZX_ALERT_TYPES["REWORK"],
     "CRITICAL": ("Critical 问题", "Critical Issues"),
     "HIGH": ("High Risk", "High Risk"),
-    "MEDIUM": ("Medium Risk", "Medium Risk"),
-    "MATERIAL_MISSING": ("原材料供应商缺失", "Material Supplier Missing"),
-    "PO_MISSING": ("工单 / PO 缺失", "Workorder / PO Missing"),
-    "MODEL_MISSING": ("Model / Item 缺失", "Model / Item Missing"),
-    "OPEN": ("Open Alerts", "Open Alerts"),
+    "SPEC_MISSING": ("规格缺失", "Specification Missing"),
+    "IDENTIFIER_MISSING": ("PO / Model 缺失", "PO / Model Missing"),
+    "STATUS_UNAVAILABLE": ("状态缺失", "Status Unavailable"),
 }
 
 ZX_ALERT_COLUMNS = [
@@ -13598,15 +13831,17 @@ def _reset_zx_alert_filters() -> None:
     st.session_state["zx_alert_material_supplier_filter"] = []
     st.session_state["zx_alert_order_search"] = ""
     st.session_state["zx_alert_model_search"] = ""
+    st.session_state["zx_alert_process_search"] = ""
     st.session_state["zx_alert_risk_filter"] = []
+    st.session_state["zx_alert_status_filter"] = []
     if "_zx_alert_default_dates" in st.session_state:
         st.session_state["zx_alert_date_filter"] = st.session_state[
             "_zx_alert_default_dates"
         ]
     if "_zx_alert_default_suppliers" in st.session_state:
-        st.session_state["zx_alert_supplier_filter"] = st.session_state[
-            "_zx_alert_default_suppliers"
-        ]
+        st.session_state["zx_alert_supplier_filter"] = []
+    if "_zx_alert_default_communities" in st.session_state:
+        st.session_state["zx_alert_community_filter"] = []
     st.session_state["zx_alert_selected_card"] = "ALL"
 
 
@@ -13615,20 +13850,24 @@ def _filter_zx_alert_card(
 ) -> pd.DataFrame:
     if selected_card in ZX_ALERT_TYPES:
         return alerts[alerts["alert_type"].eq(selected_card)].copy()
-    if selected_card in {"CRITICAL", "HIGH", "MEDIUM"}:
+    if selected_card == "AQL_DKL":
+        return alerts[alerts["alert_type"].isin(["AQL", "DKL"])].copy()
+    if selected_card in {"CRITICAL", "HIGH"}:
         return alerts[alerts["risk_level"].eq(selected_card.title())].copy()
-    if selected_card == "MATERIAL_MISSING":
+    if selected_card == "SPEC_MISSING":
         return alerts[
-            alerts["material_supplier"].fillna("").astype(str).str.strip().eq("")
+            alerts.get("community", pd.Series("TU", index=alerts.index)).eq("BME")
+            &
+            alerts.get("spec_text", pd.Series("", index=alerts.index)).fillna("").astype(str).str.strip().eq("")
+            & alerts["alert_type"].isin(["PQC", "MACHINE", "LAB"])
         ].copy()
-    if selected_card == "PO_MISSING":
+    if selected_card == "IDENTIFIER_MISSING":
         return alerts[
             alerts["order_po"].fillna("").astype(str).str.strip().eq("")
+            | alerts["model_item_code"].fillna("").astype(str).str.strip().eq("")
         ].copy()
-    if selected_card == "MODEL_MISSING":
-        return alerts[
-            alerts["model_item_code"].fillna("").astype(str).str.strip().eq("")
-        ].copy()
+    if selected_card == "STATUS_UNAVAILABLE":
+        return alerts[alerts["status"].fillna("").astype(str).eq("Status unavailable")].copy()
     return alerts.copy()
 
 
@@ -13680,6 +13919,9 @@ def render_zx_alert_dashboard(
     finished_df: pd.DataFrame,
     incoming_df: pd.DataFrame,
     jdy_fqc: pd.DataFrame,
+    extra_alerts: pd.DataFrame | None = None,
+    combined: bool = False,
+    supplier_scope_options: list[str] | None = None,
 ) -> None:
     alerts = build_zx_quality_alerts(
         finished_df,
@@ -13687,6 +13929,16 @@ def render_zx_alert_dashboard(
         jdy_fqc,
         current_risk_settings(),
     )
+    alerts["community"] = "TU"
+    alerts["process"] = alerts.get("inspection_type", "")
+    alerts["spec_text"] = ""
+    if extra_alerts is not None and not extra_alerts.empty:
+        all_columns = sorted(set(alerts.columns) | set(extra_alerts.columns))
+        alerts = pd.concat(
+            [alerts.reindex(columns=all_columns), extra_alerts.reindex(columns=all_columns)],
+            ignore_index=True,
+        )
+    alerts["inspection_date"] = pd.to_datetime(alerts["inspection_date"], errors="coerce")
     latest_source_date = alerts["inspection_date"].max() if not alerts.empty else pd.NaT
     source_cutoff = (
         latest_source_date.strftime("%Y-%m-%d")
@@ -14222,13 +14474,13 @@ def render_zx_alert_dashboard(
     )
 
     inspection_options = list(ZX_ALERT_TYPES)
-    supplier_options = sorted(
+    supplier_options = sorted(set(
         value
         for value in alerts.get(
             "supplier_dpp", pd.Series(dtype=object)
         ).dropna().astype(str).unique()
         if value
-    )
+    ) | set(supplier_scope_options or []))
     material_supplier_options = sorted(
         value
         for value in alerts.get(
@@ -14263,18 +14515,17 @@ def render_zx_alert_dashboard(
                 <span class="zx-alert-preset active">Default</span>
                 <span class="zx-alert-preset">+ Add New</span>
               </div>
-              <span class="zx-alert-filter-status">TU · Gloves · 49425 · {html.escape(t('中兴', 'Zhongxing'))}<span class="material-symbols-rounded">settings</span></span>
+              <span class="zx-alert-filter-status">{html.escape('ZX + BME' if combined else 'TU · Gloves · 49425')}<span class="material-symbols-rounded">settings</span></span>
             </div>
             """,
             unsafe_allow_html=True,
         )
         top_cols = st.columns(9, gap="small")
-        top_cols[0].text_input(
-            "Community",
-            value="Production Zone · TU",
-            disabled=True,
-            key="zx_alert_community",
-            label_visibility="collapsed",
+        community_options = sorted(alerts.get("community", pd.Series("TU", index=alerts.index)).fillna("TU").astype(str).unique())
+        st.session_state["_zx_alert_default_communities"] = community_options
+        selected_communities = top_cols[0].multiselect(
+            "Community", community_options, default=[],
+            key="zx_alert_community_filter", placeholder="Community · All",
         )
         top_cols[1].text_input(
             "Country",
@@ -14286,21 +14537,20 @@ def render_zx_alert_dashboard(
         selected_suppliers = top_cols[2].multiselect(
             "Supplier / DPP",
             supplier_options,
-            default=supplier_options,
+            default=[],
             key="zx_alert_supplier_filter",
-            placeholder="Vendor DPP",
-            format_func=lambda value: t("49425 中兴", "49425 Zhongxing"),
+            placeholder="Supplier / DPP · All",
         )
         top_cols[3].text_input(
             "Sector",
-            value="Sector · Gloves",
+            value="Sector · Bikes + Gloves" if combined else "Sector · Gloves",
             disabled=True,
             key="zx_alert_sector",
             label_visibility="collapsed",
         )
         top_cols[4].text_input(
             "Department",
-            value="Dept · Textile",
+            value="Dept · Quality",
             disabled=True,
             key="zx_alert_department",
             label_visibility="collapsed",
@@ -14311,13 +14561,7 @@ def render_zx_alert_dashboard(
             default=[],
             key="zx_alert_type_filter",
             placeholder=t("检验类型", "Inspection Type"),
-            format_func=lambda value: {
-                "IQC": "IQC",
-                "PQC": "PQC",
-                "END_QC": "End QC",
-                "AQL": "AQL",
-                "LAB": t("实验室", "Lab"),
-            }[value],
+            format_func=lambda value: t(*ZX_ALERT_TYPES.get(value, (value, value))),
         )
         model_search = top_cols[6].text_input(
             "Model / Item Code",
@@ -14326,7 +14570,7 @@ def render_zx_alert_dashboard(
         )
         top_cols[7].text_input(
             "Industrial Universe",
-            value="Industrial Universe · Textile",
+            value="Industrial Universe · Bikes + Textile" if combined else "Industrial Universe · Textile",
             disabled=True,
             key="zx_alert_industrial_universe",
             label_visibility="collapsed",
@@ -14339,17 +14583,15 @@ def render_zx_alert_dashboard(
             label_visibility="collapsed",
         )
 
-        bottom_cols = st.columns(6, gap="small")
-        bottom_cols[0].text_input(
-            "Purchase Organization",
-            value="Purchase Organization · NEA",
-            disabled=True,
-            key="zx_alert_purchase_org",
-            label_visibility="collapsed",
+        bottom_cols = st.columns(7, gap="small")
+        status_options = sorted(alerts.get("status", pd.Series(dtype=object)).dropna().astype(str).unique())
+        selected_statuses = bottom_cols[0].multiselect(
+            t("状态", "Status"), status_options, default=[], key="zx_alert_status_filter",
+            placeholder=t("状态", "Status"),
         )
         bottom_cols[1].text_input(
             "Supplier Code (CNUF)",
-            value="Supplier Code(CNUF) · 49425",
+            value="Supplier Code · Multiple" if combined else "Supplier Code(CNUF) · 49425",
             disabled=True,
             key="zx_alert_cnuf",
             label_visibility="collapsed",
@@ -14382,8 +14624,14 @@ def render_zx_alert_dashboard(
             placeholder=t("风险等级", "Risk Level"),
             format_func=risk_level_text,
         )
+        process_search = bottom_cols[6].text_input(
+            t("工序 / 检查点", "Process / Checkpoint"),
+            placeholder=t("工序", "Process"), key="zx_alert_process_search",
+        )
 
     filtered = alerts.copy()
+    if selected_communities:
+        filtered = filtered[filtered["community"].isin(selected_communities)]
     if selected_types:
         filtered = filtered[filtered["alert_type"].isin(selected_types)]
     if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
@@ -14395,8 +14643,6 @@ def render_zx_alert_dashboard(
         ]
     if selected_suppliers:
         filtered = filtered[filtered["supplier_dpp"].isin(selected_suppliers)]
-    elif supplier_options:
-        filtered = filtered.iloc[0:0].copy()
     if selected_material_suppliers:
         material_blank = (
             filtered["material_supplier"].fillna("").astype(str).eq("")
@@ -14423,6 +14669,14 @@ def render_zx_alert_dashboard(
         ]
     if selected_risks:
         filtered = filtered[filtered["risk_level"].isin(selected_risks)]
+    if selected_statuses:
+        filtered = filtered[filtered["status"].isin(selected_statuses)]
+    if process_search.strip():
+        process_needle = re.escape(process_search.strip())
+        filtered = filtered[
+            filtered.get("process", pd.Series("", index=filtered.index)).fillna("").astype(str).str.contains(process_needle, case=False, na=False)
+            | filtered["issue_driver"].fillna("").astype(str).str.contains(process_needle, case=False, na=False)
+        ]
 
     with st.container(key="zx_alert_filter_actions"):
         action_cols = st.columns(
@@ -14430,13 +14684,15 @@ def render_zx_alert_dashboard(
         )
         action_cols[0].markdown("**Alert Type**")
         action_cols[1].markdown(
-            """
+            f"""
             <div class="zx-alert-type-checks">
               <span><i class="material-symbols-rounded">check_box</i>IQC</span>
               <span><i class="material-symbols-rounded">check_box</i>PQC</span>
               <span><i class="material-symbols-rounded">check_box</i>End of QC</span>
-              <span><i class="material-symbols-rounded">check_box</i>AQL</span>
+              <span><i class="material-symbols-rounded">check_box</i>AQL / DKL</span>
+              <span><i class="material-symbols-rounded">check_box</i>Machine</span>
               <span><i class="material-symbols-rounded">check_box</i>Lab</span>
+              <span><i class="material-symbols-rounded">check_box</i>Rework</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -14458,7 +14714,7 @@ def render_zx_alert_dashboard(
         action_cols[3].download_button(
             "Download",
             download_frame.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"ZX_quality_alerts_{dt.date.today().isoformat()}.csv",
+            file_name=f"{'ZX_BME' if combined else 'ZX'}_quality_alerts_{dt.date.today().isoformat()}.csv",
             mime="text/csv",
             icon=":material/download:",
             use_container_width=True,
@@ -14482,7 +14738,7 @@ def render_zx_alert_dashboard(
         next_card = "ALL" if selected_card == alert_type else alert_type
         active_class = " active" if selected_card == alert_type else ""
         href = (
-            f"?scope=ZX&page=alert&lang={language_query_code()}"
+            f"?scope={'QUALITY_ALERT' if combined else 'ZX'}{'&page=alert' if not combined else ''}&lang={language_query_code()}"
             f"&alert_type={html.escape(next_card)}"
         )
         card_html.append(
@@ -14520,8 +14776,8 @@ def render_zx_alert_dashboard(
 
     st.caption(
         t(
-            "口径说明：Alert卡片来自Excel定义；PQC与End of QC沿用当前看板不良率阈值。当前数据无关闭状态字段，触发记录暂标记为Open；实验室测试尚未接入。",
-            "Definition: cards follow the Excel requirement. PQC and End of QC reuse the dashboard defect-rate thresholds. Source data has no closure field, so triggered rows are labelled Open; lab-test data is not connected.",
+            "口径说明：ZX 沿用现有风险规则；BME 仅依据源结果、NC、明确规格和真实流程状态触发。缺失规格不判NG，缺失状态显示 Status unavailable；FSD End of QC 数据不可用。",
+            "Definition: ZX retains its existing risk rules. BME triggers only from source results, NC, explicit specifications, and real workflow status. Missing specifications do not imply NG; missing status is shown as Status unavailable. FSD End of QC data is unavailable.",
         )
     )
 
@@ -14743,14 +14999,20 @@ def _render_zx_alert_charts(filtered: pd.DataFrame) -> None:
         "PQC": "#1698c4",
         "END_QC": "#c2c7e8",
         "AQL": "#dfa800",
+        "DKL": "#6f73c9",
+        "MACHINE": "#38a89d",
         "LAB": "#9a789d",
+        "REWORK": "#d96868",
     }
     legend_labels = {
         "IQC": "IQC",
         "PQC": "PQC",
         "END_QC": "End of QC",
         "AQL": "AQL",
+        "DKL": "DKL",
+        "MACHINE": "Machine",
         "LAB": "Lab",
+        "REWORK": "Rework",
     }
     chart_config = {
         "displayModeBar": True,
@@ -14862,8 +15124,8 @@ def _render_zx_alert_charts(filtered: pd.DataFrame) -> None:
         ),
         (
             "zx_alert_chart_supplier",
-            "issue_driver",
-            t("按疵点 / 测试代码的预警", "Alert by Defect Type / Test Code"),
+            "supplier_dpp",
+            t("按供应商的预警", "Alert by Supplier"),
             "h",
             10,
         ),
@@ -14876,22 +15138,22 @@ def _render_zx_alert_charts(filtered: pd.DataFrame) -> None:
         ),
         (
             "zx_alert_chart_trend",
-            "material_supplier",
-            t("按原材料供应商的预警", "Alert by Material Supplier"),
+            "process",
+            t("按工序 / 检查点的预警", "Alert by Process / Checkpoint"),
             "h",
             10,
         ),
         (
             "zx_alert_chart_model",
-            "risk_level",
-            t("按风险等级的预警", "Alert by Risk Level"),
+            "issue_driver",
+            t("按疵点 / 测试代码的预警", "Alert by Defect / Test Code"),
             "h",
-            8,
+            10,
         ),
         (
             "zx_alert_chart_risk",
-            "order_po",
-            t("按工单 / PO 的预警", "Alert by Workorder / PO"),
+            "__trend__",
+            t("每周预警趋势", "Weekly Alert Trend"),
             "h",
             10,
         ),
@@ -14903,6 +15165,18 @@ def _render_zx_alert_charts(filtered: pd.DataFrame) -> None:
             key, category, title, orientation, top_n = spec
             with column:
                 with st.container(key=key):
+                    if category == "__trend__":
+                        dated = filtered.dropna(subset=["inspection_date"]).copy()
+                        if dated.empty:
+                            st.info(t("当前筛选范围没有可用日期。", "No dated alerts under the current filters."))
+                            continue
+                        dated["week"] = dated["inspection_date"].dt.to_period("W").apply(lambda period: period.start_time)
+                        trend = dated.groupby(["week", "community"], as_index=False).size().rename(columns={"size": "alerts"})
+                        fig = px.line(trend, x="week", y="alerts", color="community", markers=True,
+                                      color_discrete_sequence=["#3546c4", "#d99a00"])
+                        _style_zx_alert_chart(fig, title)
+                        st.plotly_chart(fig, use_container_width=True, config=chart_config)
+                        continue
                     fig = stacked_bar(
                         filtered,
                         category,
@@ -14939,8 +15213,8 @@ def _render_zx_alert_detail(
         header_cols[0].subheader(t("预警明细", "Alert Detail"))
         header_cols[1].caption(
             t(
-                f"{len(detail):,} 条开放预警",
-                f"{len(detail):,} open alerts",
+                f"{len(detail):,} 条触发记录",
+                f"{len(detail):,} triggered records",
             )
         )
         if detail.empty:
@@ -14963,6 +15237,7 @@ def _render_zx_alert_detail(
         display = detail[
             [
                 "alert_type",
+                "community",
                 "inspection_type",
                 "inspection_date",
                 "supplier_dpp",
@@ -14971,11 +15246,14 @@ def _render_zx_alert_detail(
                 "order_po",
                 "model_item_code",
                 "item_name",
+                "process",
                 "issue_driver",
                 "defect_qty",
                 "defect_rate",
                 "risk_level",
                 "status",
+                "spec_text",
+                "source",
             ]
         ].copy()
         display["alert_type"] = display["alert_type"].map(
@@ -14990,6 +15268,7 @@ def _render_zx_alert_detail(
         display = display.rename(
             columns={
                 "alert_type": t("预警卡片", "Alert Card"),
+                "community": "Community",
                 "inspection_type": t("检验类型", "Inspection Type"),
                 "inspection_date": t("检验日期", "Inspection Date"),
                 "supplier_dpp": "Supplier / DPP",
@@ -15003,6 +15282,7 @@ def _render_zx_alert_detail(
                     "Model / Item / 部件名称",
                     "Model / Item / Component Name",
                 ),
+                "process": t("工序 / 检查点", "Process / Checkpoint"),
                 "issue_driver": t(
                     "疵点 / 测试代码", "Defect / Test Code"
                 ),
@@ -15010,6 +15290,8 @@ def _render_zx_alert_detail(
                 "defect_rate": t("不良率", "Defect Rate"),
                 "risk_level": t("风险等级", "Risk Level"),
                 "status": t("状态", "Status"),
+                "spec_text": t("源规格", "Source Specification"),
+                "source": t("数据源", "Source"),
             }
         )
         st.dataframe(
@@ -15099,12 +15381,7 @@ def render_scope_nav(active_scope: str, active_page: str = "reporting") -> None:
     visible_nav_parts: list[str] = []
     for scope_key in visible_scope_keys:
         if scope_key == "ZX":
-            visible_nav_parts.extend(
-                [
-                    nav_item(scope_key, "reporting"),
-                    nav_item(scope_key, "alert"),
-                ]
-            )
+            visible_nav_parts.append(nav_item(scope_key, "reporting"))
         else:
             visible_nav_parts.append(nav_item(scope_key))
     visible_nav = "".join(visible_nav_parts)
@@ -15162,6 +15439,9 @@ def _clear_global_cc_focus(model_filter_key: str) -> None:
 # 5. Load data and sidebar filters
 # ==========================================
 active_scope_key = get_active_scope_key()
+if active_scope_key == "ZX" and get_active_zx_page(active_scope_key) == "alert":
+    # Backward-compatible alias for shared/bookmarked ZX Alert links.
+    active_scope_key = "QUALITY_ALERT"
 active_zx_page = get_active_zx_page(active_scope_key)
 scope_factory_codes = tuple(DASHBOARD_SCOPES[active_scope_key]["factories"])
 with st.spinner(t("正在读取供应商质量数据...", "Loading supplier quality data...")):
@@ -15171,10 +15451,11 @@ with st.spinner(t("正在读取供应商质量数据...", "Loading supplier qual
         if "ZX" in scope_factory_codes
         else pd.DataFrame()
     )
-
-if finished_all.empty:
-    st.error(t("未能读取本地成品检验数据，请检查各 Database 文件夹。", "No finished QC data was loaded."))
-    st.stop()
+bme_events = (
+    load_bme_quality_events_cached(bme_source_fingerprint(ROOT))
+    if active_scope_key in {"BME_CMW", "QUALITY_ALERT"}
+    else pd.DataFrame()
+)
 
 render_scope_nav(active_scope_key, active_zx_page)
 selected_factories = DASHBOARD_SCOPES[active_scope_key]["factories"]
@@ -15193,6 +15474,26 @@ st.sidebar.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+if active_scope_key == "BME_CMW":
+    render_bme_bike_quality_dashboard(bme_events)
+    st.stop()
+
+if active_scope_key == "QUALITY_ALERT":
+    combined_bme_alerts = bme_events_to_alerts(bme_events)
+    render_zx_alert_dashboard(
+        finished_all,
+        incoming_all,
+        sidebar_jdy_fqc,
+        extra_alerts=combined_bme_alerts,
+        combined=True,
+        supplier_scope_options=["49425 中兴", *sorted(bme_events["supplier"].dropna().astype(str).unique())],
+    )
+    st.stop()
+
+if finished_all.empty:
+    st.error(t("未能读取本地成品检验数据，请检查各 Database 文件夹。", "No finished QC data was loaded."))
+    st.stop()
 
 if active_scope_key == "ZX" and active_zx_page == "alert":
     st.sidebar.markdown("---")
