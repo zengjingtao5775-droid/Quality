@@ -1841,8 +1841,8 @@ DASHBOARD_SCOPES = {
     },
     "ZX": {
         "code": "TU",
-        "label_cn": "Textile Unit Reporting",
-        "label_en": "Textile Unit Reporting",
+        "label_cn": "Textile ZX Alert",
+        "label_en": "Textile ZX Alert",
         "subtitle_cn": "49425 · 中兴",
         "subtitle_en": "49425 · Zhongxing",
         "factories": ["ZX"],
@@ -1861,8 +1861,8 @@ DASHBOARD_SCOPES = {
     },
     "BME_CMW": {
         "code": "BME",
-        "label_cn": "BME 自行车质量",
-        "label_en": "BME Bike Quality",
+        "label_cn": "BME Alert 看板",
+        "label_en": "BME Alert Dashboard",
         "subtitle_cn": "FSD · CMW · TEKTRO",
         "subtitle_en": "FSD · CMW · TEKTRO",
         "factories": ["BME_CMW"],
@@ -14328,6 +14328,120 @@ def _style_zx_alert_chart(fig: go.Figure, title: str) -> go.Figure:
     return fig
 
 
+def _bme_access_method(source: pd.Series) -> str:
+    explicit = source.get("source_method", pd.Series(dtype=object)).dropna().astype(str)
+    if not explicit.empty:
+        normalized = " ".join(explicit).lower()
+        if "api" in normalized:
+            return "API"
+        if "manual" in normalized or "excel" in normalized or "手动" in normalized:
+            return t("手动 Excel", "Manual Excel")
+    source_files = source.get("source_file", pd.Series(dtype=object)).dropna().astype(str)
+    if source_files.empty:
+        return "-"
+    if source_files.str.contains(r"api|https?://", case=False, regex=True).any():
+        return "API"
+    return t("手动 Excel", "Manual Excel")
+
+
+def _render_bme_data_map(events: pd.DataFrame) -> None:
+    expected_stages = ["IQC", "PQC", "END_QC", "AQL", "DKL", "MACHINE", "LAB", "REWORK"]
+    stage_labels = {"END_QC": "End of QC", "MACHINE": "Machine", "LAB": "Lab", "REWORK": "Rework"}
+    suppliers = sorted(events.get("supplier", pd.Series(dtype=object)).dropna().astype(str).unique())
+    connected = set(events.get("stage", pd.Series(dtype=object)).dropna().astype(str))
+    access_rows: list[dict[str, object]] = []
+    for stage in expected_stages:
+        scoped = events[events.get("stage", pd.Series("", index=events.index)).eq(stage)]
+        access_rows.append({
+            t("数据类型", "Data Type"): stage_labels.get(stage, stage),
+            t("接入状态", "Connection Status"): t("已接入", "Connected") if not scoped.empty else t("未接入", "Not Connected"),
+            t("接入方式", "Access Method"): _bme_access_method(scoped),
+            t("供应商覆盖", "Supplier Coverage"): int(scoped.get("supplier", pd.Series(dtype=object)).nunique()) if not scoped.empty else 0,
+            t("记录数", "Records"): len(scoped),
+            t("当前来源", "Current Source"): " / ".join(sorted(scoped.get("source_file", pd.Series(dtype=object)).dropna().astype(str).unique())) if not scoped.empty else "-",
+        })
+    access = pd.DataFrame(access_rows)
+    manual_count = int(access[t("接入方式", "Access Method")].eq(t("手动 Excel", "Manual Excel")).sum())
+    api_count = int(access[t("接入方式", "Access Method")].eq("API").sum())
+    missing_count = len(expected_stages) - len(connected.intersection(expected_stages))
+
+    st.markdown(f"### {t('BME 数据接入地图', 'BME Data Connection Map')}")
+    st.caption(t(
+        "按数据类型展示接入状态与接入方式；当前本地工作簿属于手动 Excel，不等同于 API 自动同步。",
+        "Connection status and method are shown by data type. Local workbooks are Manual Excel, not API synchronization.",
+    ))
+    render_kpi_cards([
+        {"label": t("已接入数据类型", "Connected Data Types"), "value": f"{len(connected.intersection(expected_stages))}/{len(expected_stages)}", "note": t("按质量关卡计", "By quality gate"), "level": "medium"},
+        {"label": t("手动 Excel", "Manual Excel"), "value": f"{manual_count}", "note": t("需要人工更新文件", "Requires file refresh"), "level": "medium"},
+        {"label": "API", "value": f"{api_count}", "note": t("当前尚无 BME API", "No BME API currently"), "level": "high" if api_count == 0 else "low"},
+        {"label": t("未接入类型", "Missing Types"), "value": f"{missing_count}", "note": t("缺失不代表无风险", "Missing is not no risk"), "level": "high" if missing_count else "low"},
+    ])
+
+    if suppliers:
+        counts = events.groupby(["supplier", "stage"], as_index=False).size().rename(columns={"size": "records"})
+        pivot = counts.pivot(index="supplier", columns="stage", values="records").reindex(index=suppliers, columns=expected_stages)
+        text_values = pivot.map(lambda value: f"{int(value):,}" if pd.notna(value) else "-")
+        fig = go.Figure(go.Heatmap(
+            z=pivot.fillna(0).values,
+            x=[stage_labels.get(value, value) for value in pivot.columns],
+            y=pivot.index,
+            text=text_values.values,
+            texttemplate="%{text}",
+            colorscale=[[0, "#f1f4f8"], [0.35, "#b9c4ff"], [1, "#3341c4"]],
+            colorbar=dict(title=t("记录数", "Records")),
+            hovertemplate="Supplier=%{y}<br>Data type=%{x}<br>Records=%{text}<extra></extra>",
+        ))
+        fig.update_layout(height=320, margin=dict(l=40, r=20, t=20, b=30), paper_bgcolor="#ffffff")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with st.expander(t("查看接入方式与来源", "View Connection Methods and Sources"), expanded=False):
+        st.dataframe(access, use_container_width=True, hide_index=True, height=330)
+        st.info(t(
+            "End of QC 当前未接入；AQL 与 DKL 保持独立，不用其他检验数据补造。",
+            "End of QC is not connected. AQL and DKL remain separate and are not fabricated from other inspection data.",
+        ), icon=":material/info:")
+
+
+def _render_bme_specific_charts(events: pd.DataFrame) -> None:
+    st.markdown(f"### {t('BME 专属分析', 'BME-specific Analysis')}")
+    st.caption(t(
+        "以下分析无法直接套用中央 Alert 的离散告警结构，因此单独展示，不混入共用 KPI。",
+        "These analyses do not fit the central discrete-alert structure and remain separate from shared KPIs.",
+    ))
+    parameter = events[events.get("measured_value", pd.Series(np.nan, index=events.index)).notna()].copy()
+    rework = events[events.get("stage", pd.Series("", index=events.index)).eq("REWORK")].copy()
+    left, right = st.columns(2, gap="medium")
+    with left:
+        if parameter.empty:
+            st.info(t("没有可用连续参数。", "No continuous parameter data is available."))
+        else:
+            parameter["parameter"] = parameter.get("process", pd.Series("", index=parameter.index)).fillna("").astype(str)
+            blank_parameter = parameter["parameter"].eq("")
+            parameter.loc[blank_parameter, "parameter"] = parameter.loc[blank_parameter].get("issue_driver", "")
+            top_parameters = parameter["parameter"].value_counts().head(8).index
+            chart_data = parameter[parameter["parameter"].isin(top_parameters)]
+            fig = px.box(
+                chart_data, x="parameter", y="measured_value", color="supplier", points="outliers",
+                labels={"parameter": t("参数 / 工序", "Parameter / Process"), "measured_value": t("实测值", "Measured Value"), "supplier": t("供应商", "Supplier")},
+                title=t("连续参数分布（独立图）", "Continuous Parameter Distribution (Separate)"),
+                color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"],
+            )
+            fig.update_layout(height=410, margin=dict(l=25, r=20, t=65, b=70), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with right:
+        if rework.empty:
+            st.info(t("没有可用返工流程状态。", "No rework workflow status is available."))
+        else:
+            rework_status = rework.groupby(["supplier", "status"], as_index=False).size().rename(columns={"size": "records"})
+            fig = px.bar(
+                rework_status, x="supplier", y="records", color="status", barmode="stack", text_auto=True,
+                labels={"supplier": t("供应商", "Supplier"), "records": t("记录数", "Records"), "status": t("流程状态", "Workflow Status")},
+                title=t("返工流程状态（独立图）", "Rework Workflow Status (Separate)"),
+                color_discrete_sequence=["#c01048", "#d99a00", "#168a5b", "#8b93a7"],
+            )
+            fig.update_layout(height=410, margin=dict(l=25, r=20, t=65, b=45), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def render_zx_alert_dashboard(
     finished_df: pd.DataFrame,
     incoming_df: pd.DataFrame,
@@ -14335,6 +14449,8 @@ def render_zx_alert_dashboard(
     extra_alerts: pd.DataFrame | None = None,
     combined: bool = False,
     supplier_scope_options: list[str] | None = None,
+    scope_mode: str = "ZX",
+    bme_source_events: pd.DataFrame | None = None,
 ) -> None:
     alerts = build_zx_quality_alerts(
         finished_df,
@@ -14358,6 +14474,31 @@ def render_zx_alert_dashboard(
         if pd.notna(latest_source_date)
         else "-"
     )
+    effective_mode = "COMBINED" if combined else scope_mode.upper()
+    is_bme = effective_mode == "BME"
+    is_combined = effective_mode == "COMBINED"
+    scope_status = (
+        "ZX + BME" if is_combined else
+        "BME · FSD · CMW · TEKTRO" if is_bme else
+        "TU · Gloves · 49425"
+    )
+    sector_value = (
+        "Sector · Bikes + Gloves" if is_combined else
+        "Sector · Bikes" if is_bme else
+        "Sector · Gloves"
+    )
+    universe_value = (
+        "Industrial Universe · Bikes + Textile" if is_combined else
+        "Industrial Universe · Bikes" if is_bme else
+        "Industrial Universe · Textile"
+    )
+    cnuf_value = (
+        "Supplier Code · Multiple" if (is_combined or is_bme) else
+        "Supplier Code(CNUF) · 49425"
+    )
+    dashboard_scope_query = "QUALITY_ALERT" if is_combined else "BME_CMW" if is_bme else "ZX"
+    dashboard_page_query = "" if (is_combined or is_bme) else "&page=alert"
+    download_prefix = "ZX_BME" if is_combined else "BME" if is_bme else "ZX"
 
     st.markdown(
         """
@@ -14502,10 +14643,12 @@ def render_zx_alert_dashboard(
     st.markdown(
         """
         <style>
-        section[data-testid="stSidebar"],
-        [data-testid="stSidebarCollapsedControl"],
         [data-testid="stHeader"] {
-            display: none !important;
+            display: block !important;
+            height: 0 !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+            background: transparent !important;
         }
         .stApp {
             background: #eef1f4;
@@ -14515,17 +14658,36 @@ def render_zx_alert_dashboard(
             position: fixed;
             inset: 0 auto 0 0;
             width: 7px;
-            background: #3546c4;
+            background: linear-gradient(180deg, #4352cb 0%, #3043b5 54%, #273a9f 100%);
             z-index: 999;
+            transition: width 0.16s ease;
         }
-        [data-testid="stAppViewContainer"],
-        [data-testid="stMain"],
         [data-testid="stMainBlockContainer"] {
             width: 100% !important;
             max-width: none !important;
         }
         [data-testid="stMainBlockContainer"] {
             padding: 0 22px 48px 28px !important;
+        }
+        .stApp:has(button[data-testid="stExpandSidebarButton"])::before {
+            width: 56px;
+        }
+        .stApp:has(button[data-testid="stExpandSidebarButton"]) [data-testid="stMainBlockContainer"] {
+            padding-left: 72px !important;
+        }
+        .stApp:has(button[data-testid="stExpandSidebarButton"]) .zx-alert-page-head {
+            margin-left: -72px;
+            padding-left: 72px;
+        }
+        .stApp:has(button[data-testid="stExpandSidebarButton"]) button[data-testid="stExpandSidebarButton"] {
+            left: 7px !important;
+            top: 12px !important;
+            width: 42px !important;
+            height: 42px !important;
+            min-height: 42px !important;
+            border-color: rgba(255, 255, 255, 0.5) !important;
+            background: rgba(255, 255, 255, 0.96) !important;
+            z-index: 1001 !important;
         }
         [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {
             gap: 0 !important;
@@ -14891,13 +15053,23 @@ def render_zx_alert_dashboard(
         unsafe_allow_html=True,
     )
 
+    if is_bme:
+        return_links_html = (
+            f'<a href="?scope=QUALITY_ALERT&lang={language_query_code()}" target="_self"><span class="material-symbols-rounded">arrow_back</span>{html.escape(t("返回 Alert 总览", "Back to Alert Overview"))}</a>'
+            f'<a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self">{html.escape(t("返回 Textile ZX Alert", "Back to Textile ZX Alert"))}</a>'
+        )
+    else:
+        return_links_html = (
+            f'<a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self"><span class="material-symbols-rounded">arrow_back</span>{html.escape(t("返回 Textile ZX Alert", "Back to Textile ZX Alert"))}</a>'
+            f'<a href="?scope=BME_CMW&lang={language_query_code()}" target="_self">{html.escape(t("返回 BME Alert", "Back to BME Alert"))}</a>'
+        )
+
     st.markdown(
         f"""
         <div class="zx-alert-page-head">
           <div>
             <div class="zx-alert-return-links">
-              <a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self"><span class="material-symbols-rounded">arrow_back</span>{html.escape(t('返回 ZX 看板', 'Back to ZX'))}</a>
-              <a href="?scope=BME_CMW&lang={language_query_code()}" target="_self">{html.escape(t('返回 BME 看板', 'Back to BME'))}</a>
+              {return_links_html}
             </div>
             <div class="zx-alert-breadcrumb">Cockpit&nbsp;&nbsp;/&nbsp;&nbsp;Alert&nbsp;&nbsp;/&nbsp;&nbsp;Order Alert&nbsp;&nbsp;/&nbsp;&nbsp;<strong>Overview</strong></div>
             <h1 class="zx-alert-title">Overview</h1>
@@ -14957,7 +15129,7 @@ def render_zx_alert_dashboard(
                 <span class="zx-alert-preset active">Default</span>
                 <span class="zx-alert-preset">+ Add New</span>
               </div>
-              <span class="zx-alert-filter-status">{html.escape('ZX + BME' if combined else 'TU · Gloves · 49425')}<span class="material-symbols-rounded">settings</span></span>
+              <span class="zx-alert-filter-status">{html.escape(scope_status)}<span class="material-symbols-rounded">settings</span></span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -14985,7 +15157,7 @@ def render_zx_alert_dashboard(
         )
         top_cols[3].text_input(
             "Sector",
-            value="Sector · Bikes + Gloves" if combined else "Sector · Gloves",
+            value=sector_value,
             disabled=True,
             key="zx_alert_sector",
             label_visibility="collapsed",
@@ -15012,7 +15184,7 @@ def render_zx_alert_dashboard(
         )
         top_cols[7].text_input(
             "Industrial Universe",
-            value="Industrial Universe · Bikes + Textile" if combined else "Industrial Universe · Textile",
+            value=universe_value,
             disabled=True,
             key="zx_alert_industrial_universe",
             label_visibility="collapsed",
@@ -15033,7 +15205,7 @@ def render_zx_alert_dashboard(
         )
         bottom_cols[1].text_input(
             "Supplier Code (CNUF)",
-            value="Supplier Code · Multiple" if combined else "Supplier Code(CNUF) · 49425",
+            value=cnuf_value,
             disabled=True,
             key="zx_alert_cnuf",
             label_visibility="collapsed",
@@ -15156,7 +15328,7 @@ def render_zx_alert_dashboard(
         action_cols[3].download_button(
             "Download",
             download_frame.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"{'ZX_BME' if combined else 'ZX'}_quality_alerts_{dt.date.today().isoformat()}.csv",
+            file_name=f"{download_prefix}_quality_alerts_{dt.date.today().isoformat()}.csv",
             mime="text/csv",
             icon=":material/download:",
             use_container_width=True,
@@ -15180,7 +15352,7 @@ def render_zx_alert_dashboard(
         next_card = "ALL" if selected_card == alert_type else alert_type
         active_class = " active" if selected_card == alert_type else ""
         href = (
-            f"?scope={'QUALITY_ALERT' if combined else 'ZX'}{'&page=alert' if not combined else ''}&lang={language_query_code()}"
+            f"?scope={dashboard_scope_query}{dashboard_page_query}&lang={language_query_code()}"
             f"&alert_type={html.escape(next_card)}"
         )
         card_html.append(
@@ -15199,6 +15371,29 @@ def render_zx_alert_dashboard(
         unsafe_allow_html=True,
     )
 
+    bme_view = pd.DataFrame()
+    if is_bme and bme_source_events is not None:
+        bme_view = bme_source_events.copy()
+        if selected_types:
+            bme_view = bme_view[bme_view["stage"].isin(selected_types)]
+        if selected_suppliers:
+            bme_view = bme_view[bme_view["supplier"].isin(selected_suppliers)]
+        if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+            selected_start, selected_end = selected_dates
+            event_dates = pd.to_datetime(bme_view["date"], errors="coerce")
+            bme_view = bme_view[event_dates.isna() | event_dates.dt.date.between(selected_start, selected_end)]
+        if order_search.strip():
+            bme_view = bme_view[bme_view["order_po"].fillna("").astype(str).str.contains(re.escape(order_search.strip()), case=False, na=False)]
+        if model_search.strip():
+            bme_view = bme_view[bme_view["model_item_code"].fillna("").astype(str).str.contains(re.escape(model_search.strip()), case=False, na=False)]
+        if process_search.strip():
+            process_needle = re.escape(process_search.strip())
+            bme_view = bme_view[
+                bme_view["process"].fillna("").astype(str).str.contains(process_needle, case=False, na=False)
+                | bme_view["issue_driver"].fillna("").astype(str).str.contains(process_needle, case=False, na=False)
+            ]
+        _render_bme_data_map(bme_source_events)
+
     selected_label = (
         t("全部预警", "All Alerts")
         if selected_card == "ALL"
@@ -15215,13 +15410,21 @@ def render_zx_alert_dashboard(
 
     _render_zx_alert_charts(filtered)
     _render_zx_alert_detail(filtered, selected_card)
+    if is_bme:
+        _render_bme_specific_charts(bme_view)
 
-    st.caption(
-        t(
-            "口径说明：ZX 沿用现有风险规则；BME 仅依据源结果、NC、明确规格和真实流程状态触发。缺失规格不判NG，缺失状态显示 Status unavailable；FSD End of QC 数据不可用。",
-            "Definition: ZX retains its existing risk rules. BME triggers only from source results, NC, explicit specifications, and real workflow status. Missing specifications do not imply NG; missing status is shown as Status unavailable. FSD End of QC data is unavailable.",
+    if is_bme:
+        st.caption(t(
+            "口径说明：BME 仅依据源结果、NC、明确规格和真实流程状态触发 Alert。缺失规格不判 NG，缺失状态显示 Status unavailable；当前接入为手动 Excel，FSD End of QC 数据不可用。",
+            "Definition: BME alerts use source results, NC, explicit specifications, and real workflow status only. Missing specifications do not imply NG; missing status is shown as Status unavailable. Current ingestion is Manual Excel, and FSD End of QC is unavailable.",
+        ))
+    else:
+        st.caption(
+            t(
+                "口径说明：ZX 沿用现有风险规则；BME 仅依据源结果、NC、明确规格和真实流程状态触发。缺失规格不判NG，缺失状态显示 Status unavailable；FSD End of QC 数据不可用。",
+                "Definition: ZX retains its existing risk rules. BME triggers only from source results, NC, explicit specifications, and real workflow status. Missing specifications do not imply NG; missing status is shown as Status unavailable. FSD End of QC data is unavailable.",
+            )
         )
-    )
 
 
 def _render_zx_alert_charts_legacy(filtered: pd.DataFrame) -> None:
@@ -15782,7 +15985,7 @@ def get_active_zx_page(scope_key: str) -> str:
 def zx_page_display(page_key: str) -> str:
     if page_key == "alert":
         return t("ZX Alert 看板", "ZX Alert Dashboard")
-    return "Textile Unit Reporting"
+    return t("Textile ZX Alert 看板", "Textile ZX Alert Dashboard")
 
 
 def scope_display(scope_key: str) -> str:
@@ -15918,7 +16121,15 @@ st.sidebar.markdown(
 )
 
 if active_scope_key == "BME_CMW":
-    render_bme_bike_quality_dashboard_v3(bme_events)
+    render_zx_alert_dashboard(
+        pd.DataFrame(),
+        pd.DataFrame(),
+        pd.DataFrame(),
+        extra_alerts=bme_events_to_alerts(bme_events),
+        supplier_scope_options=sorted(bme_events["supplier"].dropna().astype(str).unique()),
+        scope_mode="BME",
+        bme_source_events=bme_events,
+    )
     st.stop()
 
 if active_scope_key == "QUALITY_ALERT":
