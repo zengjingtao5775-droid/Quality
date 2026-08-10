@@ -14006,6 +14006,13 @@ def render_bme_bike_quality_dashboard_v3(
     }.items():
         if optional_column not in view.columns:
             view[optional_column] = default_value
+
+    def bme_chart_source(frame: pd.DataFrame, fallback: str = "BME Database") -> str:
+        if "source_file" not in frame.columns:
+            return fallback
+        sources = sorted(frame["source_file"].dropna().astype(str).loc[lambda values: values.ne("")].unique())
+        return " + ".join(sources) if sources else fallback
+
     cmw_torque = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("MACHINE")) & view["measured_value"].notna()]
     torque_suspects = int(cmw_torque["data_quality_flag"].fillna("").ne("").sum())
     fsd_attr = view[(view["supplier"].eq("FSD")) & view["stage"].isin(["AQL", "DKL"]) & view["inspected_qty"].gt(0)]
@@ -14043,6 +14050,30 @@ def render_bme_bike_quality_dashboard_v3(
     else:
         selected_method = st.selectbox(t("选择同质过程 / 检验范围", "Select homogeneous process / inspection scope"), sorted(method_options), key="bme_v4_spc")
         method, data = method_options[selected_method]
+        if method == "imr":
+            spc_logic_cn = "同一车型、工序、规格和单位形成同质序列；I-MR 控制限为均值 ± 2.66×平均移动极差，并检查超出 3σ、连续 8 点同侧和连续 6 点单调趋势。只有过程稳定、样本不少于 25 且规格完整时才显示 Ppk。"
+            spc_logic_en = "A homogeneous sequence uses the same model, process, specification, and unit. I-MR limits are mean ± 2.66×average moving range, with 3σ, eight-on-one-side, and six-point-trend rules. Ppk is shown only for a stable process with at least 25 observations and complete specifications."
+        elif method == "imr_stability":
+            spc_logic_cn = "同一 TEKTRO 型号、油管长度和订单形成一个 I-MR 序列。源数据没有规格，因此只判断过程稳定性，不判 NG，也不计算能力指数。"
+            spc_logic_en = "One I-MR sequence uses the same TEKTRO model, hose length, and order. Source specifications are unavailable, so the chart assesses stability only without NG decisions or capability indices."
+        elif method == "pchart":
+            spc_logic_cn = "按周汇总检验数和 NC 数，中心线为总 NC÷总检验数；每周控制限随当周样本量变化，并应用 3σ、连续 8 点同侧和连续 6 点趋势规则。"
+            spc_logic_en = "Weekly inspected and NC quantities are aggregated. The center line is total NC divided by total inspected; weekly limits vary with sample size and apply the 3σ, eight-on-one-side, and six-point-trend rules."
+        else:
+            spc_logic_cn = "拔脱力按连续 5 件组成子组，使用 A2=0.577、D3=0、D4=2.114 的 X̄-R 控制图；不完整子组不参与控制限估计。只有稳定时才显示单边 PPL。"
+            spc_logic_en = "Pull-out force uses consecutive subgroups of five with X̄-R constants A2=0.577, D3=0, and D4=2.114. Incomplete subgroups are excluded from limit estimation, and one-sided PPL is shown only when stable."
+        render_chart_heading(
+            selected_method,
+            selected_method,
+            "判断当前过程是否稳定，并区分控制限与产品规格。",
+            "Assess process stability while separating control limits from product specifications.",
+            "根据数据结构自动选用 I-MR、p-chart 或 X̄-R。",
+            "Automatically select I-MR, p-chart, or X̄-R based on the source structure.",
+            spc_logic_cn,
+            spc_logic_en,
+            bme_chart_source(data),
+            "bme_v4_spc_info",
+        )
         if method.startswith("imr"):
             chart, limits = build_imr_chart_data(data)
             chart["sequence"] = np.arange(1, len(chart) + 1)
@@ -14056,7 +14087,7 @@ def render_bme_bike_quality_dashboard_v3(
             if method == "imr":
                 if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="LSL", row=1, col=1)
                 if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="USL", row=1, col=1)
-            fig.update_layout(title=selected_method, height=570, margin=dict(l=20, r=20, t=65, b=25), legend=dict(orientation="h"))
+            fig.update_layout(height=570, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
             if limits:
                 status_text = t("稳定", "Stable") if limits.get("stable") else t("存在特殊原因信号", "Special-cause signals detected")
@@ -14075,7 +14106,7 @@ def render_bme_bike_quality_dashboard_v3(
             fig.add_trace(go.Scatter(x=chart["date"], y=chart["lcl"], mode="lines", name="LCL", line=dict(color="#c01048", dash="dot")))
             fig.add_hline(y=limits["center"], line_color="#168a5b", annotation_text="CL")
             fig.update_yaxes(tickformat=".1%")
-            fig.update_layout(title=selected_method, height=460, margin=dict(l=20, r=20, t=60, b=30), legend=dict(orientation="h"))
+            fig.update_layout(height=460, margin=dict(l=20, r=20, t=25, b=30), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         else:
             chart, limits = build_xbar_r_chart_data(data)
@@ -14085,17 +14116,29 @@ def render_bme_bike_quality_dashboard_v3(
             for value, name in [(limits["center"], "CL"), (limits["ucl"], "UCL"), (limits["lcl"], "LCL")]: fig.add_hline(y=value, annotation_text=name, line_dash="dot" if name != "CL" else "solid", row=1, col=1)
             fig.add_hline(y=200, annotation_text="LSL", line_color="#d99a00", line_dash="dash", row=1, col=1)
             fig.add_hline(y=limits["r_ucl"], annotation_text="R UCL", line_color="#c01048", line_dash="dot", row=2, col=1)
-            fig.update_layout(title=selected_method, height=560, margin=dict(l=20, r=20, t=65, b=25), legend=dict(orientation="h"))
+            fig.update_layout(height=560, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             st.caption(t(f"完整 n=5 子组 {len(chart)} 个；不完整子组 {int(limits.get('incomplete_groups', 0))} 个未用于控制限。", f"{len(chart)} complete n=5 subgroups; {int(limits.get('incomplete_groups', 0))} incomplete subgroups excluded from limits."))
 
-    st.subheader(t("4 · Top 问题 Pareto", "4 · Top Issue Pareto"))
     alerts = view[view["is_alert"]].copy()
     pareto = alerts.assign(issue_driver=alerts["issue_driver"].replace("", t("未记录", "Not recorded"))).groupby(["supplier", "issue_driver"], as_index=False).agg(alert_records=("source_row", "count"), defect_qty=("defect_qty", "sum"))
     pareto = pareto.sort_values(["alert_records", "defect_qty"], ascending=False).head(20).sort_values("alert_records")
     if pareto.empty:
+        st.subheader(t("4 · Top 问题 Pareto", "4 · Top Issue Pareto"))
         st.info(t("当前没有问题 Pareto 数据。", "No issue Pareto data is available."))
     else:
+        render_chart_heading(
+            "4 · Top 问题 Pareto",
+            "4 · Top Issue Pareto",
+            "直接识别当前筛选范围内贡献最大的真实问题和检查点。",
+            "Directly identify the real issues and checkpoints contributing most in the current scope.",
+            "只汇总已触发 Alert 的源问题字段。",
+            "Aggregate source issue fields only for alert-triggering records.",
+            "横轴为 Alert 记录数，按供应商分色；记录数不等同于不良件数。",
+            "The horizontal axis is alert-record count colored by supplier; record count is not defective-piece quantity.",
+            bme_chart_source(alerts),
+            "bme_v4_issue_pareto_info",
+        )
         fig = px.bar(pareto, x="alert_records", y="issue_driver", color="supplier", orientation="h", labels={"alert_records": t("Alert记录数", "Alert Records"), "issue_driver": t("问题 / 检查点", "Issue / Checkpoint")}, color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"])
         fig.update_layout(height=560, margin=dict(l=20, r=20, t=25, b=30), legend_title_text="")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -14115,28 +14158,141 @@ def render_bme_bike_quality_dashboard_v3(
     if not scoped_nc.empty:
         customer_pareto = scoped_nc.groupby(["supplier", "model", "defect_code"], as_index=False)["nc_qty"].sum().sort_values("nc_qty", ascending=False).head(15).sort_values("nc_qty")
         customer_pareto["problem"] = customer_pareto["model"].replace("", t("未记录Model", "Model unrecorded")) + " · " + customer_pareto["defect_code"]
+        render_chart_heading(
+            "客户 NC Model / Defect Code Pareto",
+            "Customer NC Model / Defect Code Pareto",
+            "找出 FSD 与 TEKTRO 客户端 NC 数量最大的产品和源缺陷编码组合。",
+            "Find the FSD and TEKTRO product/source-defect-code combinations with the most customer NC quantity.",
+            "按供应商、Model 和源 Defect Code 汇总 NC 数量并显示 Top 15。",
+            "Aggregate NC quantity by supplier, model, and source Defect Code, then show the Top 15.",
+            "Defect Code 保留 W、V、M、D 等源编码，不推断其业务含义；TEKTRO 因缺少订单量分母不计算 PPM。",
+            "Defect Codes retain source values such as W, V, M, and D without inferred meanings; TEKTRO PPM is not calculated because the order-quantity denominator is unavailable.",
+            "BME Database/Customer/non_conforms_export_22062026.xlsx",
+            "bme_v4_customer_pareto_info",
+        )
         fig = px.bar(customer_pareto, x="nc_qty", y="problem", color="supplier", orientation="h", labels={"nc_qty": t("客户 NC 数量", "Customer NC Qty"), "problem": "Model · Defect Code"}, color_discrete_sequence=["#3341c4", "#d99a00"])
         fig.update_layout(height=480, margin=dict(l=20, r=20, t=25, b=30), legend_title_text="")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         st.caption(t("Defect Code 保留源编码，不推断 W / V / M / D 的含义。", "Defect Codes retain source values; meanings of W / V / M / D are not inferred."))
-    with st.expander(t("更多分析", "More Analysis"), expanded=False):
-        tabs = st.tabs([t("CMW 来料供应商", "CMW Incoming Suppliers"), t("返工流程", "Rework Workflow"), t("可审计明细", "Auditable Detail")])
-        with tabs[0]:
-            if cmw_iqc.empty: st.info(t("当前筛选没有 CMW IQC 数据。", "No CMW IQC data under current filters."))
-            else:
-                incoming = cmw_iqc.groupby("material_supplier", as_index=False).agg(receipts=("source_row", "count"), incoming_qty=("inspected_qty", "sum"), return_qty=("defect_qty", "sum"))
-                incoming["return_ppm"] = incoming["return_qty"] / incoming["incoming_qty"].replace(0, np.nan) * 1_000_000
-                dataframe_with_format(incoming.sort_values(["return_qty", "receipts"], ascending=False), height=380)
-        with tabs[1]:
-            rework = view[view["stage"].eq("REWORK")].copy()
-            if rework.empty: st.info(t("当前筛选没有返工数据。", "No rework data under current filters."))
-            else:
-                rework["workflow_days"] = (rework["workflow_end_date"] - rework["event_timestamp"]).dt.total_seconds() / 86400
-                dataframe_with_format(rework[["date", "order_po", "model_item_code", "issue_driver", "status", "workflow_days", "source_file"]].sort_values("date", ascending=False), height=380)
-        with tabs[2]:
-            cols = ["supplier", "stage", "date", "event_timestamp", "order_po", "model_item_code", "item_name", "process", "issue_driver", "inspected_qty", "defect_qty", "result", "spec_text", "measured_value", "data_quality_flag", "status", "metric_scope", "source_file", "source_sheet", "source_row"]
-            dataframe_with_format(view[cols].sort_values("date", ascending=False), height=520)
-            st.download_button(t("下载当前 BME 明细", "Download Current BME Detail"), view[cols].to_csv(index=False).encode("utf-8-sig"), file_name=f"BME_quality_detail_{dt.date.today():%Y%m%d}.csv", mime="text/csv")
+    st.subheader(t("6 · 更多分析图表", "6 · More Analysis Charts"))
+    if not cmw_iqc.empty:
+        incoming = cmw_iqc.groupby("material_supplier", as_index=False).agg(
+            receipts=("source_row", "count"),
+            incoming_qty=("inspected_qty", "sum"),
+            return_qty=("defect_qty", "sum"),
+        )
+        incoming["return_ppm"] = incoming["return_qty"] / incoming["incoming_qty"].replace(0, np.nan) * 1_000_000
+        incoming_chart = incoming[
+            incoming["material_supplier"].ne("Unrecorded")
+            & incoming["incoming_qty"].gt(0)
+            & incoming["return_qty"].gt(0)
+        ].copy()
+        incoming_chart = incoming_chart.sort_values(["return_qty", "incoming_qty"], ascending=False).head(20)
+        if not incoming_chart.empty:
+            incoming_chart = incoming_chart.sort_values("return_ppm")
+            incoming_chart["volume_label"] = incoming_chart.apply(
+                lambda row: t(
+                    f"退货 {row['return_qty']:,.0f} / 来料 {row['incoming_qty']:,.0f}",
+                    f"Return {row['return_qty']:,.0f} / Incoming {row['incoming_qty']:,.0f}",
+                ),
+                axis=1,
+            )
+            render_chart_heading(
+                "CMW 来料供应商退货 PPM",
+                "CMW Incoming-Supplier Return PPM",
+                "直接比较有真实退货记录的来料供应商质量表现。",
+                "Directly compare incoming suppliers with recorded return quantities.",
+                "先按退货数量和来料量选出 Top 20，再用退货数量÷来料数量×1,000,000 计算 PPM。",
+                "Select the Top 20 by return and incoming volume, then calculate PPM as return quantity divided by incoming quantity times 1,000,000.",
+                "仅显示供应商名称、来料数量和退货数量都可用的记录；Unrecorded 不参与供应商比较。颜色表示退货数量，避免只看高 PPM 而忽略业务量。",
+                "Show only records with usable supplier, incoming quantity, and return quantity. Unrecorded is excluded. Color represents return quantity so a high PPM is not read without volume context.",
+                bme_chart_source(cmw_iqc),
+                "bme_v4_incoming_supplier_info",
+            )
+            fig = px.bar(
+                incoming_chart,
+                x="return_ppm",
+                y="material_supplier",
+                color="return_qty",
+                orientation="h",
+                text="volume_label",
+                hover_data={"receipts": True, "incoming_qty": ":,.0f", "return_qty": ":,.0f", "return_ppm": ":,.0f"},
+                labels={"return_ppm": t("退货 PPM", "Return PPM"), "material_supplier": t("来料供应商", "Incoming Supplier"), "return_qty": t("退货数量", "Return Qty")},
+                color_continuous_scale=["#dbeafe", "#3341c4", "#c01048"],
+            )
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            fig.update_layout(height=max(420, 34 * len(incoming_chart) + 150), margin=dict(l=20, r=80, t=25, b=35), coloraxis_colorbar_title=t("退货数", "Return Qty"))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    rework = view[view["stage"].eq("REWORK")].copy()
+    if not rework.empty:
+        rework["workflow_days"] = (rework["workflow_end_date"] - rework["event_timestamp"]).dt.total_seconds() / 86400
+        closed_rework = rework[
+            rework["status"].eq("Closed")
+            & rework["workflow_days"].ge(0)
+            & rework["date"].notna()
+        ].copy()
+        if not closed_rework.empty:
+            closed_rework["month"] = closed_rework["date"].dt.to_period("M").dt.to_timestamp()
+            monthly_rework = closed_rework.groupby("month", as_index=False).agg(
+                closed_records=("source_row", "count"),
+                median_days=("workflow_days", "median"),
+                p90_days=("workflow_days", lambda values: values.quantile(.90)),
+            )
+            render_chart_heading(
+                "CMW 返工流程周期趋势",
+                "CMW Rework Workflow Lead-Time Trend",
+                "观察已关闭返工申请的流程周期是否改善，并同时保留月度处理量。",
+                "Track whether closed rework-application workflow lead time is improving while retaining monthly throughput.",
+                "按申请月份计算已关闭记录的中位数和 P90 流程天数，并叠加关闭记录数。",
+                "Calculate median and P90 workflow days for closed records by application month and overlay closed-record volume.",
+                "流程天数为申请时间到源更新时间，不解释为现场实际返工工时；未关闭记录不进入周期统计。",
+                "Workflow days run from application time to the source update timestamp and are not physical rework labor hours; open records are excluded from lead-time statistics.",
+                bme_chart_source(rework),
+                "bme_v4_rework_lead_info",
+            )
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            fig.add_trace(go.Bar(x=monthly_rework["month"], y=monthly_rework["closed_records"], name=t("关闭记录数", "Closed Records"), marker_color="#dbeafe", opacity=.75), secondary_y=True)
+            fig.add_trace(go.Scatter(x=monthly_rework["month"], y=monthly_rework["median_days"], mode="lines+markers", name=t("中位周期", "Median Lead Time"), line=dict(color="#3341c4", width=3)), secondary_y=False)
+            fig.add_trace(go.Scatter(x=monthly_rework["month"], y=monthly_rework["p90_days"], mode="lines+markers", name="P90", line=dict(color="#c01048", width=2, dash="dot")), secondary_y=False)
+            fig.update_yaxes(title_text=t("流程天数", "Workflow Days"), rangemode="tozero", secondary_y=False)
+            fig.update_yaxes(title_text=t("关闭记录数", "Closed Records"), rangemode="tozero", secondary_y=True)
+            fig.update_layout(height=460, margin=dict(l=20, r=20, t=25, b=35), legend=dict(orientation="h", y=1.08))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        open_rework_chart = rework[~rework["status"].eq("Closed") & rework["event_timestamp"].notna()].copy()
+        if not open_rework_chart.empty:
+            open_rework_chart["open_days"] = (
+                pd.Timestamp(dt.datetime.now()) - open_rework_chart["event_timestamp"]
+            ).dt.total_seconds().div(86400).clip(lower=0)
+            open_rework_chart["item"] = open_rework_chart["model_item_code"].replace("", t("未记录型号", "Model unrecorded"))
+            open_rework_chart = open_rework_chart.sort_values("open_days")
+            render_chart_heading(
+                "CMW 未关闭返工老化",
+                "CMW Open-Rework Aging",
+                "直接看到仍未关闭的返工申请及其持续时间。",
+                "Directly show rework applications that remain open and their elapsed time.",
+                "未关闭天数为当前时间减申请时间，按型号逐条展示。",
+                "Open days equal current time minus application time and are shown by model for each record.",
+                "状态来自源流程字段；图表不推断现场是否已经完成返工。",
+                "Status comes from the source workflow field; the chart does not infer whether physical rework has finished.",
+                bme_chart_source(rework),
+                "bme_v4_open_rework_info",
+            )
+            fig = px.bar(
+                open_rework_chart,
+                x="open_days",
+                y="item",
+                color="status",
+                orientation="h",
+                text="open_days",
+                hover_data={"date": True, "order_po": True, "issue_driver": True},
+                labels={"open_days": t("未关闭天数", "Open Days"), "item": "Model", "status": t("流程状态", "Workflow Status")},
+                color_discrete_sequence=["#c01048", "#d99a00"],
+            )
+            fig.update_traces(texttemplate="%{text:.1f}", textposition="outside", cliponaxis=False)
+            fig.update_layout(height=max(320, 54 * len(open_rework_chart) + 150), margin=dict(l=20, r=55, t=25, b=35), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
 ZX_ALERT_TYPES = {
@@ -14598,6 +14754,19 @@ def _render_bme_data_map(events: pd.DataFrame) -> None:
         counts = events.groupby(["supplier", "stage"], as_index=False).size().rename(columns={"size": "records"})
         pivot = counts.pivot(index="supplier", columns="stage", values="records").reindex(index=suppliers, columns=expected_stages)
         text_values = pivot.map(lambda value: f"{int(value):,}" if pd.notna(value) else "-")
+        source_files = sorted(events.get("source_file", pd.Series(dtype=object)).dropna().astype(str).loc[lambda values: values.ne("")].unique())
+        render_chart_heading(
+            "供应商 × 数据类型覆盖热力图",
+            "Supplier × Data-Type Coverage Heatmap",
+            "一眼确认每个 BME 供应商当前有哪些质量关卡数据，以及数据量是否足够。",
+            "See which quality-gate sources are currently available for each BME supplier and whether the volume is sufficient.",
+            "按供应商和质量关卡汇总源记录数；颜色越深表示记录数越多。",
+            "Aggregate source-record count by supplier and quality gate; darker color means more records.",
+            "单元格显示真实记录数；“-”代表当前没有接入数据，不代表没有质量风险。End of QC 不用 AQL 或 DKL 补造。",
+            "Cells show actual record counts. A dash means the source is not connected, not that quality risk is absent. End of QC is not fabricated from AQL or DKL.",
+            " + ".join(source_files) if source_files else "BME Database",
+            "bme_v4_data_map_info",
+        )
         fig = go.Figure(go.Heatmap(
             z=pivot.fillna(0).values,
             x=[stage_labels.get(value, value) for value in pivot.columns],
@@ -14610,12 +14779,6 @@ def _render_bme_data_map(events: pd.DataFrame) -> None:
         ))
         fig.update_layout(height=320, margin=dict(l=40, r=20, t=20, b=30), paper_bgcolor="#ffffff")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    with st.expander(t("查看接入方式与来源", "View Connection Methods and Sources"), expanded=False):
-        st.dataframe(access, use_container_width=True, hide_index=True, height=330)
-        st.info(t(
-            "End of QC 当前未接入；AQL 与 DKL 保持独立，不用其他检验数据补造。",
-            "End of QC is not connected. AQL and DKL remain separate and are not fabricated from other inspection data.",
-        ), icon=":material/info:")
 
 
 def _render_bme_specific_charts(events: pd.DataFrame) -> None:
