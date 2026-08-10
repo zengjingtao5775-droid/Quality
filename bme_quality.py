@@ -7,6 +7,9 @@ import numpy as np
 import pandas as pd
 
 
+BME_QUALITY_LOGIC_VERSION = "2026-08-10-v2"
+
+
 EVENT_COLUMNS = [
     "community",
     "supplier",

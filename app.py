@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import html
+import importlib
 import json
 import math
 import os
@@ -27,16 +28,24 @@ import streamlit as st
 from openpyxl import load_workbook
 from plotly.subplots import make_subplots
 
-from bme_quality import (
-    bme_events_to_alerts,
-    bme_source_fingerprint,
-    build_imr_chart_data,
-    build_p_chart_data,
-    build_xbar_r_chart_data,
-    calculate_fsd_customer_ppm,
-    load_bme_customer_quality,
-    load_bme_quality_events,
-)
+import bme_quality as _bme_quality
+
+
+# Streamlit Cloud can hot-reload app.py while retaining an already-imported
+# helper module. Version-gate the import so deployed data logic and UI cannot
+# drift into a half-updated state.
+_BME_QUALITY_LOGIC_VERSION = "2026-08-10-v2"
+if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
+    _bme_quality = importlib.reload(_bme_quality)
+
+bme_events_to_alerts = _bme_quality.bme_events_to_alerts
+bme_source_fingerprint = _bme_quality.bme_source_fingerprint
+build_imr_chart_data = _bme_quality.build_imr_chart_data
+build_p_chart_data = _bme_quality.build_p_chart_data
+build_xbar_r_chart_data = _bme_quality.build_xbar_r_chart_data
+calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
+load_bme_customer_quality = _bme_quality.load_bme_customer_quality
+load_bme_quality_events = _bme_quality.load_bme_quality_events
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -13309,16 +13318,18 @@ def build_product_qc_provenance(finished: pd.DataFrame, product_codes: list[str]
 @st.cache_data(show_spinner=False)
 def load_bme_quality_events_cached(
     fingerprint: tuple[tuple[str, int, int], ...],
+    logic_version: str,
 ) -> pd.DataFrame:
-    _ = fingerprint
+    _ = fingerprint, logic_version
     return load_bme_quality_events(ROOT)
 
 
 @st.cache_data(show_spinner=False)
 def load_bme_customer_quality_cached(
     fingerprint: tuple[tuple[str, int, int], ...],
+    logic_version: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    _ = fingerprint
+    _ = fingerprint, logic_version
     return load_bme_customer_quality(ROOT)
 
 
@@ -16582,12 +16593,12 @@ with st.spinner(t("正在读取供应商质量数据...", "Loading supplier qual
         else pd.DataFrame()
     )
 bme_events = (
-    load_bme_quality_events_cached(bme_source_fingerprint(ROOT))
+    load_bme_quality_events_cached(bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION)
     if active_scope_key in {"BME_CMW", "QUALITY_ALERT"}
     else pd.DataFrame()
 )
 bme_customer_nc, bme_fsd_orders = (
-    load_bme_customer_quality_cached(bme_source_fingerprint(ROOT))
+    load_bme_customer_quality_cached(bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION)
     if active_scope_key == "BME_CMW"
     else (pd.DataFrame(), pd.DataFrame())
 )
