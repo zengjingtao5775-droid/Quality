@@ -14020,7 +14020,7 @@ def render_bme_bike_quality_dashboard_v3(
                 f"当前供应商和质量环节中，另有 {undated_records:,} 条记录没有日期，因此没有计入本期 KPI 和图表。",
                 f"Another {undated_records:,} records in the selected supplier/gate scope have no date and are excluded from period KPIs and charts.",
             ))
-        st.caption(t("缺少规格或分母时，系统保留数据，但不生成不适用的能力或不良率结论；缺少日期的记录不进入周期统计。", "Records missing specifications or denominators remain available without generating inapplicable capability or defect-rate conclusions; undated records do not enter period statistics."))
+        st.caption(t("没有规格或检验数量时，只保留原始记录，不计算过程能力或不良率；没有日期的记录不计入本期数据。", "Records missing specifications or denominators remain available without generating inapplicable capability or defect-rate conclusions; undated records do not enter period statistics."))
 
     st.subheader(t("2 · 当前质量情况", "2 · Quality Signal Overview"))
     for optional_column, default_value in {
@@ -14230,7 +14230,7 @@ def render_bme_bike_quality_dashboard_v3(
         render_chart_heading(
             "4 · 主要质量问题 Pareto",
             "4 · Top Issue Pareto",
-            "直接识别当前筛选范围内贡献最大的真实问题和检查点。",
+            "找出当前范围内不良数量最多的问题，明确应该先改善什么。",
             "Directly identify the real issues and checkpoints contributing most in the current scope.",
             "只汇总已触发 Alert 且有不良数量的真实问题；多选问题拆分后分别累计。",
             "Aggregate real issues only when an alert and defect quantity exist; multi-select issues are split and counted separately.",
@@ -14245,7 +14245,7 @@ def render_bme_bike_quality_dashboard_v3(
         top_issue = pareto.sort_values("defect_qty", ascending=False).iloc[0]
         total_defects = float(pareto["defect_qty"].sum())
         st.caption(t(
-            f"当前第一问题：{top_issue['issue_driver']}，不良数量 {top_issue['defect_qty']:,.0f}，占图中 Top 问题 {top_issue['defect_qty'] / total_defects:.1%}；另有 {missing_issue_alerts:,} 条 Alert 未记录具体问题，未混入排名。",
+            f"当前第一问题：{top_issue['issue_driver']}，不良数量 {top_issue['defect_qty']:,.0f}，占图中主要问题 {top_issue['defect_qty'] / total_defects:.1%}；另有 {missing_issue_alerts:,} 条异常记录没有填写具体问题，因此没有放进排名。",
             f"Top issue: {top_issue['issue_driver']} with {top_issue['defect_qty']:,.0f} defects ({top_issue['defect_qty'] / total_defects:.1%} of defects shown); {missing_issue_alerts:,} alerts without a specific issue are excluded from the ranking.",
         ))
 
@@ -14384,7 +14384,7 @@ def render_bme_bike_quality_dashboard_v3(
             open_rework_chart["item"] = open_rework_chart["model_item_code"].replace("", t("未记录型号", "Model unrecorded"))
             open_rework_chart = open_rework_chart.sort_values("open_days")
             render_chart_heading(
-                "CMW 未关闭返工老化",
+                "CMW 未结案返工持续天数",
                 "CMW Open-Rework Aging",
                 "查看哪些返工申请还没有结案，以及已经持续了多少天。",
                 "Directly show rework applications that remain open and their elapsed time.",
