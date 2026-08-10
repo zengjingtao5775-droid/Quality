@@ -13309,6 +13309,45 @@ def load_bme_quality_events_cached(
     return load_bme_quality_events(ROOT)
 
 
+def render_bme_supplier_risk_charts(alerts: pd.DataFrame) -> None:
+    st.subheader(t("供应商风险", "Supplier Risk"))
+    left, right = st.columns(2, gap="small")
+    with left:
+        summary = alerts.groupby(["supplier", "stage"], as_index=False).size().rename(columns={"size": "alerts"})
+        if summary.empty:
+            st.info(t("当前筛选没有 Alert。", "No alerts under the current filters."))
+        else:
+            fig = px.bar(
+                summary,
+                x="supplier",
+                y="alerts",
+                color="stage",
+                barmode="stack",
+                title=t("Alert 按供应商与关卡", "Alerts by Supplier and Gate"),
+                color_discrete_sequence=["#3341c4", "#1698c4", "#d99a00", "#7c3aed", "#c01048", "#168a5b", "#e85d68"],
+            )
+            fig.update_layout(height=360, margin=dict(l=20, r=20, t=60, b=30), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    with right:
+        trend = alerts.dropna(subset=["date"]).copy()
+        if trend.empty:
+            st.info(t("当前筛选没有可用日期趋势。", "No dated trend under the current filters."))
+        else:
+            trend["month"] = trend["date"].dt.to_period("M").dt.to_timestamp()
+            monthly = trend.groupby(["month", "supplier"], as_index=False).size().rename(columns={"size": "alerts"})
+            fig = px.line(
+                monthly,
+                x="month",
+                y="alerts",
+                color="supplier",
+                markers=True,
+                title=t("月度 Alert 趋势", "Monthly Alert Trend"),
+                color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"],
+            )
+            fig.update_layout(height=360, margin=dict(l=20, r=20, t=60, b=30), legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
     st.markdown(
         f"""
@@ -13323,6 +13362,22 @@ def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
     if events.empty:
         st.error(t("未读取到 BME 数据，请检查 BME Database 文件夹。", "No BME data was loaded. Check the BME Database folder."))
         return
+
+    page_labels = {
+        "overview": t("01 总览", "01 Overview"),
+        "supplier": t("02 供应商风险", "02 Supplier Risk"),
+        "process": t("03 制程风险", "03 Process Risk"),
+        "data": t("04 数据地图", "04 Data Map"),
+        "summary": t("05 管理总结", "05 Management Summary"),
+    }
+    active_page = st.segmented_control(
+        t("看板页面", "Dashboard Page"),
+        list(page_labels),
+        default="overview",
+        format_func=lambda value: page_labels[value],
+        key="bme_v2_page_nav",
+        width="stretch",
+    ) or "overview"
 
     suppliers = sorted(events["supplier"].dropna().astype(str).unique())
     stages = [stage for stage in ["IQC", "PQC", "AQL", "DKL", "MACHINE", "LAB", "REWORK"] if stage in set(events["stage"])]
@@ -13381,6 +13436,93 @@ def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
         ]
     )
 
+    if active_page == "summary":
+        st.subheader(t("BME Community 管理总结", "BME Community Management Summary"))
+        supplier_alerts = (
+            alerts.groupby("supplier", as_index=False)
+            .size()
+            .rename(columns={"size": "alerts"})
+            .sort_values("alerts", ascending=False)
+        )
+        issue_summary = (
+            alerts.assign(issue_driver=alerts["issue_driver"].replace("", t("未记录", "Not recorded")))
+            .groupby("issue_driver", as_index=False)
+            .size()
+            .rename(columns={"size": "alerts"})
+            .sort_values("alerts", ascending=False)
+        )
+        top_supplier = supplier_alerts.iloc[0] if not supplier_alerts.empty else None
+        top_issue = issue_summary.iloc[0] if not issue_summary.empty else None
+        summary_cards = [
+            {
+                "label": t("当前首要供应商", "Priority Supplier"),
+                "value": str(top_supplier["supplier"]) if top_supplier is not None else "-",
+                "note": t(
+                    f"{int(top_supplier['alerts']):,} 条 Alert" if top_supplier is not None else "当前没有 Alert",
+                    f"{int(top_supplier['alerts']):,} alerts" if top_supplier is not None else "No current alerts",
+                ),
+                "level": "high" if top_supplier is not None else "low",
+            },
+            {
+                "label": t("当前首要问题", "Priority Issue"),
+                "value": str(top_issue["issue_driver"])[:24] if top_issue is not None else "-",
+                "note": t(
+                    f"{int(top_issue['alerts']):,} 条记录" if top_issue is not None else "当前没有问题记录",
+                    f"{int(top_issue['alerts']):,} records" if top_issue is not None else "No current issue records",
+                ),
+                "level": "high" if top_issue is not None else "low",
+            },
+            {
+                "label": t("优先动作", "Priority Action"),
+                "value": t("制程确认", "Process Review") if len(alerts) else t("持续监控", "Monitor"),
+                "note": t("先确认 Top 问题的规格、设备参数与返工关闭状态", "Confirm specifications, machine parameters, and rework closure for the top issue"),
+                "level": "medium" if len(alerts) else "low",
+            },
+        ]
+        render_kpi_cards(summary_cards)
+        st.info(
+            t(
+                "本页结论完全基于当前筛选后的真实 BME 数据，不补造缺失规格或 End of QC 结果。",
+                "This summary is based only on the filtered BME source data; missing specifications and End of QC results are not inferred.",
+            ),
+            icon=":material/fact_check:",
+        )
+        return
+
+    if active_page == "data":
+        st.subheader(t("数据地图", "Data Map"))
+        data_labels = {
+            "coverage": t("数据覆盖", "Data Coverage"),
+            "detail": t("可审计明细", "Auditable Detail"),
+        }
+        selected_data_view = st.segmented_control(
+            t("数据视图", "Data View"),
+            list(data_labels),
+            default="coverage",
+            format_func=lambda value: data_labels[value],
+            key="bme_data_module",
+            width="stretch",
+        ) or "coverage"
+        if selected_data_view == "coverage":
+            coverage = view.groupby(["supplier", "stage", "metric_scope"], as_index=False).agg(
+                records=("source_row", "count"),
+                dated=("date", lambda values: int(values.notna().sum())),
+                with_po=("order_po", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
+                with_model=("model_item_code", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
+                with_status=("status_available", "sum"),
+            )
+            dataframe_with_format(coverage, height=460)
+        else:
+            display_cols = ["supplier", "stage", "date", "order_po", "model_item_code", "item_name", "process", "issue_driver", "inspected_qty", "defect_qty", "result", "spec_text", "measured_value", "status", "metric_scope", "source_file", "source_sheet", "source_row"]
+            dataframe_with_format(view[display_cols].sort_values("date", ascending=False), height=560)
+            st.download_button(
+                t("下载当前 BME 明细", "Download Current BME Detail"),
+                view[display_cols].to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"BME_quality_detail_{dt.date.today():%Y%m%d}.csv",
+                mime="text/csv",
+            )
+        return
+
     st.info(
         t(
             "FSD 工作簿没有 End of QC Sheet，本页明确标记为 Data unavailable；AQL 和 DKL 保持独立，不替代 End of QC。",
@@ -13410,39 +13552,20 @@ def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         st.caption(t("单元格为 Alert记录数 / 当前源记录数；它用于定位关卡，不等同于跨供应商不良率。", "Cells show alert records / source records. This locates gates and is not a cross-supplier defect rate."))
 
-    left, right = st.columns(2, gap="small")
-    with left:
-        summary = alerts.groupby(["supplier", "stage"], as_index=False).size().rename(columns={"size": "alerts"})
-        if summary.empty:
-            st.info(t("当前筛选没有 Alert。", "No alerts under the current filters."))
-        else:
-            fig = px.bar(summary, x="supplier", y="alerts", color="stage", barmode="stack",
-                         title=t("Alert 按供应商与关卡", "Alerts by Supplier and Gate"),
-                         color_discrete_sequence=["#3341c4", "#1698c4", "#d99a00", "#7c3aed", "#c01048", "#168a5b", "#e85d68"])
-            fig.update_layout(height=360, margin=dict(l=20, r=20, t=60, b=30), legend_title_text="")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    with right:
-        trend = alerts.dropna(subset=["date"]).copy()
-        if trend.empty:
-            st.info(t("当前筛选没有可用日期趋势。", "No dated trend under the current filters."))
-        else:
-            trend["month"] = trend["date"].dt.to_period("M").dt.to_timestamp()
-            monthly = trend.groupby(["month", "supplier"], as_index=False).size().rename(columns={"size": "alerts"})
-            fig = px.line(monthly, x="month", y="alerts", color="supplier", markers=True,
-                          title=t("月度 Alert 趋势", "Monthly Alert Trend"),
-                          color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"])
-            fig.update_layout(height=360, margin=dict(l=20, r=20, t=60, b=30), legend_title_text="")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    if active_page == "overview":
+        return
+
+    if active_page == "supplier":
+        render_bme_supplier_risk_charts(alerts)
+        return
 
     analysis_labels = {
         "pareto": t("问题 Pareto", "Issue Pareto"),
         "parameter": t("参数 / 控制图", "Parameter / Control Chart"),
-        "detail": t("可审计明细", "Auditable Detail"),
-        "coverage": t("数据覆盖", "Data Coverage"),
     }
     selected_analysis = st.segmented_control(
         t("工程下钻", "Engineering Drill-down"), list(analysis_labels), default="pareto",
-        format_func=lambda value: analysis_labels[value], key="bme_analysis_module", width="stretch"
+        format_func=lambda value: analysis_labels[value], key="bme_process_module_v2", width="stretch"
     ) or "pareto"
     if selected_analysis == "pareto":
         pareto = alerts.assign(issue_driver=alerts["issue_driver"].replace("", t("未记录", "Not recorded")))
@@ -13491,24 +13614,6 @@ def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
             if parameter["spec_low"].isna().all() and parameter["spec_high"].isna().all():
                 st.warning(t("该参数没有源规格，只展示稳定性，不判 NG。", "This parameter has no source specification. Stability is shown without judging NG."))
-    elif selected_analysis == "coverage":
-        coverage = view.groupby(["supplier", "stage", "metric_scope"], as_index=False).agg(
-            records=("source_row", "count"), dated=("date", lambda values: int(values.notna().sum())),
-            with_po=("order_po", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
-            with_model=("model_item_code", lambda values: int(values.fillna("").astype(str).str.strip().ne("").sum())),
-            with_status=("status_available", "sum"),
-        )
-        dataframe_with_format(coverage, height=420)
-    else:
-        display_cols = ["supplier", "stage", "date", "order_po", "model_item_code", "item_name", "process", "issue_driver", "inspected_qty", "defect_qty", "result", "spec_text", "measured_value", "status", "metric_scope", "source_file", "source_sheet", "source_row"]
-        dataframe_with_format(view[display_cols].sort_values("date", ascending=False), height=560)
-        st.download_button(
-            t("下载当前 BME 明细", "Download Current BME Detail"),
-            view[display_cols].to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"BME_quality_detail_{dt.date.today():%Y%m%d}.csv", mime="text/csv",
-        )
-
-
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),
     "PQC": ("PQC 过程预警", "PQC Alert"),
@@ -14157,6 +14262,31 @@ def render_zx_alert_dashboard(
             font-weight: 500;
             line-height: 1.25;
         }
+        .zx-alert-return-links {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .zx-alert-return-links a {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            min-height: 28px;
+            padding: 0 10px;
+            border: 1px solid #cfd4df;
+            border-radius: 4px;
+            background: #ffffff;
+            color: #3546c4 !important;
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-decoration: none !important;
+        }
+        .zx-alert-return-links a:hover {
+            border-color: #3546c4;
+            background: #f2f4ff;
+        }
         .zx-alert-head-controls {
             display: grid;
             gap: 7px;
@@ -14457,6 +14587,10 @@ def render_zx_alert_dashboard(
         f"""
         <div class="zx-alert-page-head">
           <div>
+            <div class="zx-alert-return-links">
+              <a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self"><span class="material-symbols-rounded">arrow_back</span>{html.escape(t('返回 ZX 看板', 'Back to ZX'))}</a>
+              <a href="?scope=BME_CMW&lang={language_query_code()}" target="_self">{html.escape(t('返回 BME 看板', 'Back to BME'))}</a>
+            </div>
             <div class="zx-alert-breadcrumb">Cockpit&nbsp;&nbsp;/&nbsp;&nbsp;Alert&nbsp;&nbsp;/&nbsp;&nbsp;Order Alert&nbsp;&nbsp;/&nbsp;&nbsp;<strong>Overview</strong></div>
             <h1 class="zx-alert-title">Overview</h1>
             <div class="zx-alert-subtitle">
