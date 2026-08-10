@@ -13,9 +13,11 @@ EVENT_COLUMNS = [
     "supplier_code",
     "stage",
     "date",
+    "event_timestamp",
     "order_po",
     "model_item_code",
     "item_name",
+    "material_supplier",
     "family",
     "process",
     "issue_driver",
@@ -31,6 +33,8 @@ EVENT_COLUMNS = [
     "severity",
     "status",
     "status_available",
+    "workflow_end_date",
+    "data_quality_flag",
     "metric_scope",
     "source_file",
     "source_sheet",
@@ -161,11 +165,111 @@ def _frame(**columns: object) -> pd.DataFrame:
             frame[column] = np.nan
     frame = frame[EVENT_COLUMNS]
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["event_timestamp"] = pd.to_datetime(frame["event_timestamp"], errors="coerce")
+    frame["workflow_end_date"] = pd.to_datetime(frame["workflow_end_date"], errors="coerce")
     for column in ["inspected_qty", "defect_qty", "defect_rate", "spec_low", "spec_high", "measured_value"]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame["is_alert"] = frame["is_alert"].fillna(False).astype(bool)
     frame["status_available"] = frame["status_available"].fillna(False).astype(bool)
     return frame
+
+
+def _normalize_po(series: pd.Series) -> pd.Series:
+    return (
+        _text(series)
+        .str.replace(r"\.0$", "", regex=True)
+        .str.replace(r"\s+", "", regex=True)
+        .str.upper()
+    )
+
+
+def spc_run_rule_flags(values: pd.Series, center: float, ucl: float, lcl: float) -> pd.DataFrame:
+    """Return auditable Western-Electric-style signals used by the BME page."""
+    values = pd.to_numeric(values, errors="coerce").reset_index(drop=True)
+    result = pd.DataFrame(index=values.index)
+    result["beyond_3sigma"] = values.gt(ucl) | values.lt(lcl)
+    side = np.sign(values - center).fillna(0).astype(int)
+    result["eight_one_side"] = False
+    result["six_trend"] = False
+    for end in range(7, len(values)):
+        window = side.iloc[end - 7:end + 1]
+        if (window.eq(1).all() or window.eq(-1).all()):
+            result.loc[end - 7:end, "eight_one_side"] = True
+    for end in range(5, len(values)):
+        window = values.iloc[end - 5:end + 1]
+        delta = window.diff().dropna()
+        if delta.gt(0).all() or delta.lt(0).all():
+            result.loc[end - 5:end, "six_trend"] = True
+    result["signal"] = result.any(axis=1)
+    return result
+
+
+def build_imr_chart_data(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Build an I-MR chart; flagged data-entry suspects do not estimate limits."""
+    chart = frame.copy().sort_values(["event_timestamp", "date", "source_row"], na_position="last")
+    chart["value"] = pd.to_numeric(chart["measured_value"], errors="coerce")
+    chart = chart[chart["value"].notna()].reset_index(drop=True)
+    estimate = chart[~chart.get("data_quality_flag", pd.Series("", index=chart.index)).fillna("").astype(str).ne("")]
+    if len(estimate) < 2:
+        return chart, {}
+    center = float(estimate["value"].mean())
+    mrbar = float(estimate["value"].diff().abs().dropna().mean())
+    ucl, lcl = center + 2.66 * mrbar, center - 2.66 * mrbar
+    chart["moving_range"] = chart["value"].diff().abs()
+    chart = pd.concat([chart, spc_run_rule_flags(chart["value"], center, ucl, lcl)], axis=1)
+    limits = {"center": center, "ucl": ucl, "lcl": lcl, "mrbar": mrbar, "mr_ucl": 3.267 * mrbar}
+    stable = not bool(chart["signal"].any()) and not bool(chart["moving_range"].gt(limits["mr_ucl"]).any())
+    limits["stable"] = stable
+    low = pd.to_numeric(estimate.get("spec_low"), errors="coerce").dropna()
+    high = pd.to_numeric(estimate.get("spec_high"), errors="coerce").dropna()
+    if stable and len(estimate) >= 25 and estimate["value"].nunique() >= 5 and not low.empty and not high.empty:
+        std = float(estimate["value"].std(ddof=1))
+        if std > 0:
+            limits["ppk"] = min((float(high.median()) - center) / (3 * std), (center - float(low.median())) / (3 * std))
+    return chart, limits
+
+
+def build_p_chart_data(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
+    chart = frame.copy().sort_values("date")
+    chart["n"] = pd.to_numeric(chart["inspected_qty"], errors="coerce")
+    chart["nc"] = pd.to_numeric(chart["defect_qty"], errors="coerce")
+    chart = chart[chart["n"].gt(0) & chart["nc"].ge(0)].reset_index(drop=True)
+    if chart.empty:
+        return chart, {}
+    pbar = float(chart["nc"].sum() / chart["n"].sum())
+    sigma = np.sqrt(pbar * (1 - pbar) / chart["n"])
+    chart["rate"] = chart["nc"] / chart["n"]
+    chart["ucl"] = np.minimum(1.0, pbar + 3 * sigma)
+    chart["lcl"] = np.maximum(0.0, pbar - 3 * sigma)
+    chart = pd.concat([chart, spc_run_rule_flags(chart["rate"], pbar, chart["ucl"], chart["lcl"])], axis=1)
+    return chart, {"center": pbar, "stable": not bool(chart["signal"].any())}
+
+
+def build_xbar_r_chart_data(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Build an Xbar-R chart for complete consecutive subgroups of five."""
+    values = frame.copy().sort_values(["date", "order_po", "source_row"], na_position="last")
+    values["value"] = pd.to_numeric(values["measured_value"], errors="coerce")
+    values = values[values["value"].notna()].copy()
+    values["within_batch"] = values.groupby(["source_sheet", "order_po"], dropna=False).cumcount()
+    values["subgroup"] = values["source_sheet"].astype(str) + " · " + values["order_po"].astype(str) + " · " + (values["within_batch"] // 5 + 1).astype(str)
+    grouped = values.groupby("subgroup", sort=False).agg(date=("date", "min"), mean=("value", "mean"), range=("value", lambda x: x.max() - x.min()), n=("value", "size")).reset_index()
+    chart = grouped[grouped["n"].eq(5)].reset_index(drop=True)
+    if chart.empty:
+        return chart, {"incomplete_groups": float((~grouped["n"].eq(5)).sum())}
+    center, rbar = float(chart["mean"].mean()), float(chart["range"].mean())
+    limits = {
+        "center": center, "ucl": center + 0.577 * rbar, "lcl": center - 0.577 * rbar,
+        "rbar": rbar, "r_ucl": 2.114 * rbar, "r_lcl": 0.0,
+        "incomplete_groups": float((~grouped["n"].eq(5)).sum()),
+    }
+    chart = pd.concat([chart, spc_run_rule_flags(chart["mean"], center, limits["ucl"], limits["lcl"])], axis=1)
+    stable = not bool(chart["signal"].any()) and not bool(chart["range"].gt(limits["r_ucl"]).any())
+    limits["stable"] = stable
+    if stable and len(values) >= 25:
+        std = float(values["value"].std(ddof=1))
+        if std > 0:
+            limits["ppl"] = (center - 200.0) / (3 * std)
+    return chart, limits
 
 
 def _finalize_event_flags(frame: pd.DataFrame) -> pd.DataFrame:
@@ -236,6 +340,8 @@ def _load_fsd(root: Path) -> list[pd.DataFrame]:
 
     for sheet_name, stage, header in [("AQL inspecation", "AQL", 2), ("DKL inspection", "DKL", 3)]:
         raw = _clean_columns(_read_excel(path, sheet_name=sheet_name, header=header))
+        if stage == "DKL":
+            raw = raw[_text(_col(raw, "PartsSupplier")).str.upper().eq("FSD")].copy()
         if raw.empty:
             continue
         inspected = _number(_col(raw, "InspectedQty检验数量", "Nbrofframeforkcontroled"), None)
@@ -324,6 +430,7 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
             date=_date(_col(raw, "FinishedDate检验完成日期", "ReceivingDate收货日期")),
             order_po=_text(_col(raw, "P/O工单号", "P/O")), model_item_code=_text(_col(raw, "Itemcode料号", "Itemcode")),
             item_name=_text(_col(raw, "component零件名称", "component")), family="", process="Incoming material",
+            material_supplier=_text(_col(raw, "Supplier供应商", "Supplier"), "Unrecorded"),
             issue_driver=_text(_col(raw, "NoncomfromingDescription不良描述", "不良描述"), "Inspection result"),
             inspected_qty=inspected, defect_qty=defects,
             defect_rate=np.where(inspected.fillna(0).gt(0), defects / inspected, np.nan), result=result,
@@ -365,7 +472,7 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
         status, status_available = _status(_col(raw, "当前流程状态", "质量确认结果"))
         frames.append(_frame(
             community="BME", supplier="CMW", supplier_code="CMW", stage="MACHINE",
-            date=_date(_col(raw, "生产日期", "日期")), order_po=_text(_col(raw, "工单")),
+            date=_date(_col(raw, "生产日期")), event_timestamp=_date(_col(raw, "日期")), order_po=_text(_col(raw, "工单")),
             model_item_code=_text(_col(raw, "车型model")), item_name=_text(_col(raw, "扭力车型描述")),
             family="", process=component, issue_driver=component, inspected_qty=1,
             defect_qty=_negative(result).astype(int), defect_rate=np.nan, result=result,
@@ -373,6 +480,7 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
             unit=_text(raw.iloc[:, 14] if raw.shape[1] > 14 else _col(raw, "单位")), severity="High", status=status, status_available=status_available,
             metric_scope="Torque checkpoint", source_file=str(torque_path.relative_to(root)), source_sheet="数据结果",
             source_row=raw.index + 2, is_alert=_negative(result), alert_reason="",
+            data_quality_flag=np.where(high.notna() & measured.gt(high * 5), "Suspect value > 5x USL", ""),
         ))
 
     rework_path = base / "Rework" / "返工作业申请书.xlsx"
@@ -382,7 +490,8 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
         qty = _number(_col(raw, "数量").astype(str).str.extract(r"([\d.]+)")[0], 0)
         frames.append(_frame(
             community="BME", supplier="CMW", supplier_code="CMW", stage="REWORK",
-            date=_date(_col(raw, "申请时间")), order_po=_text(_col(raw, "编号")),
+            date=_date(_col(raw, "申请时间")), event_timestamp=_date(_col(raw, "申请时间.1", "申请时间")),
+            workflow_end_date=_date(_col(raw, "更新时间", "完成时间")), order_po=_text(_col(raw, "编号")),
             model_item_code=_text(_col(raw, "型号")), item_name=_text(_col(raw, "零件名")), family="",
             process=_text(_col(raw, "返工作业场所"), "Rework"), issue_driver=_text(_col(raw, "不合格内容", "返工作业原因")),
             inspected_qty=qty, defect_qty=qty, defect_rate=np.nan, result=_text(_col(raw, "判定结论")),
@@ -420,11 +529,12 @@ def _load_tektro(root: Path) -> list[pd.DataFrame]:
     pqc_path = base / "PQC" / "244570-1.xls"
     if pqc_path.exists():
         raw = _clean_columns(_read_excel(pqc_path))
-        measured = _number(_col(raw, "数据04"), None)
+        measured = _number(_col(raw, "數據04", "数据04"), None)
         frames.append(_frame(
             community="BME", supplier="TEKTRO", supplier_code="TEKTRO", stage="PQC",
-            date=_date(_col(raw, "Date")), order_po=_text(_col(raw, "訂單單號", "订单单号")),
-            model_item_code=_text(_col(raw, "型號", "型号")), item_name=_text(_col(raw, "型號", "型号")), family="",
+            date=_date(_col(raw, "Date")), event_timestamp=_date(_col(raw, "Date")), order_po=_text(_col(raw, "訂單單號", "订单单号")),
+            model_item_code=_text(_col(raw, "型號", "型号")), item_name=_text(_col(raw, "型號", "型号")),
+            family=_text(_col(raw, "油管長度", "油管长度")),
             process="Continuous parameter", issue_driver="数据04", inspected_qty=1, defect_qty=0,
             defect_rate=np.nan, result="", spec_text="Specification unavailable", spec_low=np.nan, spec_high=np.nan,
             measured_value=measured, unit="", severity="Medium", status="Status unavailable", status_available=False,
@@ -478,6 +588,70 @@ def bme_source_fingerprint(root: Path) -> tuple[tuple[str, int, int], ...]:
             stat = path.stat()
             records.append((str(path.relative_to(root)), int(stat.st_size), int(stat.st_mtime_ns)))
     return tuple(records)
+
+
+def load_bme_customer_quality(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load customer NC declarations and the FSD PO denominator table."""
+    nc_path = root / "BME Database" / "Customer" / "non_conforms_export_22062026.xlsx"
+    order_path = root / "BME Database" / "FSD" / "FSD P2 data input.xlsx"
+    if not nc_path.exists():
+        return pd.DataFrame(), pd.DataFrame()
+    raw = _clean_columns(_read_excel(nc_path))
+    supplier_raw = _text(_col(raw, "Componentsupplier"))
+    supplier = np.select(
+        [supplier_raw.str.contains("FUJI", case=False), supplier_raw.str.contains("TEKTRO", case=False)],
+        ["FSD", "TEKTRO"], default="Other",
+    )
+    nc = pd.DataFrame({
+        "supplier": supplier,
+        "date": _iso_week_date(_col(raw, "Year"), _col(raw, "Week")),
+        "year": pd.to_numeric(_col(raw, "Year"), errors="coerce"),
+        "week": pd.to_numeric(_col(raw, "Week"), errors="coerce"),
+        "item_code": _text(_col(raw, "Nonconformitemcode")),
+        "model": _text(_col(raw, "ModelCodeName")),
+        "nc_qty": _number(_col(raw, "NonconformQuantities"), 0),
+        "defect_code": _text(_col(raw, "DefectCode"), "Unrecorded"),
+        "po": _normalize_po(_col(raw, "ComponentPO")),
+        "decision": _text(_col(raw, "ProdcomDecision")),
+        "comments": _text(_col(raw, "Comments")),
+        "nqc": _number(_col(raw, "Nqc"), 0),
+        "source_row": raw.index + 2,
+    })
+    nc = nc[nc["supplier"].isin(["FSD", "TEKTRO"])].reset_index(drop=True)
+    if not order_path.exists():
+        return nc, pd.DataFrame()
+    order_raw = _clean_columns(_read_excel(order_path, sheet_name="Order_Frame(260625)"))
+    orders = pd.DataFrame({
+        "po": _normalize_po(_col(order_raw, "Ordernumber")),
+        "ehd": _date(_col(order_raw, "EHD")),
+        "ordered_qty": _number(_col(order_raw, "OrderedQty"), None),
+        "model": _text(_col(order_raw, "Model")),
+        "item_code": _text(_col(order_raw, "ItemCode")),
+    })
+    orders = orders[orders["po"].ne("")].sort_values("ehd").drop_duplicates("po", keep="last").reset_index(drop=True)
+    return nc, orders
+
+
+def calculate_fsd_customer_ppm(
+    nc: pd.DataFrame, orders: pd.DataFrame, start_date: object, end_date: object
+) -> dict[str, float]:
+    """Calculate FSD customer PPM with each PO counted once in the denominator."""
+    start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+    selected = nc[
+        nc["supplier"].eq("FSD")
+        & pd.to_datetime(nc["date"], errors="coerce").between(start, end)
+    ].copy()
+    if selected.empty:
+        return {"nc_qty": 0.0, "ordered_qty": 0.0, "coverage": np.nan, "ppm": np.nan}
+    linked = selected.merge(orders[["po", "ordered_qty"]], on="po", how="left")
+    total_nc = float(selected["nc_qty"].sum())
+    matched_nc = float(linked.loc[linked["ordered_qty"].notna(), "nc_qty"].sum())
+    coverage = matched_nc / total_nc if total_nc > 0 else np.nan
+    period_pos = set(orders.loc[pd.to_datetime(orders["ehd"], errors="coerce").between(start, end), "po"])
+    denominator_pos = period_pos | set(selected.loc[selected["po"].ne(""), "po"])
+    denominator = float(orders.loc[orders["po"].isin(denominator_pos), "ordered_qty"].fillna(0).sum())
+    ppm = total_nc / denominator * 1_000_000 if denominator > 0 and coverage >= 0.90 else np.nan
+    return {"nc_qty": total_nc, "ordered_qty": denominator, "coverage": coverage, "ppm": ppm}
 
 
 def bme_events_to_alerts(events: pd.DataFrame) -> pd.DataFrame:

@@ -30,6 +30,11 @@ from plotly.subplots import make_subplots
 from bme_quality import (
     bme_events_to_alerts,
     bme_source_fingerprint,
+    build_imr_chart_data,
+    build_p_chart_data,
+    build_xbar_r_chart_data,
+    calculate_fsd_customer_ppm,
+    load_bme_customer_quality,
     load_bme_quality_events,
 )
 
@@ -13309,6 +13314,14 @@ def load_bme_quality_events_cached(
     return load_bme_quality_events(ROOT)
 
 
+@st.cache_data(show_spinner=False)
+def load_bme_customer_quality_cached(
+    fingerprint: tuple[tuple[str, int, int], ...],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    _ = fingerprint
+    return load_bme_customer_quality(ROOT)
+
+
 def render_bme_supplier_risk_charts(alerts: pd.DataFrame) -> None:
     st.subheader(t("供应商风险", "Supplier Risk"))
     left, right = st.columns(2, gap="small")
@@ -13616,7 +13629,7 @@ def render_bme_bike_quality_dashboard(events: pd.DataFrame) -> None:
                 st.warning(t("该参数没有源规格，只展示稳定性，不判 NG。", "This parameter has no source specification. Stability is shown without judging NG."))
 
 
-def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
+def _render_bme_bike_quality_dashboard_v3_legacy(events: pd.DataFrame) -> None:
     """Render BME with the same vertical analysis chain as the main ZX cockpit."""
     if events.empty:
         st.error(t("未读取到 BME 数据，请检查 BME Database 文件夹。", "No BME data was loaded. Check the BME Database folder."))
@@ -13943,6 +13956,189 @@ def render_bme_bike_quality_dashboard_v3(events: pd.DataFrame) -> None:
                 file_name=f"BME_quality_detail_{dt.date.today():%Y%m%d}.csv",
                 mime="text/csv",
             )
+
+
+def render_bme_bike_quality_dashboard_v3(
+    events: pd.DataFrame, customer_nc: pd.DataFrame, fsd_orders: pd.DataFrame
+) -> None:
+    """BME management + engineering cockpit grounded in each source's semantics."""
+    if events.empty:
+        st.error(t("未读取到 BME 数据，请检查 BME Database 文件夹。", "No BME data was loaded. Check the BME Database folder."))
+        return
+    suppliers = sorted(events["supplier"].dropna().astype(str).unique())
+    stage_order = ["IQC", "PQC", "AQL", "DKL", "MACHINE", "LAB", "REWORK"]
+    stages = [value for value in stage_order if value in set(events["stage"])]
+    dated = events["date"].dropna()
+    today = dt.date.today()
+    min_date = dated.min().date() if not dated.empty else today
+    max_date = min(dated.max().date(), today) if not dated.empty else today
+    default_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
+    st.markdown(
+        f"""<div class="hero" style="margin-bottom:14px;"><div class="hero-kicker">NEA {html.escape(t('质量管理平台', 'QUALITY PLATFORM'))}</div><div class="hero-title">BME {html.escape(t('自行车工厂质量分析', 'Bike Factory Quality Analysis'))}</div><div class="hero-meta"><span class="hero-chip">FSD · CMW · TEKTRO</span><span class="hero-chip">{default_start} - {max_date}</span></div></div>""",
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(t("**BME 筛选条件**", "**BME Filters**"))
+    with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
+        selected_suppliers = st.multiselect(t("供应商", "Supplier"), suppliers, default=suppliers, key="bme_v4_supplier")
+        selected_stages = st.multiselect(t("质量关卡", "Quality Gate"), stages, default=stages, key="bme_v4_stage")
+        selected_dates = st.date_input(t("数据周期", "Period"), value=(default_start, max_date), min_value=min_date, max_value=max_date, key="bme_v4_dates")
+    start_date, end_date = default_start, max_date
+    if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
+        start_date, end_date = selected_dates
+    view = events[events["supplier"].isin(selected_suppliers) & events["stage"].isin(selected_stages)].copy()
+    view = view[view["date"].isna() | view["date"].dt.date.between(start_date, end_date)]
+    if view.empty:
+        st.warning(t("当前筛选条件下没有 BME 数据。", "No BME data under the current filters."))
+        return
+    st.subheader(t("1 · 数据地图与可信度", "1 · Data Map & Confidence"))
+    with st.expander(t("数据地图", "Data Map"), expanded=True):
+        _render_bme_data_map(events)
+        st.caption(t("缺少规格、日期或分母时，系统保留数据但不生成不适用的能力或不良率结论。", "When specifications, dates, or denominators are absent, records remain visible without generating inapplicable capability or defect-rate conclusions."))
+
+    st.subheader(t("2 · 质量信号总览", "2 · Quality Signal Overview"))
+    for optional_column, default_value in {
+        "event_timestamp": pd.NaT,
+        "workflow_end_date": pd.NaT,
+        "data_quality_flag": "",
+        "material_supplier": "Unrecorded",
+        "family": "",
+    }.items():
+        if optional_column not in view.columns:
+            view[optional_column] = default_value
+    cmw_torque = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("MACHINE")) & view["measured_value"].notna()]
+    torque_suspects = int(cmw_torque["data_quality_flag"].fillna("").ne("").sum())
+    fsd_attr = view[(view["supplier"].eq("FSD")) & view["stage"].isin(["AQL", "DKL"]) & view["inspected_qty"].gt(0)]
+    fsd_rate = fsd_attr["defect_qty"].sum() / fsd_attr["inspected_qty"].sum() if not fsd_attr.empty else np.nan
+    open_rework = view[(view["stage"].eq("REWORK")) & ~view["status"].eq("Closed")]
+    cmw_iqc = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("IQC"))]
+    return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
+    render_kpi_cards([
+        {"label": t("FSD 检验 NC率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "note": t("AQL / DKL 有检验分母记录", "AQL / DKL records with denominators"), "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"},
+        {"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "note": t("退货数量 / 来料数量", "Return quantity / incoming quantity"), "level": "medium"},
+        {"label": t("未关闭返工", "Open Rework"), "value": f"{len(open_rework):,}", "note": t("流程状态，不等同返工工时", "Workflow state, not physical rework hours"), "level": "high" if len(open_rework) else "low"},
+        {"label": t("参数录入疑点", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "note": t("图中保留，控制限估计排除", "Shown in charts, excluded from limit estimation"), "level": "high" if torque_suspects else "low"},
+    ])
+
+    st.subheader(t("3 · SPC 与属性控制", "3 · SPC & Attribute Control"))
+    method_options: dict[str, tuple[str, pd.DataFrame]] = {}
+    for keys, group in cmw_torque.groupby(["model_item_code", "process", "spec_low", "spec_high", "unit"], dropna=False):
+        if len(group) >= 5:
+            label = f"CMW · I-MR · {keys[0]} · {keys[1]} · {keys[2]}–{keys[3]} {keys[4]}"
+            method_options[label] = ("imr", group)
+    tektro_pqc = view[(view["supplier"].eq("TEKTRO")) & (view["stage"].eq("PQC")) & view["measured_value"].notna()]
+    for keys, group in tektro_pqc.groupby(["model_item_code", "family", "order_po"], dropna=False):
+        if len(group) >= 5:
+            label = f"TEKTRO · I-MR 稳定性 · {keys[0]} · {keys[1]} · {keys[2]}"
+            method_options[label] = ("imr_stability", group)
+    tektro_lab = view[(view["supplier"].eq("TEKTRO")) & (view["stage"].eq("LAB")) & view["measured_value"].notna()]
+    if len(tektro_lab) >= 5:
+        method_options[t("TEKTRO · 拔脱力 · X̄-R（n=5）", "TEKTRO · Pull-out Force · X̄-R (n=5)")] = ("xbar", tektro_lab)
+    for keys, group in fsd_attr.groupby(["stage", "process"], dropna=False):
+        weekly = group.groupby("date", as_index=False).agg(inspected_qty=("inspected_qty", "sum"), defect_qty=("defect_qty", "sum"))
+        if len(weekly) >= 3:
+            method_options[f"FSD · p-chart · {keys[0]} · {keys[1]}"] = ("pchart", weekly)
+    if not method_options:
+        st.info(t("当前筛选没有满足最小样本要求的 SPC 数据。", "No SPC source meets the minimum sample requirement under current filters."))
+    else:
+        selected_method = st.selectbox(t("选择同质过程 / 检验范围", "Select homogeneous process / inspection scope"), sorted(method_options), key="bme_v4_spc")
+        method, data = method_options[selected_method]
+        if method.startswith("imr"):
+            chart, limits = build_imr_chart_data(data)
+            chart["sequence"] = np.arange(1, len(chart) + 1)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=.12, row_heights=[.68, .32])
+            fig.add_trace(go.Scatter(x=chart["sequence"], y=chart["value"], mode="lines+markers", name=t("实测值", "Measured"), marker=dict(color=np.where(chart.get("signal", False), "#c01048", "#3341c4"))), row=1, col=1)
+            fig.add_trace(go.Scatter(x=chart["sequence"], y=chart["moving_range"], mode="lines+markers", name=t("移动极差", "Moving Range"), line=dict(color="#d99a00")), row=2, col=1)
+            if limits:
+                for value, name, color, dash in [(limits["center"], "CL", "#168a5b", "solid"), (limits["ucl"], "UCL", "#c01048", "dot"), (limits["lcl"], "LCL", "#c01048", "dot")]:
+                    fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, row=1, col=1)
+                fig.add_hline(y=limits["mr_ucl"], line_color="#c01048", line_dash="dot", annotation_text="MR UCL", row=2, col=1)
+            if method == "imr":
+                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="LSL", row=1, col=1)
+                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="USL", row=1, col=1)
+            fig.update_layout(title=selected_method, height=570, margin=dict(l=20, r=20, t=65, b=25), legend=dict(orientation="h"))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
+            if limits:
+                status_text = t("稳定", "Stable") if limits.get("stable") else t("存在特殊原因信号", "Special-cause signals detected")
+                capability = f" · Ppk {limits['ppk']:.2f}" if "ppk" in limits else ""
+                st.info(f"{status_text}{capability} · 3σ + 8点同侧 + 6点单调趋势")
+            if method == "imr_stability":
+                st.warning(t("源数据没有规格：这里只判断稳定性，不判定 NG，也不计算能力指数。", "Source specifications are unavailable: this view assesses stability only, without NG decisions or capability indices."))
+            suspects = chart[chart["data_quality_flag"].fillna("").ne("")]
+            if not suspects.empty:
+                st.warning(t(f"{len(suspects)} 个录入疑点已从控制限估计排除，但仍显示在图和明细中。", f"{len(suspects)} data-entry suspects are excluded from limit estimation but remain visible in the chart and detail."))
+        elif method == "pchart":
+            chart, limits = build_p_chart_data(data)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["rate"], mode="lines+markers", name="NC rate", marker=dict(color=np.where(chart["signal"], "#c01048", "#3341c4"))))
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["ucl"], mode="lines", name="UCL", line=dict(color="#c01048", dash="dot")))
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["lcl"], mode="lines", name="LCL", line=dict(color="#c01048", dash="dot")))
+            fig.add_hline(y=limits["center"], line_color="#168a5b", annotation_text="CL")
+            fig.update_yaxes(tickformat=".1%")
+            fig.update_layout(title=selected_method, height=460, margin=dict(l=20, r=20, t=60, b=30), legend=dict(orientation="h"))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        else:
+            chart, limits = build_xbar_r_chart_data(data)
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[.68, .32], vertical_spacing=.12)
+            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["mean"], mode="lines+markers", name="X̄", marker=dict(color=np.where(chart["signal"], "#c01048", "#3341c4"))), row=1, col=1)
+            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["range"], mode="lines+markers", name="R", line=dict(color="#d99a00")), row=2, col=1)
+            for value, name in [(limits["center"], "CL"), (limits["ucl"], "UCL"), (limits["lcl"], "LCL")]: fig.add_hline(y=value, annotation_text=name, line_dash="dot" if name != "CL" else "solid", row=1, col=1)
+            fig.add_hline(y=200, annotation_text="LSL", line_color="#d99a00", line_dash="dash", row=1, col=1)
+            fig.add_hline(y=limits["r_ucl"], annotation_text="R UCL", line_color="#c01048", line_dash="dot", row=2, col=1)
+            fig.update_layout(title=selected_method, height=560, margin=dict(l=20, r=20, t=65, b=25), legend=dict(orientation="h"))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.caption(t(f"完整 n=5 子组 {len(chart)} 个；不完整子组 {int(limits.get('incomplete_groups', 0))} 个未用于控制限。", f"{len(chart)} complete n=5 subgroups; {int(limits.get('incomplete_groups', 0))} incomplete subgroups excluded from limits."))
+
+    st.subheader(t("4 · Top 问题 Pareto", "4 · Top Issue Pareto"))
+    alerts = view[view["is_alert"]].copy()
+    pareto = alerts.assign(issue_driver=alerts["issue_driver"].replace("", t("未记录", "Not recorded"))).groupby(["supplier", "issue_driver"], as_index=False).agg(alert_records=("source_row", "count"), defect_qty=("defect_qty", "sum"))
+    pareto = pareto.sort_values(["alert_records", "defect_qty"], ascending=False).head(20).sort_values("alert_records")
+    if pareto.empty:
+        st.info(t("当前没有问题 Pareto 数据。", "No issue Pareto data is available."))
+    else:
+        fig = px.bar(pareto, x="alert_records", y="issue_driver", color="supplier", orientation="h", labels={"alert_records": t("Alert记录数", "Alert Records"), "issue_driver": t("问题 / 检查点", "Issue / Checkpoint")}, color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"])
+        fig.update_layout(height=560, margin=dict(l=20, r=20, t=25, b=30), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.caption(t("按源问题字段统计 Alert 记录数；不把记录数解释为不良件数。", "Counts alert records by source issue field; record count is not interpreted as defective-piece quantity."))
+
+    st.subheader(t("5 · 客户质量与更多分析", "5 · Customer Quality & More Analysis"))
+    scoped_nc = customer_nc[customer_nc["supplier"].isin(selected_suppliers) & pd.to_datetime(customer_nc["date"], errors="coerce").dt.date.between(start_date, end_date)].copy() if not customer_nc.empty else pd.DataFrame()
+    ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
+    tektro_nc = scoped_nc[scoped_nc["supplier"].eq("TEKTRO")] if not scoped_nc.empty else pd.DataFrame()
+    render_kpi_cards([
+        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"PO关联覆盖 {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked coverage {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "medium"},
+        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"唯一PO订单量 {ppm['ordered_qty']:,.0f}", f"Unique-PO ordered qty {ppm['ordered_qty']:,.0f}"), "level": "medium"},
+        {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("无订单量分母，不计算 PPM", "No order-quantity denominator; PPM not calculated"), "level": "medium"},
+    ])
+    if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
+        st.warning(t("FSD PO 关联覆盖低于 90%，PPM 已隐藏。", "FSD PO-link coverage is below 90%; PPM is hidden."))
+    if not scoped_nc.empty:
+        customer_pareto = scoped_nc.groupby(["supplier", "model", "defect_code"], as_index=False)["nc_qty"].sum().sort_values("nc_qty", ascending=False).head(15).sort_values("nc_qty")
+        customer_pareto["problem"] = customer_pareto["model"].replace("", t("未记录Model", "Model unrecorded")) + " · " + customer_pareto["defect_code"]
+        fig = px.bar(customer_pareto, x="nc_qty", y="problem", color="supplier", orientation="h", labels={"nc_qty": t("客户 NC 数量", "Customer NC Qty"), "problem": "Model · Defect Code"}, color_discrete_sequence=["#3341c4", "#d99a00"])
+        fig.update_layout(height=480, margin=dict(l=20, r=20, t=25, b=30), legend_title_text="")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.caption(t("Defect Code 保留源编码，不推断 W / V / M / D 的含义。", "Defect Codes retain source values; meanings of W / V / M / D are not inferred."))
+    with st.expander(t("更多分析", "More Analysis"), expanded=False):
+        tabs = st.tabs([t("CMW 来料供应商", "CMW Incoming Suppliers"), t("返工流程", "Rework Workflow"), t("可审计明细", "Auditable Detail")])
+        with tabs[0]:
+            if cmw_iqc.empty: st.info(t("当前筛选没有 CMW IQC 数据。", "No CMW IQC data under current filters."))
+            else:
+                incoming = cmw_iqc.groupby("material_supplier", as_index=False).agg(receipts=("source_row", "count"), incoming_qty=("inspected_qty", "sum"), return_qty=("defect_qty", "sum"))
+                incoming["return_ppm"] = incoming["return_qty"] / incoming["incoming_qty"].replace(0, np.nan) * 1_000_000
+                dataframe_with_format(incoming.sort_values(["return_qty", "receipts"], ascending=False), height=380)
+        with tabs[1]:
+            rework = view[view["stage"].eq("REWORK")].copy()
+            if rework.empty: st.info(t("当前筛选没有返工数据。", "No rework data under current filters."))
+            else:
+                rework["workflow_days"] = (rework["workflow_end_date"] - rework["event_timestamp"]).dt.total_seconds() / 86400
+                dataframe_with_format(rework[["date", "order_po", "model_item_code", "issue_driver", "status", "workflow_days", "source_file"]].sort_values("date", ascending=False), height=380)
+        with tabs[2]:
+            cols = ["supplier", "stage", "date", "event_timestamp", "order_po", "model_item_code", "item_name", "process", "issue_driver", "inspected_qty", "defect_qty", "result", "spec_text", "measured_value", "data_quality_flag", "status", "metric_scope", "source_file", "source_sheet", "source_row"]
+            dataframe_with_format(view[cols].sort_values("date", ascending=False), height=520)
+            st.download_button(t("下载当前 BME 明细", "Download Current BME Detail"), view[cols].to_csv(index=False).encode("utf-8-sig"), file_name=f"BME_quality_detail_{dt.date.today():%Y%m%d}.csv", mime="text/csv")
+
+
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),
     "PQC": ("PQC 过程预警", "PQC Alert"),
@@ -16122,6 +16318,11 @@ bme_events = (
     if active_scope_key in {"BME_CMW", "QUALITY_ALERT"}
     else pd.DataFrame()
 )
+bme_customer_nc, bme_fsd_orders = (
+    load_bme_customer_quality_cached(bme_source_fingerprint(ROOT))
+    if active_scope_key == "BME_CMW"
+    else (pd.DataFrame(), pd.DataFrame())
+)
 
 render_scope_nav(active_scope_key, active_zx_page)
 selected_factories = DASHBOARD_SCOPES[active_scope_key]["factories"]
@@ -16142,7 +16343,7 @@ st.sidebar.markdown(
 )
 
 if active_scope_key == "BME_CMW":
-    render_bme_bike_quality_dashboard_v3(bme_events)
+    render_bme_bike_quality_dashboard_v3(bme_events, bme_customer_nc, bme_fsd_orders)
     st.stop()
 
 if active_scope_key == "QUALITY_ALERT":
