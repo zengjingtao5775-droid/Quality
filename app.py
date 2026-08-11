@@ -14292,6 +14292,11 @@ def render_bme_bike_quality_dashboard_v3(
         "bme_v6_kpi_info",
     )
     kpi_cards: list[dict[str, str]] = []
+    if "CMW" in selected_suppliers:
+        kpi_cards.extend([
+            with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
+            with_trend({"label": t("CMW 验货问题率", "CMW Final Inspection Issue Rate"), "value": pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "—", "level": "medium"}, cmw_fqc_rate_trend),
+        ])
     if "FSD" in selected_suppliers:
         kpi_cards.extend([
             with_trend({"label": t("FSD 客诉 PPM", "FSD Complaint PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) else "—", "level": "medium"}, fsd_ppm_trend),
@@ -14302,11 +14307,6 @@ def render_bme_bike_quality_dashboard_v3(
         kpi_cards.extend([
             {"label": t("TEKTRO 客诉 PPM", "TEKTRO Complaint PPM"), "value": "—", "note": t(f"客诉 NC {tektro_customer_nc:,.0f}；缺少订单量，暂不能计算 PPM", f"Complaint NC {tektro_customer_nc:,.0f}; order quantity is unavailable"), "level": "medium"},
             {"label": t("TEKTRO 过程检验 NC 率", "TEKTRO Process Inspection NC Rate"), "value": "—", "note": t("缺少规格和合格判定，暂不能计算 NC 率", "Specifications and pass/fail decisions are unavailable"), "level": "medium"},
-        ])
-    if "CMW" in selected_suppliers:
-        kpi_cards.extend([
-            with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
-            with_trend({"label": t("CMW 验货问题率", "CMW Final Inspection Issue Rate"), "value": pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "—", "level": "medium"}, cmw_fqc_rate_trend),
         ])
     render_kpi_cards(kpi_cards, variant="bme-overall")
     if "FSD" in selected_suppliers and pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
