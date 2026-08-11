@@ -1,64 +1,56 @@
-# BME follows Textile ZX — Design QA
+# BME SPC explanation and problem-priority — Design QA
 
 ## Source truth and target
 
-- Source visual: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-bf32ce3a-f9dc-4a51-8128-9c30f85d4253.png`
-- Source pixels: `2932 × 4166` RGBA.
-- Implementation route: `http://127.0.0.1:8505/?scope=BME_CMW&lang=zh`
-- CSS viewport: `1280 × 720`; device pixel ratio: `2`.
+- User references:
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-b21ca905-5ecd-4abc-94ff-9b0180bcb175.png` — customer complaint cards.
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-9525f676-23e4-451d-a316-e8bc016d1d13.png` — SPC explanation popover.
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-d61c72a7-50f2-42d5-bbd6-cbbec9ed13e0.png` — Pareto conclusion.
+- Local implementation route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh`.
+- CSS viewport: `1280 × 720`.
 - Implementation screenshots:
-  - `/private/tmp/bme-textile-style-implementation.png`
-  - `/private/tmp/bme-textile-style-risk-final.png`
-- Same-input comparisons:
-  - `/private/tmp/bme-textile-style-comparison-top.jpg`
-  - `/private/tmp/bme-textile-style-comparison-risk.jpg`
-- State: BME default filters, data map collapsed for the top comparison; risk cluster and Top Risk Model / Item section for the focused comparison.
+  - `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/01-customer-cards-top.png`
+  - `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/02-spc-explanation.png`
+  - `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/03-pareto-conclusion.png`
+- Same-input comparison: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/04-reference-implementation-comparison.png`.
+- State: BME Chinese page, default suppliers and quality gates, `2025-08-11` to `2026-08-11`; the second screenshot has the CMW I-MR explanation open.
 
-## Full-view comparison evidence
+## Full-view and focused comparison
 
-The top comparison places the Textile ZX reference and BME implementation in one `2560 × 720` image. Both use the same application sidebar, hero, supplier/period chips, collapsed data-map row, compact KPI grid, pale blue canvas, white cards, Decathlon-blue accents, and the high-risk cluster as the first major analysis section.
-
-The BME KPI content intentionally differs because BME does not currently contain ZX RPM, NQC, IV, HUGSS shipped-PO, or Jiandaoyun FQC denominators. It uses six source-supported KPIs and does not fabricate the two remaining ZX card slots.
-
-## Focused comparison evidence
-
-The risk comparison places the Textile ZX cluster/Pareto region and BME cluster/Pareto region in one image. BME preserves the same cluster-then-Pareto reading order. Its axes are source-supported BME measures: Bayesian-shrunk Alert-record share and Alert volume. Numeric-looking Model / Item codes are forced to a categorical axis in the Pareto chart.
+- Customer complaint KPIs now appear immediately below the BME hero, before data completeness and analysis sections. The three values and notes are unchanged: FSD PPM `3,393`, FSD NC `7,875`, TEKTRO NC `3,018`.
+- The SPC heading expands the abbreviation to `SPC（统计过程控制）`. Its introduction says in plain Chinese what SPC is for and clarifies that a red point is a process warning, not automatic proof that the item is defective.
+- The CMW I-MR explanation now answers four practical questions in order: what the chart answers, how to read its lines and red points, how it is calculated, and where the data comes from. It also tells the user what to check after a warning: order, equipment, operator, and material batch.
+- The Pareto conclusion is now a separate white/red decision card with a strong `本期结论` label, bold body text, and a left accent. It is visually distinct from normal captions while preserving the exact calculation and missing-description warning.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: Existing project typography, heavy dashboard title, compact KPI labels, large values, bilingual copy hierarchy, line height, and wrapping are reused from Textile ZX.
-- Spacing and layout rhythm: Sidebar width, hero proportions, chips, data-map expander, three-column KPI grid, section gaps, card radii, and chart widths match the existing Textile ZX system. Six BME KPI cards form two complete rows.
-- Colors and visual tokens: Existing blue gradient sidebar, pale blue page background, white panels, blue top borders, semantic green/amber/red risk colors, and Plotly chart palette are reused.
-- Image quality and assets: The reference contains no photography or custom raster illustration. Existing Decathlon branding, Material Symbols, Plotly controls, and code-owned decorative hero treatment are reused; no placeholder or generated asset was introduced.
-- Copy and content: Page title, navigation, data-map placement, KPI hierarchy, high-risk cluster, Top Risk Model / Item Pareto, issue Pareto, trend, and more-analysis structure follow Textile ZX. BME values remain grounded in FSD/CMW/TEKTRO source data.
+- Existing BME/ZX typography, pale-blue canvas, white cards, Decathlon blue, chart sizing, and vertical reading order are preserved.
+- No KPI formula, chart dataset, SPC control-limit calculation, Pareto ranking, filter, or source path changed.
+- All new copy uses ordinary Chinese except established quality terms such as SPC, I-MR, UCL/LCL, USL/LSL, Ppk, NC, PPM, and Pareto; each relevant term is explained in context.
+- The SPC popover remains attached to the chart's `说明` control and does not replace or resize the chart.
 
 ## Interaction and runtime checks
 
-- BME route renders with zero Streamlit exceptions in AppTest and browser.
-- Data-map expander opens and exposes the manual-Excel/API connection method table.
-- Sidebar filters, date range, supplier, and quality-gate controls render and retain BME scope.
-- Cluster and Top Risk Model / Item Pareto render; categorical Model / Item labels no longer become a continuous numeric axis.
-- Top Risk Pareto is capped at 12 items to avoid an unusable oversized chart.
-- The third `QUALITY_ALERT` route still shows `ZX + BME` and the twelve central Alert cards, with no BME-main cluster section.
-- Browser script state reached `notRunning`; no `stException` panel was present.
+- Customer cards render at the top and the later section begins directly with `客诉问题 Pareto`, so the KPIs are not duplicated.
+- Opening the CMW I-MR `说明` shows all four explanation sections and the correct source workbook link; Escape closes the popover.
+- Pareto chart and conclusion card render together; the first issue is `表面有划伤`, count `3,500`, share `41.7%`, with `202` unclassified records called out.
+- Browser console errors: none.
+- `python3 -m py_compile app.py`: passed with the project path configuration.
+- `git diff --check`: passed.
+- `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed. The first unconfigured run could not load `.xls` because system Python did not include the repo's bundled `xlrd`; the project-configured rerun passed.
 
 ## Comparison history
 
-### Pass 1 — blocked
+### Pass 1 — issues found from the user references
 
-- P1: BME route incorrectly reused the third central Alert page instead of the Textile ZX main-dashboard structure.
-- Fix: Restored the BME-specific vertical dashboard route and rebuilt its top structure to mirror Textile ZX.
+- P1: SPC explanation started with formulas and assumed readers already understood control charts.
+- P1: Customer complaint KPI cards appeared only after multiple analysis sections.
+- P2: The Pareto conclusion looked like a low-priority caption and was easy to miss.
 
-### Pass 2 — blocked
+### Pass 2 — passed
 
-- P1: Top Risk Model / Item initially selected hundreds of items and numeric-looking codes produced a continuous axis measured in billions.
-- P2: Raw Alert share over-prioritized one-record products at 100%.
-- Fix: Capped the Pareto at 12 items, forced a categorical axis, and applied a transparent 20-record Bayesian prior while retaining raw share in hover detail.
-
-### Pass 3 — passed
-
-- Post-fix top and focused comparison evidence is listed above.
-- No actionable P0, P1, or P2 fidelity or interaction issue remains.
-- Intentional difference: BME uses six truthful KPI cards rather than fabricating ZX-only RPM, NQC, IV, or FQC metrics.
+- Reordered customer KPIs, rewrote SPC help around reading and action, and promoted the Pareto sentence to a decision card.
+- Visual comparison confirms the requested hierarchy changes without introducing chart or data regressions.
+- No actionable P0, P1, or P2 issue remains for this scope.
 
 final result: passed

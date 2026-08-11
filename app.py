@@ -948,6 +948,26 @@ st.markdown(
         margin-top: 10px;
         line-height: 1.3;
     }
+    .bme-chart-conclusion {
+        margin: 12px 0 22px;
+        padding: 17px 20px;
+        border: 1px solid #f3b4bd;
+        border-left: 6px solid #c01048;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #fff5f7 0%, #ffffff 100%);
+        box-shadow: 0 10px 24px rgba(192, 16, 72, 0.10);
+        color: #3b1420;
+        font-size: 1rem;
+        font-weight: 720;
+        line-height: 1.55;
+    }
+    .bme-chart-conclusion strong {
+        display: block;
+        margin-bottom: 4px;
+        color: #a30d3b;
+        font-size: 1.08rem;
+        font-weight: 880;
+    }
     .kpi-trend {
         display: inline-flex;
         align-items: center;
@@ -8554,10 +8574,12 @@ def render_readme_popover(
     source_markdown = "\n".join(f"- {part}" for part in source_parts) if source_parts else f"- {source}"
     with st.popover(label, use_container_width=True):
         st.markdown(f"### {title}")
-        st.markdown(f"**1. {section_title or t('计算逻辑', 'Calculation Logic')}**  \n{logic}")
-        st.markdown(f"**2. {t('数据来源', 'Data Source')}**  \n{source_markdown}")
+        st.markdown(f"**1. {t('这张图回答什么问题', 'What This Chart Answers')}**  \n{purpose}")
+        st.markdown(f"**2. {t('怎么看这张图', 'How to Read It')}**  \n{method}")
+        st.markdown(f"**3. {section_title or t('计算逻辑', 'Calculation Logic')}**  \n{logic}")
+        st.markdown(f"**4. {t('数据来源', 'Data Source')}**  \n{source_markdown}")
         if extra_renderer is not None:
-            st.markdown(f"**3. {t('公式示例', 'Formula Example')}**")
+            st.markdown(f"**5. {t('公式示例', 'Formula Example')}**")
             extra_renderer()
 
 
@@ -14012,6 +14034,22 @@ def render_bme_bike_quality_dashboard_v3(
             f"No dated BME records exist in this period; {undated_records:,} undated records in the selected scope are excluded from period analysis.",
         ))
         return
+
+    scoped_nc = customer_nc[
+        customer_nc["supplier"].isin(selected_suppliers)
+        & pd.to_datetime(customer_nc["date"], errors="coerce").dt.date.between(start_date, end_date)
+    ].copy() if not customer_nc.empty else pd.DataFrame()
+    ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
+    tektro_nc = scoped_nc[scoped_nc["supplier"].eq("TEKTRO")] if not scoped_nc.empty else pd.DataFrame()
+    st.subheader(t("先看客诉情况", "Customer Problems at a Glance"))
+    render_kpi_cards([
+        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"已关联PO的NC占比 {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked coverage {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "high"},
+        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"用于计算的FSD订单量 {ppm['ordered_qty']:,.0f}", f"Unique-PO ordered qty {ppm['ordered_qty']:,.0f}"), "level": "high"},
+        {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("无订单量分母，不计算 PPM", "No order-quantity denominator; PPM not calculated"), "level": "medium"},
+    ])
+    if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
+        st.warning(t("FSD 已关联PO的NC占比低于90%，因此暂不显示PPM。", "FSD PO-link coverage is below 90%; PPM is hidden."))
+
     st.subheader(t("1 · 数据来源与完整性", "1 · Data Map & Confidence"))
     with st.expander(t("查看数据情况", "Data Map"), expanded=True):
         _render_bme_data_map(view)
@@ -14053,7 +14091,11 @@ def render_bme_bike_quality_dashboard_v3(
         {"label": t("疑似录入错误", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "note": t("图上仍显示，但不参与控制限计算", "Shown in charts, excluded from limit estimation"), "level": "high" if torque_suspects else "low"},
     ])
 
-    st.subheader(t("3 · SPC 过程控制", "3 · SPC & Attribute Control"))
+    st.subheader(t("3 · SPC（统计过程控制）", "3 · SPC & Attribute Control"))
+    st.caption(t(
+        "SPC 用连续数据判断生产过程有没有突然异常或持续偏移。红点表示过程可能发生了异常变化，不等于这一件产品一定不合格。",
+        "SPC uses sequential data to detect sudden changes or sustained process shifts. A red point indicates a possible process change, not necessarily a defective product.",
+    ))
     method_options: dict[str, tuple[str, pd.DataFrame]] = {}
     for keys, group in cmw_torque.groupby(["model_item_code", "process", "spec_low", "spec_high", "unit"], dropna=False):
         if len(group) >= 5:
@@ -14116,24 +14158,32 @@ def render_bme_bike_quality_dashboard_v3(
         )
         method, data = method_options[selected_method]
         if method == "imr":
+            spc_read_cn = "上半图看每次扭力实测值：蓝点是实测值，绿线 CL 是过程平均值，红色 UCL/LCL 是根据历史波动算出的控制限，橙色 USL/LSL 是产品规格上下限。下半图 MR 看相邻两次测量变化有多大。红点表示出现超出控制限、连续偏在中心线一侧或连续上升/下降等异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
+            spc_read_en = "The upper chart shows each measured torque value: blue points are measurements, the green CL is the process average, red UCL/LCL lines are statistical control limits, and orange USL/LSL lines are product specifications. The lower MR chart shows change between consecutive measurements. Investigate the related order, equipment, operator, and material batch when a red point appears; a red point alone does not mean the product must be rejected."
             spc_logic_cn = "同一车型、工序、规格和单位形成同质序列；I-MR 控制限为均值 ± 2.66×平均移动极差，并检查超出 3σ、连续 8 点同侧和连续 6 点单调趋势。只有过程稳定、样本不少于 25 且规格完整时才显示 Ppk。"
             spc_logic_en = "A homogeneous sequence uses the same model, process, specification, and unit. I-MR limits are mean ± 2.66×average moving range, with 3σ, eight-on-one-side, and six-point-trend rules. Ppk is shown only for a stable process with at least 25 observations and complete specifications."
         elif method == "imr_stability":
+            spc_read_cn = "上半图看每次实测值是否围绕平均值稳定波动，下半图看相邻两次测量的变化。红点表示过程出现了不寻常的变化，需要回查工单、设备、人员和物料批次。因为源数据没有规格线，这张图只能判断过程是否稳定，不能判断产品是否合格。"
+            spc_read_en = "The upper chart shows whether measurements vary consistently around the average, and the lower chart shows changes between consecutive measurements. Red points require investigation. Because source specifications are unavailable, this chart assesses stability only and cannot judge product conformity."
             spc_logic_cn = "同一 TEKTRO 型号、油管长度和订单形成一个 I-MR 序列。源数据没有规格，因此只判断过程稳定性，不判 NG，也不计算能力指数。"
             spc_logic_en = "One I-MR sequence uses the same TEKTRO model, hose length, and order. Source specifications are unavailable, so the chart assesses stability only without NG decisions or capability indices."
         elif method == "pchart":
+            spc_read_cn = "蓝线是每周 NC率，绿线是整个期间的平均 NC率，红色 UCL/LCL 是根据每周检验数量自动变化的控制限。红点表示该周的不合格率或连续走势异常，需要回查当周产品、人员、工序和物料变化；它不是固定的合格标准。"
+            spc_read_en = "The blue line is weekly NC rate, the green line is the overall average, and red UCL/LCL lines are control limits that change with weekly sample size. A red point indicates an unusual week or trend that requires investigation; it is not a fixed acceptance specification."
             spc_logic_cn = "按周汇总检验数和 NC 数，中心线为总 NC÷总检验数；每周控制限随当周样本量变化，并应用 3σ、连续 8 点同侧和连续 6 点趋势规则。"
             spc_logic_en = "Weekly inspected and NC quantities are aggregated. The center line is total NC divided by total inspected; weekly limits vary with sample size and apply the 3σ, eight-on-one-side, and six-point-trend rules."
         else:
+            spc_read_cn = "上半图 X̄ 看每组5件产品的平均拔脱力是否稳定，下半图 R 看同组5件之间的差异是否突然变大。红点表示组平均值或组内波动异常，应回查对应试验批次和测试条件。橙色 LSL 200 kgf 是产品最低规格，控制限和规格线不能混为一谈。"
+            spc_read_en = "The X̄ chart shows whether each five-piece subgroup average is stable, while the R chart shows whether within-subgroup variation suddenly increases. Red points require batch and test-condition investigation. The orange 200 kgf LSL is the product minimum specification and must not be confused with statistical control limits."
             spc_logic_cn = "拔脱力按连续 5 件组成子组，使用 A2=0.577、D3=0、D4=2.114 的 X̄-R 控制图；不完整子组不参与控制限估计。只有稳定时才显示单边 PPL。"
             spc_logic_en = "Pull-out force uses consecutive subgroups of five with X̄-R constants A2=0.577, D3=0, and D4=2.114. Incomplete subgroups are excluded from limit estimation, and one-sided PPL is shown only when stable."
         render_chart_heading(
             selected_method,
             selected_method,
-            "判断当前过程是否稳定，并区分控制限与产品规格。",
+            "SPC 用连续数据判断生产过程是否稳定，帮助发现突然变化、持续偏移和需要回查的时间点。",
             "Assess process stability while separating control limits from product specifications.",
-            "根据数据结构自动选用 I-MR、p-chart 或 X̄-R。",
-            "Automatically select I-MR, p-chart, or X̄-R based on the source structure.",
+            spc_read_cn,
+            spc_read_en,
             spc_logic_cn,
             spc_logic_en,
             bme_chart_source(data),
@@ -14244,22 +14294,16 @@ def render_bme_bike_quality_dashboard_v3(
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         top_issue = pareto.sort_values("defect_qty", ascending=False).iloc[0]
         total_defects = float(pareto["defect_qty"].sum())
-        st.caption(t(
+        pareto_conclusion = t(
             f"当前第一问题：{top_issue['issue_driver']}，不良数量 {top_issue['defect_qty']:,.0f}，占图中主要问题 {top_issue['defect_qty'] / total_defects:.1%}；另有 {missing_issue_alerts:,} 条异常记录没有填写具体问题，因此没有放进排名。",
             f"Top issue: {top_issue['issue_driver']} with {top_issue['defect_qty']:,.0f} defects ({top_issue['defect_qty'] / total_defects:.1%} of defects shown); {missing_issue_alerts:,} alerts without a specific issue are excluded from the ranking.",
-        ))
+        )
+        st.markdown(
+            f'<div class="bme-chart-conclusion"><strong>{html.escape(t("本期结论", "Period Conclusion"))}</strong>{html.escape(pareto_conclusion)}</div>',
+            unsafe_allow_html=True,
+        )
 
-    st.subheader(t("5 · 客诉质量情况", "5 · Customer Quality"))
-    scoped_nc = customer_nc[customer_nc["supplier"].isin(selected_suppliers) & pd.to_datetime(customer_nc["date"], errors="coerce").dt.date.between(start_date, end_date)].copy() if not customer_nc.empty else pd.DataFrame()
-    ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
-    tektro_nc = scoped_nc[scoped_nc["supplier"].eq("TEKTRO")] if not scoped_nc.empty else pd.DataFrame()
-    render_kpi_cards([
-        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"已关联PO的NC占比 {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked coverage {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "medium"},
-        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"用于计算的FSD订单量 {ppm['ordered_qty']:,.0f}", f"Unique-PO ordered qty {ppm['ordered_qty']:,.0f}"), "level": "medium"},
-        {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("无订单量分母，不计算 PPM", "No order-quantity denominator; PPM not calculated"), "level": "medium"},
-    ])
-    if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
-        st.warning(t("FSD PO 关联覆盖低于 90%，PPM 已隐藏。", "FSD PO-link coverage is below 90%; PPM is hidden."))
+    st.subheader(t("5 · 客诉问题 Pareto", "5 · Customer Quality Pareto"))
     if not scoped_nc.empty:
         customer_pareto = scoped_nc.groupby(["supplier", "model", "defect_code"], as_index=False)["nc_qty"].sum().sort_values("nc_qty", ascending=False).head(15).sort_values("nc_qty")
         customer_pareto["problem"] = customer_pareto["model"].replace("", t("未记录Model", "Model unrecorded")) + " · " + customer_pareto["defect_code"]
