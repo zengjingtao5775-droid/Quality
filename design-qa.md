@@ -59,6 +59,33 @@ final result: passed
 
 ---
 
+# Quality Reporting compact chart cards — Design QA
+
+## Source and implementation
+
+- User-reported source screenshot: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-ac41a661-16b1-4d31-ac7c-099a628ee7ff.png`.
+- Updated Textile cards: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-format-fix/02-reporting-cards-after.jpg`.
+- Updated BME cards: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-format-fix/03-bme-cards-after.jpg`.
+- Verified viewport: `1280 × 720` CSS pixels.
+
+## Findings and fixes
+
+- Reporting previously reused the full-width chart-heading ratio inside a half-width card, leaving only `35.6 px` for the `说明` control. The label wrapped vertically and the button grew to `61.2 px` high.
+- Reporting now uses a compact heading ratio. Every explanation control renders on one line at `78 × 40 px` without changing the full-width Textile or BME chart headings.
+- Plot height is reduced from `360 px` to `300 px`; chart cards are reduced from about `603 px` to `460 px` and aligned to a consistent row height.
+- The conclusion remains visible but uses a compact inline title, tighter padding, and no decorative shadow. Data values and conclusion logic are unchanged.
+- White cards now have the same subtle border, radius, and spacing, improving separation from the gray page background without adding dashboard noise.
+- The duplicated avatars/floating buttons visible along the right edge of the user screenshot are long-screenshot stitching artifacts from fixed overlay controls; they are not chart elements. The accepted local viewport captures contain no such overlap.
+- Browser console errors: `0`.
+- Rendered page contains no Streamlit exception or error state.
+- `PYTHONPYCACHEPREFIX=/tmp/quality-pycache python3 -m py_compile app.py`: passed.
+- `git diff --check`: passed.
+- `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
+
+final result: passed
+
+---
+
 # Quality Reporting integration — Design QA
 
 ## Source and target

@@ -8654,9 +8654,13 @@ def render_chart_heading(
     key: str,
     extra_renderer: Callable[[], None] | None = None,
     control_renderer: Callable[[], None] | None = None,
+    compact: bool = False,
 ) -> None:
     title = t(title_cn, title_en)
-    heading_columns = st.columns([0.70, 0.20, 0.10]) if control_renderer is not None else st.columns([0.90, 0.10])
+    if control_renderer is not None:
+        heading_columns = st.columns([0.64, 0.20, 0.16] if compact else [0.70, 0.20, 0.10])
+    else:
+        heading_columns = st.columns([0.78, 0.22] if compact else [0.90, 0.10])
     left = heading_columns[0]
     control = heading_columns[1] if control_renderer is not None else None
     right = heading_columns[2] if control_renderer is not None else heading_columns[1]
@@ -15414,7 +15418,27 @@ def _render_quality_reporting_content(
         .st-key-quality_reporting_textile_trend,
         .st-key-quality_reporting_bme_rate,
         .st-key-quality_reporting_bme_pareto {
-            background:#fff; border:0; border-bottom:1px solid #eceef1; padding:4px 8px 10px; min-height:395px;
+            background:#fff; border:1px solid #e5e8ef; border-radius:8px;
+            padding:10px 12px 12px; min-height:460px; box-shadow:0 4px 14px rgba(23,32,51,.035);
+        }
+        .st-key-quality_reporting_textile_rft [data-testid="stPopover"] button,
+        .st-key-quality_reporting_textile_trend [data-testid="stPopover"] button,
+        .st-key-quality_reporting_bme_rate [data-testid="stPopover"] button,
+        .st-key-quality_reporting_bme_pareto [data-testid="stPopover"] button {
+            min-width:70px !important; max-width:78px !important; white-space:nowrap !important;
+        }
+        .st-key-quality_reporting_textile_rft .bme-chart-conclusion,
+        .st-key-quality_reporting_textile_trend .bme-chart-conclusion,
+        .st-key-quality_reporting_bme_rate .bme-chart-conclusion,
+        .st-key-quality_reporting_bme_pareto .bme-chart-conclusion {
+            margin:6px 0 0; padding:11px 13px; border-left-width:4px; border-radius:8px;
+            box-shadow:none; font-size:.78rem; line-height:1.42;
+        }
+        .st-key-quality_reporting_textile_rft .bme-chart-conclusion strong,
+        .st-key-quality_reporting_textile_trend .bme-chart-conclusion strong,
+        .st-key-quality_reporting_bme_rate .bme-chart-conclusion strong,
+        .st-key-quality_reporting_bme_pareto .bme-chart-conclusion strong {
+            display:inline; margin:0 8px 0 0; font-size:.82rem;
         }
         @media(max-width:1000px){.kpi-grid.quality-reporting{grid-template-columns:repeat(3,minmax(0,1fr));}}
         @media(max-width:620px){.kpi-grid.quality-reporting{grid-template-columns:repeat(2,minmax(0,1fr));}}
@@ -15550,11 +15574,13 @@ def _render_quality_reporting_content(
                     "柱越高，一次通过表现越好；三个环节分别计算，不能相加。", "Higher bars indicate better first-pass performance; the three gates are calculated separately.",
                     "FQC 按首次 PASS ÷ 有效首次结果；End of line 沿用 Textile 看板 RFT 口径。", "FQC uses first PASS divided by valid first results; end of line follows the Textile dashboard RFT definition.",
                     community_source_label("ZX"), "quality_reporting_textile_rft_info",
+                    compact=True,
                 )
                 fig = px.bar(stage_summary, x="gate", y="rft", text_auto=".2%", color_discrete_sequence=["#3546c4"])
                 fig.update_xaxes(title_text="")
                 fig.update_yaxes(title_text="", tickformat=".0%", range=[0, 1.05])
                 _style_zx_alert_chart(fig, "")
+                fig.update_layout(height=300, margin=dict(l=18, r=12, t=12, b=34))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 if not stage_summary.empty:
                     weakest = stage_summary.sort_values("rft").iloc[0]
@@ -15574,11 +15600,13 @@ def _render_quality_reporting_content(
                     "按月查看 RFT，重点关注连续下降而不是单月小波动。", "Review monthly RFT and focus on sustained decline rather than one small fluctuation.",
                     "每月 RFT = 1 - 当月疵点数 ÷ 当月检验数。", "Monthly RFT = 1 - monthly defects divided by monthly inspected quantity.",
                     community_source_label("ZX"), "quality_reporting_textile_trend_info",
+                    compact=True,
                 )
                 fig = px.line(monthly, x="month", y="rft", markers=True, color_discrete_sequence=["#3546c4"])
                 fig.update_xaxes(title_text="")
                 fig.update_yaxes(title_text="", tickformat=".1%")
                 _style_zx_alert_chart(fig, "")
+                fig.update_layout(height=300, margin=dict(l=18, r=12, t=12, b=34))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 if not monthly.empty:
                     latest = monthly.sort_values("month").iloc[-1]
@@ -15612,11 +15640,13 @@ def _render_quality_reporting_content(
                     "按供应商分线；上升表示检验发现的不良占比增加。", "Each supplier has a separate line; an increase means a higher share of detected nonconformity.",
                     "每家供应商的 NC率 = 当月 NC数量 ÷ 当月检验数量。", "Each supplier NC rate = monthly NC quantity divided by monthly inspected quantity.",
                     reporting_source(inspection_source, "BME Database"), "quality_reporting_bme_rate_info",
+                    compact=True,
                 )
                 fig = px.line(monthly, x="month", y="nc_rate", color="supplier", markers=True, color_discrete_sequence=["#d99a00", "#3546c4", "#60a5fa"])
                 fig.update_xaxes(title_text="")
                 fig.update_yaxes(title_text="", tickformat=".1%")
                 _style_zx_alert_chart(fig, "")
+                fig.update_layout(height=300, margin=dict(l=18, r=12, t=12, b=34))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 if not monthly.empty:
                     latest_month = monthly["month"].max()
@@ -15649,11 +15679,13 @@ def _render_quality_reporting_content(
                     "先处理最长的柱，并进入 BME 看板查看工序、型号和源记录。", "Start with the longest bars, then open the BME dashboard for process, model, and source records.",
                     "只汇总已触发 Alert 且有不良数量的具体问题；未填写具体问题的记录不进入排名。", "Aggregate specific issues only when an alert and defect quantity exist; records without a specific issue are excluded.",
                     reporting_source(bme_view, "BME Database"), "quality_reporting_bme_pareto_info",
+                    compact=True,
                 )
                 fig = px.bar(pareto, x="defect_qty", y="issue_label", color="supplier", orientation="h", color_discrete_sequence=["#3546c4", "#d99a00", "#60a5fa"], hover_data={"issue_driver": True, "issue_label": False})
                 fig.update_xaxes(title_text=t("不良数量", "Defect Quantity"))
                 fig.update_yaxes(title_text="")
                 _style_zx_alert_chart(fig, "")
+                fig.update_layout(height=300, margin=dict(l=8, r=12, t=12, b=42))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 if not pareto.empty:
                     top = pareto.sort_values("defect_qty", ascending=False).iloc[0]
