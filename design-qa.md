@@ -1,81 +1,51 @@
-# BME chart conclusions and ZX-style data map — Design QA
+# BME data-map order and overall KPI merge — Design QA
 
 ## Source truth and target
 
-- Conclusion-card reference: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-5308f154-2c68-4071-9f4a-92fc7a0d02fd.png` (`2178 × 1452`).
-- ZX data-map reference: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-5c0d7b2e-c359-4317-93de-824e3e656c15.png` (`2272 × 1192`).
+- Source visual truth: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-60cbc0f9-7eaf-4d62-807c-c10913367852.png` (`2320 × 2361` pixels).
+- Requested change: keep the existing visual language, move the data map above all KPI cards, and merge the customer-problem and current-quality cards into one bicycle-factory KPI section.
 - Local implementation route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh`.
-- Verified production route: `https://quality-decathlon-nea.streamlit.app/?scope=BME_CMW&lang=zh&v=4047027`.
-- Browser viewport and implementation captures: `1280 × 720`, device density unchanged from the in-app browser.
-- Same-input comparison: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/15-reference-implementation-comparison.png`.
-- Implementation evidence:
-  - Data map: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/07-local-data-map-final.png`.
-  - SPC conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/09-local-spc-conclusion-card.png`.
-  - Customer Pareto conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/10-local-pareto-conclusions.png`.
-  - Incoming PPM conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/11-local-incoming-conclusion.png`.
-  - Rework lead-time conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/12-local-rework-lead-conclusion.png`.
-  - Rework volume conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/13-local-rework-volume-conclusion.png`.
-  - Open-rework conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/14-local-open-rework-conclusion.png`.
-  - Production data map: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/16-production-data-map.png`.
-- State: BME Chinese page, default suppliers and quality gates, `2025-08-11` to `2026-08-11`.
+- Browser viewport: `1280 × 720` CSS pixels, device density unchanged from the in-app browser.
+- Implementation captures:
+  - Top/data-map state: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-kpi-order-qa/01-local-top.png` (`1280 × 720`).
+  - Unified KPI state: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-kpi-order-qa/02-local-kpis.png` (`1280 × 720`).
+- Same-input visual comparison: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-kpi-order-qa/04-side-by-side.png` (`2580 × 1500`).
+- Density normalization: the source was proportionally padded into a `1280 × 1440` panel; the two implementation captures were stacked into an equal `1280 × 1440` panel. No browser or device frame was compared.
+- State: BME Chinese page, all three suppliers and all available quality gates, `2025-08-11` to `2026-08-11`.
 
-## Full-view and focused comparison
+## Findings
 
-- The BME data map now uses the same information structure as ZX: Community, Supplier, one column per source/quality gate, green `已接入`, red `缺失`, and a final `加载格式 / 当前方式` row.
-- BME-specific truth is retained rather than copied blindly: all connected BME sources show `手动 Excel`; End of QC and API remain missing; no API refresh control is shown because BME has no API connection.
-- The compact BME table fits the available desktop content width without horizontal scrolling (`793 px` table inside an `817 px` client area), while retaining all eight quality gates plus API.
-- Every rendered analysis chart now has the same red-accented `本期结论` card directly below it. The conclusion text is generated from the current filtered chart data, not hard-coded display copy.
-
-## Chart coverage
-
-Browser DOM verification found exactly `7` Plotly charts and `7` `.bme-chart-conclusion` cards in the default BME state:
-
-1. SPC control chart — process stability, trigger breakdown, specification breaches, and the correct follow-up action.
-2. Main quality-issue Pareto — top issue, defect quantity, share, and missing issue-description count.
-3. Customer NC Pareto — top supplier/model/defect-code combination and its Top-15 share.
-4. Incoming-supplier return PPM — highest supplier, numerator, denominator, and IQC record coverage.
-5. Rework lead-time trend — latest median, change versus previous month with data, P90 availability, and metric boundary.
-6. Monthly closed-rework volume — total, peak month, and small-sample warning.
-7. Open-rework aging — open count, longest-running model, days, status, and follow-up action.
-
-The SPC selector's I-MR, stability-only I-MR, p-chart, and X-bar/R branches each generate a method-specific conclusion when selected.
+- No actionable P0, P1, or P2 mismatch remains for the requested scope.
+- The first analysis section after the hero is now `1 · 数据来源与完整性`, and the expanded data map is visible before any KPI card.
+- The previous `先看客诉情况` and `当前质量情况` headings no longer render. One heading, `2 · 自行车工厂整体 KPI`, owns all seven cards.
+- The seven cards retain the original values and calculation notes: FSD customer PPM `3,393`, FSD customer NC `7,875`, TEKTRO customer NC `3,018`, FSD inspection NC rate `5.40%`, CMW incoming return PPM `488`, open rework `3`, and suspected input errors `2`.
+- Desktop layout uses four cards on the first row and three on the second; the existing responsive rule collapses the grid to one column on narrow screens.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: existing BME/ZX typography and optical hierarchy are preserved; conclusion labels and body weights match the accepted Pareto card.
-- Spacing and layout rhythm: conclusions sit directly beneath their chart, with consistent margins, border radius, left accent, and section spacing. The data-map expander follows the ZX hierarchy.
-- Colors and visual tokens: existing green loaded, red missing, blue manual-Excel, pale-blue canvas, and white card tokens are reused.
-- Image quality and assets: the target contains no new raster assets; existing brand and chart assets remain unchanged.
-- Copy and content: every conclusion states the current result, relevant boundary or denominator, and a concrete next check without inventing defect-code meanings or root causes.
+- Fonts and typography: existing BME heading, KPI label, value, and note styles are unchanged; the new section title uses the existing subheader hierarchy.
+- Spacing and layout rhythm: the hero-to-data-map-to-KPI sequence is clear, and the 4+3 card grid keeps consistent gaps, radii, shadows, and card heights.
+- Colors and visual tokens: existing blue KPI accents, white cards, pale-blue page background, and green/red data-map status tokens are preserved.
+- Image quality and assets: no new image asset was introduced; existing brand and chart assets remain untouched.
+- Copy and content: the merged title describes the cards as the overall bicycle-factory KPI set; individual labels, denominators, and calculation boundaries are preserved.
 
-## Interaction, accessibility, and runtime checks
+## Interaction and runtime checks
 
-- The data map updates with supplier, quality-gate, and date filters because its statuses are built from the filtered BME event frame.
-- The table retains semantic table/row/header structure; status meaning is communicated by text as well as color.
-- Conclusion cards use semantic text and sufficient contrast; visual inspection does not establish full keyboard or screen-reader compliance.
-- Browser console errors: none.
-- Production DOM contains the ZX-style load matrix and seven `本期结论` sections; the deployed page has no Streamlit error state or console error.
+- DOM order verified: `1 · 数据来源与完整性` → `2 · 自行车工厂整体 KPI` → `3 · SPC（统计过程控制）`.
+- Browser DOM contains all seven KPI labels and values and contains no `先看客诉情况` heading.
+- Supplier, quality-gate, and date filters remain upstream of the same calculations; this change only reorders rendering and combines the two card arrays.
+- Browser console error log: `0` entries.
+- Rendered page contains no Streamlit exception or error state.
 - `PYTHONPYCACHEPREFIX=/tmp/quality-pycache PYTHONPATH=.vendor python3 -m py_compile app.py`: passed.
 - `git diff --check`: passed.
 - `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
 
 ## Comparison history
 
-### Pass 1 — blocked
+### Pass 1 — passed
 
-- P1: The default BME page rendered seven charts but only the main issue Pareto had a `本期结论` card.
-- P1: The BME data map used four KPI cards plus a record-volume heatmap, which did not match the requested ZX connection-status matrix.
-- Fix: Added filter-aware conclusions to all seven charts and rebuilt the data map around the existing ZX table/status components.
-
-### Pass 2 — blocked
-
-- P2: The first BME matrix preserved all quality gates but required horizontal scrolling, hiding Rework and API in the initial viewport.
-- Fix: Applied a BME-scoped compact table layout, reduced cell/pill padding, and preserved readable text labels.
-
-### Pass 3 — passed
-
-- Post-fix measurement confirms the entire table fits its container without horizontal overflow.
-- Browser verification confirms a one-to-one `7 charts = 7 conclusions` relationship.
-- No actionable P0, P1, or P2 issue remains for the requested scope.
+- The combined visual input confirms the requested hierarchy change while preserving the accepted BME styling and metric content.
+- Focused inspection of the KPI region confirms one unified heading and a readable 4+3 desktop grid; no additional focused crop was necessary because card labels, values, and notes are legible in the implementation capture.
+- No visual fix was required after this pass.
 
 final result: passed

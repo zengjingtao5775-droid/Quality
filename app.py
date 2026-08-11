@@ -14075,15 +14075,6 @@ def render_bme_bike_quality_dashboard_v3(
     ].copy() if not customer_nc.empty else pd.DataFrame()
     ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
     tektro_nc = scoped_nc[scoped_nc["supplier"].eq("TEKTRO")] if not scoped_nc.empty else pd.DataFrame()
-    st.subheader(t("先看客诉情况", "Customer Problems at a Glance"))
-    render_kpi_cards([
-        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"已关联PO的NC占比 {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked coverage {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "high"},
-        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"用于计算的FSD订单量 {ppm['ordered_qty']:,.0f}", f"Unique-PO ordered qty {ppm['ordered_qty']:,.0f}"), "level": "high"},
-        {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("无订单量分母，不计算 PPM", "No order-quantity denominator; PPM not calculated"), "level": "medium"},
-    ])
-    if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
-        st.warning(t("FSD 已关联PO的NC占比低于90%，因此暂不显示PPM。", "FSD PO-link coverage is below 90%; PPM is hidden."))
-
     st.subheader(t("1 · 数据来源与完整性", "1 · Data Map & Confidence"))
     with st.expander(t("数据地图", "Data Map"), expanded=True):
         _render_bme_data_map(view)
@@ -14094,7 +14085,6 @@ def render_bme_bike_quality_dashboard_v3(
             ))
         st.caption(t("没有规格或检验数量时，只保留原始记录，不计算过程能力或不良率；没有日期的记录不计入本期数据。", "Records missing specifications or denominators remain available without generating inapplicable capability or defect-rate conclusions; undated records do not enter period statistics."))
 
-    st.subheader(t("2 · 当前质量情况", "2 · Quality Signal Overview"))
     for optional_column, default_value in {
         "event_timestamp": pd.NaT,
         "workflow_end_date": pd.NaT,
@@ -14118,12 +14108,18 @@ def render_bme_bike_quality_dashboard_v3(
     open_rework = view[(view["stage"].eq("REWORK")) & ~view["status"].eq("Closed")]
     cmw_iqc = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("IQC"))]
     return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
+    st.subheader(t("2 · 自行车工厂整体 KPI", "2 · Bike Factory Overall KPIs"))
     render_kpi_cards([
+        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"已关联PO的NC占比 {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked coverage {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "high"},
+        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"用于计算的FSD订单量 {ppm['ordered_qty']:,.0f}", f"Unique-PO ordered qty {ppm['ordered_qty']:,.0f}"), "level": "high"},
+        {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("无订单量分母，不计算 PPM", "No order-quantity denominator; PPM not calculated"), "level": "medium"},
         {"label": t("FSD 检验不合格率（NC率）", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "note": t("按 AQL / DKL 检验数量计算", "AQL / DKL records with denominators"), "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"},
         {"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "note": t("退货数量 / 来料数量", "Return quantity / incoming quantity"), "level": "medium"},
         {"label": t("未结案返工", "Open Rework"), "value": f"{len(open_rework):,}", "note": t("表示流程还没结案，不是返工用时", "Workflow state, not physical rework hours"), "level": "high" if len(open_rework) else "low"},
         {"label": t("疑似录入错误", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "note": t("图上仍显示，但不参与控制限计算", "Shown in charts, excluded from limit estimation"), "level": "high" if torque_suspects else "low"},
     ])
+    if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
+        st.warning(t("FSD 已关联PO的NC占比低于90%，因此暂不显示PPM。", "FSD PO-link coverage is below 90%; PPM is hidden."))
 
     st.subheader(t("3 · SPC（统计过程控制）", "3 · SPC & Attribute Control"))
     st.caption(t(
