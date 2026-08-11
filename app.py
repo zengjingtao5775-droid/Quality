@@ -14382,78 +14382,105 @@ def render_bme_bike_quality_dashboard_v3(
             if supplier_name not in selected_suppliers:
                 continue
             st.subheader(t(f"{supplier_name} 板块", f"{supplier_name} Section"))
-            rendered_supplier_chart = False
+            supplier_gate_charts: list[tuple[str, pd.DataFrame, str]] = []
             for gate_name in ["IQC", "PQC", "FQC"]:
-                chart_title_cn, chart_title_en, chart_intro_cn, chart_intro_en, chart_color = gate_meta[gate_name]
+                _, _, _, _, chart_color = gate_meta[gate_name]
                 gate_rows = chart_product_gate[
                     chart_product_gate["supplier"].eq(supplier_name)
                     & chart_product_gate["quality_gate"].eq(gate_name)
                 ].copy()
                 if gate_rows.empty:
                     continue
-                rendered_supplier_chart = True
-                render_chart_heading(
-                    f"{supplier_name} · {chart_title_cn}",
-                    f"{supplier_name} · {chart_title_en}",
-                    chart_intro_cn,
-                    chart_intro_en,
-                    "柱长是不良数量，只使用当前供应商、当前检验环节的数据。",
-                    "Bar length is defect quantity using only the current supplier and quality gate.",
-                    "CMW 的 IQC 按来料零部件、PQC 按源车型记录、FQC 按整车料号展示，三者没有可靠的一对一关系时不强行合并。FSD 使用车系 / 型号别名，TEKTRO 保留源型号；AQL 与 DKL 统一归为 FQC。",
-                    "CMW IQC uses incoming components, PQC uses source model records, and FQC uses whole-bike item codes; they are not force-merged without a reliable one-to-one link. FSD uses family/model aliases, TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
-                    bme_chart_source(
-                        all_product_issues[
-                            all_product_issues["supplier"].eq(supplier_name)
-                            & all_product_issues["quality_gate"].eq(gate_name)
-                        ]
-                    ),
-                    f"bme_v8_product_{supplier_name.lower()}_{gate_name.lower()}_info",
-                )
                 gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(10).copy()
                 gate_top_frames.append(gate_top)
                 gate_top["product_display"] = gate_top["product_label"].map(
                     lambda value: value if len(str(value)) <= 40 else str(value)[:39] + "…"
                 )
-                gate_order = gate_top.sort_values(["defect_qty", "issue_records"], ascending=True)["product_display"].tolist()
-                gate_fig = px.bar(
-                    gate_top,
-                    x="defect_qty",
-                    y="product_display",
-                    orientation="h",
-                    text="defect_qty",
-                    category_orders={"product_display": gate_order},
-                    hover_data={
-                        "product_label": True,
-                        "product_group": True,
-                        "issue_records": True,
-                        "product_display": False,
-                    },
-                    labels={
-                        "defect_qty": t("不良数量", "Defect Quantity"),
-                        "product_display": t("产品 / 款式", "Product / Style"),
-                        "product_label": t("产品 / 款式", "Product / Style"),
-                        "product_group": t("产品类型", "Product Type"),
-                        "issue_records": t("问题记录数", "Issue Records"),
-                    },
-                    color_discrete_sequence=[chart_color],
-                )
-                gate_fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False)
-                gate_fig.update_layout(
-                    height=max(360, 42 * len(gate_top) + 120),
-                    margin=dict(l=230, r=90, t=20, b=40),
-                    showlegend=False,
-                )
-                st.plotly_chart(gate_fig, use_container_width=True, config={"displayModeBar": False})
-                gate_leader = gate_top.iloc[0]
-                render_bme_chart_conclusion(
-                    f"本期 {supplier_name} 的 {gate_name} 有 {len(gate_rows):,} 个产品出现不良，数量最多的是 {gate_leader['product_label']}，共 {gate_leader['defect_qty']:,.0f} 个。",
-                    f"This period has {len(gate_rows):,} {supplier_name} products with {gate_name} defects. {gate_leader['product_label']} ranks first with {gate_leader['defect_qty']:,.0f} defects.",
-                )
-            if not rendered_supplier_chart:
+                supplier_gate_charts.append((gate_name, gate_top, chart_color))
+            if not supplier_gate_charts:
                 st.info(t(
                     f"本期 {supplier_name} 没有可用于 IQC、PQC 或 FQC 产品排名的不良数据。",
                     f"No {supplier_name} defect data is available for IQC, PQC, or FQC product ranking in this period.",
                 ))
+                continue
+
+            render_chart_heading(
+                f"{supplier_name} 产品质量问题",
+                f"{supplier_name} Product Quality Issues",
+                "在一张图中分别查看来料、制程和成品检验的问题产品。",
+                "Review incoming, process, and final-inspection product issues in one figure.",
+                "每个分区只使用对应检验环节的数据，柱长是不良数量。",
+                "Each panel uses only its own quality-gate data; bar length is defect quantity.",
+                "三个检验环节只合并到同一个图表容器，数据口径仍然分开。CMW 的 IQC 按来料零部件、PQC 按源车型记录、FQC 按整车料号展示；没有可靠的一对一关系时不强行串款。FSD 使用车系 / 型号别名，TEKTRO 保留源型号；AQL 与 DKL 归入 FQC。",
+                "The three gates share one figure but retain separate data grains. CMW IQC uses incoming components, PQC uses source model records, and FQC uses whole-bike item codes; records are not force-linked without a reliable one-to-one match. FSD uses family/model aliases, TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
+                bme_chart_source(all_product_issues[all_product_issues["supplier"].eq(supplier_name)]),
+                f"bme_v9_product_{supplier_name.lower()}_info",
+            )
+            combined_gate_fig = make_subplots(
+                rows=len(supplier_gate_charts),
+                cols=1,
+                subplot_titles=[gate_name for gate_name, _, _ in supplier_gate_charts],
+                vertical_spacing=min(0.09, 0.18 / max(len(supplier_gate_charts) - 1, 1)),
+            )
+            conclusion_cn: list[str] = []
+            conclusion_en: list[str] = []
+            combined_height = 80
+            for row_index, (gate_name, gate_top, chart_color) in enumerate(supplier_gate_charts, start=1):
+                gate_top = gate_top.sort_values(["defect_qty", "issue_records"], ascending=True).copy()
+                gate_order = gate_top["product_display"].tolist()
+                combined_gate_fig.add_trace(
+                    go.Bar(
+                        x=gate_top["defect_qty"],
+                        y=gate_top["product_display"],
+                        orientation="h",
+                        text=gate_top["defect_qty"],
+                        texttemplate="%{text:,.0f}",
+                        textposition="outside",
+                        cliponaxis=False,
+                        marker_color=chart_color,
+                        customdata=np.column_stack([
+                            gate_top["product_label"],
+                            gate_top["product_group"],
+                            gate_top["issue_records"],
+                        ]),
+                        hovertemplate=(
+                            f"{t('产品 / 款式', 'Product / Style')}  %{{customdata[0]}}<br>"
+                            f"{t('产品类型', 'Product Type')}  %{{customdata[1]}}<br>"
+                            f"{t('不良数量', 'Defect Quantity')}  %{{x:,.0f}}<br>"
+                            f"{t('问题记录数', 'Issue Records')}  %{{customdata[2]:,.0f}}<extra></extra>"
+                        ),
+                        showlegend=False,
+                    ),
+                    row=row_index,
+                    col=1,
+                )
+                combined_gate_fig.update_yaxes(
+                    categoryorder="array",
+                    categoryarray=gate_order,
+                    title_text=t("产品 / 款式", "Product / Style"),
+                    row=row_index,
+                    col=1,
+                )
+                combined_gate_fig.update_xaxes(
+                    title_text=t("不良数量", "Defect Quantity"),
+                    rangemode="tozero",
+                    row=row_index,
+                    col=1,
+                )
+                gate_leader = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).iloc[0]
+                conclusion_cn.append(f"{gate_name}：{gate_leader['product_label']}，{gate_leader['defect_qty']:,.0f} 个")
+                conclusion_en.append(f"{gate_name}: {gate_leader['product_label']} ({gate_leader['defect_qty']:,.0f})")
+                combined_height += max(290, 34 * len(gate_top) + 90)
+            combined_gate_fig.update_layout(
+                height=combined_height,
+                margin=dict(l=230, r=95, t=45, b=40),
+                showlegend=False,
+            )
+            st.plotly_chart(combined_gate_fig, use_container_width=True, config={"displayModeBar": False})
+            render_bme_chart_conclusion(
+                f"本期 {supplier_name} 各环节问题最多的产品分别是：{'；'.join(conclusion_cn)}。",
+                f"This period's leading {supplier_name} products by gate are: {'; '.join(conclusion_en)}.",
+            )
 
         visible_product_keys = pd.concat(gate_top_frames, ignore_index=True)["product_key"].drop_duplicates() if gate_top_frames else pd.Series(dtype=object)
         top_products = (
@@ -14903,7 +14930,10 @@ def render_bme_bike_quality_dashboard_v3(
                 f"{scope_conclusion_en}This period has {len(chart)} complete subgroups, {mean_signals + range_signals} SPC signal subgroups, and {below_lsl} individual results below the 200 kgf specification. Review the related test batches and conditions first.",
             )
 
-    if not selected_machine_data.empty:
+    # I-MR and p charts already contain the measured trend, so a second trend
+    # chart would repeat the same signal. Keep it only for X-bar/R, where the
+    # SPC view is based on subgroup averages rather than individual results.
+    if not selected_machine_data.empty and method == "xbar":
         parameter_view = selected_machine_data.copy()
         parameter_view = parameter_view[
             parameter_view.get(
