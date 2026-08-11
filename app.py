@@ -14340,6 +14340,19 @@ def render_bme_bike_quality_dashboard_v3(
     if product_issues.empty:
         st.info(t("当前筛选没有可用于产品问题分析的 IQC、PQC 或 FQC 不良记录。", "No IQC, PQC, or FQC defect record is available for product analysis under the current filters."))
     else:
+        def most_common_nonblank(values: pd.Series) -> str:
+            clean = values.fillna("").astype(str).str.strip()
+            clean = clean[clean.ne("")]
+            return str(clean.value_counts().index[0]) if not clean.empty else t("未记录", "Unrecorded")
+
+        def joined_nonblank(values: pd.Series, limit: int = 4) -> str:
+            clean = values.fillna("").astype(str).str.strip()
+            clean = clean[clean.ne("") & ~clean.eq("Unrecorded")].drop_duplicates().tolist()
+            if not clean:
+                return t("未记录", "Unrecorded")
+            suffix = f" +{len(clean) - limit}" if len(clean) > limit else ""
+            return "、".join(clean[:limit]) + suffix
+
         product_gate = product_issues.groupby(
             ["product_key", "product_label", "product_group", "quality_gate"], as_index=False
         ).agg(defect_qty=("defect_qty", "sum"), issue_records=("source_row", "size"))
@@ -14353,7 +14366,17 @@ def render_bme_bike_quality_dashboard_v3(
         product_summary["supplier"] = product_summary["product_key"].str.split("|", n=1).str[0]
         chart_product_gate = all_product_issues.groupby(
             ["supplier", "product_key", "product_label", "product_group", "quality_gate"], as_index=False
-        ).agg(defect_qty=("defect_qty", "sum"), issue_records=("source_row", "size"))
+        ).agg(
+            defect_qty=("defect_qty", "sum"),
+            issue_records=("source_row", "size"),
+            item_code=("model_item_code", most_common_nonblank),
+            item_names=("item_name", joined_nonblank),
+            material_suppliers=("material_supplier", joined_nonblank),
+            supplier_count=("material_supplier", lambda values: values.fillna("").astype(str).str.strip().replace("Unrecorded", "").loc[lambda series: series.ne("")].nunique()),
+            main_pos=("order_po", joined_nonblank),
+            inspected_qty=("inspected_qty", "sum"),
+            latest_date=("date", "max"),
+        )
         gate_meta = {
             "IQC": (
                 "IQC 来料问题",
@@ -14393,9 +14416,12 @@ def render_bme_bike_quality_dashboard_v3(
                     continue
                 gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(10).copy()
                 gate_top_frames.append(gate_top)
-                gate_top["product_display"] = gate_top["product_label"].map(
-                    lambda value: value if len(str(value)) <= 40 else str(value)[:39] + "…"
-                )
+                if supplier_name == "CMW" and gate_name == "IQC":
+                    gate_top["product_display"] = gate_top["item_code"]
+                else:
+                    gate_top["product_display"] = gate_top["product_label"].map(
+                        lambda value: value if len(str(value)) <= 40 else str(value)[:39] + "…"
+                    )
                 supplier_gate_charts.append((gate_name, gate_top, chart_color))
             if not supplier_gate_charts:
                 st.info(t(
@@ -14427,7 +14453,43 @@ def render_bme_bike_quality_dashboard_v3(
             combined_height = 80
             for row_index, (gate_name, gate_top, chart_color) in enumerate(supplier_gate_charts, start=1):
                 gate_top = gate_top.sort_values(["defect_qty", "issue_records"], ascending=True).copy()
+                gate_top["latest_date_label"] = pd.to_datetime(gate_top["latest_date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
                 gate_order = gate_top["product_display"].tolist()
+                if supplier_name == "CMW" and gate_name == "IQC":
+                    gate_customdata = np.column_stack([
+                        gate_top["item_code"],
+                        gate_top["item_names"],
+                        gate_top["material_suppliers"],
+                        gate_top["supplier_count"],
+                        gate_top["main_pos"],
+                        gate_top["inspected_qty"],
+                        gate_top["defect_qty"],
+                        gate_top["issue_records"],
+                        gate_top["latest_date_label"],
+                    ])
+                    gate_hovertemplate = (
+                        f"{t('料号', 'Item Code')}  %{{customdata[0]}}<br>"
+                        f"{t('零件名称', 'Component')}  %{{customdata[1]}}<br>"
+                        f"{t('来料供应商', 'Incoming Supplier')}  %{{customdata[2]}}<br>"
+                        f"{t('供应商数量', 'Supplier Count')}  %{{customdata[3]:,.0f}}<br>"
+                        f"{t('工单 / PO', 'Order / PO')}  %{{customdata[4]}}<br>"
+                        f"{t('涉及来料数量', 'Related Incoming Quantity')}  %{{customdata[5]:,.0f}}<br>"
+                        f"{t('退货数量', 'Return Quantity')}  %{{customdata[6]:,.0f}}<br>"
+                        f"{t('不良记录数', 'Defect Records')}  %{{customdata[7]:,.0f}}<br>"
+                        f"{t('最近检验日期', 'Latest Inspection Date')}  %{{customdata[8]}}<extra></extra>"
+                    )
+                else:
+                    gate_customdata = np.column_stack([
+                        gate_top["product_label"],
+                        gate_top["product_group"],
+                        gate_top["issue_records"],
+                    ])
+                    gate_hovertemplate = (
+                        f"{t('产品 / 款式', 'Product / Style')}  %{{customdata[0]}}<br>"
+                        f"{t('产品类型', 'Product Type')}  %{{customdata[1]}}<br>"
+                        f"{t('不良数量', 'Defect Quantity')}  %{{x:,.0f}}<br>"
+                        f"{t('问题记录数', 'Issue Records')}  %{{customdata[2]:,.0f}}<extra></extra>"
+                    )
                 combined_gate_fig.add_trace(
                     go.Bar(
                         x=gate_top["defect_qty"],
@@ -14438,17 +14500,8 @@ def render_bme_bike_quality_dashboard_v3(
                         textposition="outside",
                         cliponaxis=False,
                         marker_color=chart_color,
-                        customdata=np.column_stack([
-                            gate_top["product_label"],
-                            gate_top["product_group"],
-                            gate_top["issue_records"],
-                        ]),
-                        hovertemplate=(
-                            f"{t('产品 / 款式', 'Product / Style')}  %{{customdata[0]}}<br>"
-                            f"{t('产品类型', 'Product Type')}  %{{customdata[1]}}<br>"
-                            f"{t('不良数量', 'Defect Quantity')}  %{{x:,.0f}}<br>"
-                            f"{t('问题记录数', 'Issue Records')}  %{{customdata[2]:,.0f}}<extra></extra>"
-                        ),
+                        customdata=gate_customdata,
+                        hovertemplate=gate_hovertemplate,
                         showlegend=False,
                     ),
                     row=row_index,
@@ -14457,7 +14510,12 @@ def render_bme_bike_quality_dashboard_v3(
                 combined_gate_fig.update_yaxes(
                     categoryorder="array",
                     categoryarray=gate_order,
-                    title_text=t("产品 / 款式", "Product / Style"),
+                    type="category" if supplier_name == "CMW" and gate_name == "IQC" else None,
+                    title_text=(
+                        t("料号", "Item Code")
+                        if supplier_name == "CMW" and gate_name == "IQC"
+                        else t("产品 / 款式", "Product / Style")
+                    ),
                     row=row_index,
                     col=1,
                 )
@@ -14468,8 +14526,10 @@ def render_bme_bike_quality_dashboard_v3(
                     col=1,
                 )
                 gate_leader = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).iloc[0]
-                conclusion_cn.append(f"{gate_name}：{gate_leader['product_label']}，{gate_leader['defect_qty']:,.0f} 个")
-                conclusion_en.append(f"{gate_name}: {gate_leader['product_label']} ({gate_leader['defect_qty']:,.0f})")
+                leader_label_cn = f"料号 {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "IQC" else str(gate_leader["product_label"])
+                leader_label_en = f"item code {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "IQC" else str(gate_leader["product_label"])
+                conclusion_cn.append(f"{gate_name}：{leader_label_cn}，{gate_leader['defect_qty']:,.0f} 个")
+                conclusion_en.append(f"{gate_name}: {leader_label_en} ({gate_leader['defect_qty']:,.0f})")
                 combined_height += max(290, 34 * len(gate_top) + 90)
             combined_gate_fig.update_layout(
                 height=combined_height,
@@ -14523,11 +14583,6 @@ def render_bme_bike_quality_dashboard_v3(
         ]
         described_defect_total = float(defect_detail["defect_qty"].sum())
         missing_defect_total = max(product_defect_total - described_defect_total, 0.0)
-
-        def most_common_nonblank(values: pd.Series) -> str:
-            clean = values.fillna("").astype(str).str.strip()
-            clean = clean[clean.ne("")]
-            return str(clean.value_counts().index[0]) if not clean.empty else t("未记录", "Unrecorded")
 
         defect_gate = defect_detail.groupby(["quality_gate", "issue_driver"], as_index=False).agg(
             defect_qty=("defect_qty", "sum"),
