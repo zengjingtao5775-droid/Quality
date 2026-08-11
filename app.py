@@ -14347,95 +14347,96 @@ def render_bme_bike_quality_dashboard_v3(
             issue_records=("issue_records", "sum"),
         ).sort_values(["affected_gates", "defect_qty", "issue_records"], ascending=False)
         product_summary["supplier"] = product_summary["product_key"].str.split("|", n=1).str[0]
-        common_products = product_summary[product_summary["affected_gates"].ge(2)].copy()
-        supplier_count = max(int(product_summary["supplier"].nunique()), 1)
-        per_supplier_limit = max(1, 15 // supplier_count)
-        top_products = (
-            product_summary.sort_values(
-                ["supplier", "affected_gates", "defect_qty", "issue_records"],
-                ascending=[True, False, False, False],
+        gate_meta = {
+            "IQC": (
+                "IQC 来料问题最多的产品",
+                "Products with the Most IQC Incoming Issues",
+                "看哪些产品在来料检验阶段出现的问题最多。",
+                "Identify products with the most incoming-inspection issues.",
+                "#6aa8ff",
+            ),
+            "PQC": (
+                "PQC 制程问题最多的产品",
+                "Products with the Most PQC Process Issues",
+                "看哪些产品在生产过程检验阶段出现的问题最多。",
+                "Identify products with the most in-process inspection issues.",
+                "#3341c4",
+            ),
+            "FQC": (
+                "FQC 成品检验问题最多的产品",
+                "Products with the Most FQC Final-Inspection Issues",
+                "看哪些产品款式在成品检验阶段出现的问题最多；CMW 按整车料号统计。",
+                "Identify product styles with the most final-inspection issues; CMW uses the whole-bike item code.",
+                "#d99a00",
+            ),
+        }
+        gate_top_frames: list[pd.DataFrame] = []
+        for gate_name in ["IQC", "PQC", "FQC"]:
+            chart_title_cn, chart_title_en, chart_intro_cn, chart_intro_en, chart_color = gate_meta[gate_name]
+            gate_rows = product_gate[product_gate["quality_gate"].eq(gate_name)].copy()
+            render_chart_heading(
+                chart_title_cn,
+                chart_title_en,
+                chart_intro_cn,
+                chart_intro_en,
+                "柱长是不良数量，产品在该环节内单独排序，不与其他检验环节相加。",
+                "Bar length is defect quantity. Products are ranked within this gate and are not added to other gates.",
+                "CMW 款式只使用 FQC 源表的整车料号。CMW PQC 只有车型名称、IQC 只有零部件料号，无法一对一对应整车料号，因此不分摊到具体款式。FSD 使用车系 / 型号别名，TEKTRO 保留源型号；AQL 与 DKL 统一归为 FQC。",
+                "CMW styles use only the whole-bike item code from the FQC source. CMW PQC model names and IQC component codes are not assigned to a bike style without a one-to-one link. FSD uses family/model aliases, TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
+                bme_chart_source(product_issues[product_issues["quality_gate"].eq(gate_name)]),
+                f"bme_v7_product_{gate_name.lower()}_info",
             )
-            .groupby("supplier", as_index=False, group_keys=False)
-            .head(per_supplier_limit)
+            if gate_rows.empty:
+                st.info(t(f"本期没有可用于 {gate_name} 产品分析的不良记录。", f"No defect record is available for {gate_name} product analysis in this period."))
+                continue
+            gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(10).copy()
+            gate_top_frames.append(gate_top)
+            gate_top["product_display"] = gate_top["product_label"].map(
+                lambda value: value if len(str(value)) <= 40 else str(value)[:39] + "…"
+            )
+            gate_order = gate_top.sort_values(["defect_qty", "issue_records"], ascending=True)["product_display"].tolist()
+            gate_fig = px.bar(
+                gate_top,
+                x="defect_qty",
+                y="product_display",
+                orientation="h",
+                text="defect_qty",
+                category_orders={"product_display": gate_order},
+                hover_data={
+                    "product_label": True,
+                    "product_group": True,
+                    "issue_records": True,
+                    "product_display": False,
+                },
+                labels={
+                    "defect_qty": t("不良数量", "Defect Quantity"),
+                    "product_display": t("产品 / 款式", "Product / Style"),
+                    "product_label": t("产品 / 款式", "Product / Style"),
+                    "product_group": t("产品类型", "Product Type"),
+                    "issue_records": t("问题记录数", "Issue Records"),
+                },
+                color_discrete_sequence=[chart_color],
+            )
+            gate_fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False)
+            gate_fig.update_layout(
+                height=max(360, 42 * len(gate_top) + 120),
+                margin=dict(l=230, r=90, t=20, b=40),
+                showlegend=False,
+            )
+            st.plotly_chart(gate_fig, use_container_width=True, config={"displayModeBar": False})
+            gate_leader = gate_top.iloc[0]
+            render_bme_chart_conclusion(
+                f"本期 {gate_name} 有 {len(gate_rows):,} 个产品出现不良，数量最多的是 {gate_leader['product_label']}，共 {gate_leader['defect_qty']:,.0f} 个。",
+                f"This period has {len(gate_rows):,} products with {gate_name} defects. {gate_leader['product_label']} ranks first with {gate_leader['defect_qty']:,.0f} defects.",
+            )
+
+        visible_product_keys = pd.concat(gate_top_frames, ignore_index=True)["product_key"].drop_duplicates() if gate_top_frames else pd.Series(dtype=object)
+        top_products = (
+            product_summary[product_summary["product_key"].isin(visible_product_keys)]
             .sort_values(["affected_gates", "defect_qty", "issue_records"], ascending=False)
-            .head(15)
             .copy()
         )
-        chart_products = product_gate[product_gate["product_key"].isin(top_products["product_key"])].copy()
-        chart_products = chart_products.merge(
-            top_products[["product_key", "affected_gates", "defect_qty"]].rename(columns={"defect_qty": "product_defect_qty"}),
-            on="product_key",
-            how="left",
-        )
-        chart_products["product_display"] = chart_products["product_label"].map(
-            lambda value: value if len(str(value)) <= 34 else str(value)[:33] + "…"
-        )
-        display_order = (
-            top_products.sort_values(["affected_gates", "defect_qty"], ascending=True)["product_label"]
-            .map(lambda value: value if len(str(value)) <= 34 else str(value)[:33] + "…")
-            .tolist()
-        )
-        render_chart_heading(
-            "需优先关注的产品",
-            "Products Requiring Priority Attention",
-            "按供应商分别找出最需要关注的产品款式；同一款式覆盖环节越多、问题数量越高，越值得优先回查。",
-            "Identify the highest-priority product styles for each supplier using affected gates and defect quantity.",
-            "每根横柱代表产品主数据中的一个产品，颜色区分 IQC、PQC 和 FQC，柱长为源不良数量。",
-            "Each horizontal bar is one product-master item; color separates IQC, PQC, and FQC, while bar length uses source defect quantity.",
-            "CMW 款式只使用 FQC 源表的整车料号。CMW PQC 只有车型名称、IQC 只有零部件料号，无法一对一对应整车料号，因此不分摊到具体款式。FSD 使用车系 / 型号别名，TEKTRO 保留源型号；AQL 与 DKL 统一归为 FQC，RPM / IV 不参与。",
-            "CMW styles use only the whole-bike item code from the FQC source. CMW PQC model names and IQC component codes are not assigned to a bike style without a one-to-one link. FSD uses family/model aliases and TEKTRO retains source models; AQL and DKL are grouped as FQC, while RPM and IV are excluded.",
-            bme_chart_source(product_issues),
-            "bme_v6_product_common_info",
-        )
-        common_fig = px.bar(
-            chart_products,
-            x="defect_qty",
-            y="product_display",
-            color="quality_gate",
-            orientation="h",
-            barmode="stack",
-            category_orders={"product_display": display_order, "quality_gate": ["IQC", "PQC", "FQC"]},
-            hover_data={
-                "product_label": True,
-                "product_group": True,
-                "affected_gates": True,
-                "issue_records": True,
-                "product_display": False,
-            },
-            labels={
-                "defect_qty": t("不良数量", "Defect Quantity"),
-                "product_display": t("产品 / 款式", "Product / Style"),
-                "quality_gate": t("质量环节", "Quality Gate"),
-                "product_label": t("产品 / 款式", "Product / Style"),
-                "product_group": t("产品类型", "Product Type"),
-                "affected_gates": t("涉及环节数", "Affected Gates"),
-                "issue_records": t("问题记录数", "Issue Records"),
-            },
-            color_discrete_map={"IQC": "#6aa8ff", "PQC": "#3341c4", "FQC": "#d99a00"},
-        )
-        common_fig.update_layout(
-            height=max(470, 34 * len(top_products) + 150),
-            margin=dict(l=190, r=90, t=25, b=40),
-            legend_title_text="",
-            annotations=[
-                dict(
-                    x=float(row["defect_qty"]),
-                    y=(str(row["product_label"]) if len(str(row["product_label"])) <= 34 else str(row["product_label"])[:33] + "…"),
-                    text=t(f"{int(row['affected_gates'])} 个环节", f"{int(row['affected_gates'])} gates"),
-                    showarrow=False,
-                    xanchor="left",
-                    xshift=8,
-                    font=dict(size=11, color="#667085"),
-                )
-                for _, row in top_products.iterrows()
-            ],
-        )
-        st.plotly_chart(common_fig, use_container_width=True, config={"displayModeBar": False})
         top_product = top_products.iloc[0]
-        render_bme_chart_conclusion(
-            f"本期重点列表按各供应商分别选取。最需要关注的是 {top_product['product_label']}：涉及 {int(top_product['affected_gates'])} 个环节，共 {top_product['defect_qty']:,.0f} 个不良；另有 {len(common_products):,} 个产品在两个以上检验环节出现问题。",
-            f"The priority list selects products within each supplier. The first priority is {top_product['product_label']}, covering {int(top_product['affected_gates'])} gates with {top_product['defect_qty']:,.0f} defects; {len(common_products):,} products appear in at least two quality gates.",
-        )
 
         with st.container(key="bme_product_defect_filter"):
             product_filter_cols = st.columns([0.8, 2.2], gap="small")
