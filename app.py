@@ -934,6 +934,10 @@ st.markdown(
     .kpi-grid.zx-top {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
+    .kpi-grid.bme-overall {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-top: 22px;
+    }
     .coverage-grid .kpi-card {
         min-height: 0;
         padding: 14px 17px;
@@ -1789,8 +1793,11 @@ st.markdown(
             transition-duration: 0.01ms !important;
         }
     }
+    @media (max-width: 1100px) {
+        .kpi-grid.bme-overall {grid-template-columns: repeat(2, minmax(0, 1fr));}
+    }
     @media (max-width: 720px) {
-        .kpi-grid, .kpi-grid.coverage-grid, .kpi-grid.zx-top, .signal-grid {grid-template-columns: 1fr;}
+        .kpi-grid, .kpi-grid.coverage-grid, .kpi-grid.zx-top, .kpi-grid.bme-overall, .signal-grid {grid-template-columns: 1fr;}
         .hero-title {font-size: 1.8rem;}
         .hero {padding: 22px 20px; border-radius: 16px;}
     }
@@ -14075,15 +14082,13 @@ def render_bme_bike_quality_dashboard_v3(
     ].copy() if not customer_nc.empty else pd.DataFrame()
     ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
     tektro_nc = scoped_nc[scoped_nc["supplier"].eq("TEKTRO")] if not scoped_nc.empty else pd.DataFrame()
-    st.subheader(t("1 · 数据来源与完整性", "1 · Data Map & Confidence"))
     with st.expander(t("数据地图", "Data Map"), expanded=True):
         _render_bme_data_map(view)
         if undated_records:
             st.warning(t(
-                f"当前供应商和质量环节中，另有 {undated_records:,} 条记录没有日期，因此没有计入本期 KPI 和图表。",
-                f"Another {undated_records:,} records in the selected supplier/gate scope have no date and are excluded from period KPIs and charts.",
+                f"{undated_records:,} 条记录缺少日期，未计入本期 KPI 和图表。",
+                f"{undated_records:,} undated records are excluded from period KPIs and charts.",
             ))
-        st.caption(t("没有规格或检验数量时，只保留原始记录，不计算过程能力或不良率；没有日期的记录不计入本期数据。", "Records missing specifications or denominators remain available without generating inapplicable capability or defect-rate conclusions; undated records do not enter period statistics."))
 
     for optional_column, default_value in {
         "event_timestamp": pd.NaT,
@@ -14108,20 +14113,19 @@ def render_bme_bike_quality_dashboard_v3(
     open_rework = view[(view["stage"].eq("REWORK")) & ~view["status"].eq("Closed")]
     cmw_iqc = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("IQC"))]
     return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
-    st.subheader(t("2 · 自行车工厂整体 KPI", "2 · Bike Factory Overall KPIs"))
     render_kpi_cards([
-        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"已关联PO的NC占比 {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked coverage {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "high"},
-        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"用于计算的FSD订单量 {ppm['ordered_qty']:,.0f}", f"Unique-PO ordered qty {ppm['ordered_qty']:,.0f}"), "level": "high"},
-        {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("无订单量分母，不计算 PPM", "No order-quantity denominator; PPM not calculated"), "level": "medium"},
-        {"label": t("FSD 检验不合格率（NC率）", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "note": t("按 AQL / DKL 检验数量计算", "AQL / DKL records with denominators"), "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"},
-        {"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "note": t("退货数量 / 来料数量", "Return quantity / incoming quantity"), "level": "medium"},
-        {"label": t("未结案返工", "Open Rework"), "value": f"{len(open_rework):,}", "note": t("表示流程还没结案，不是返工用时", "Workflow state, not physical rework hours"), "level": "high" if len(open_rework) else "low"},
-        {"label": t("疑似录入错误", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "note": t("图上仍显示，但不参与控制限计算", "Shown in charts, excluded from limit estimation"), "level": "high" if torque_suspects else "low"},
-    ])
+        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"NC 关联 PO {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked NC {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "high"},
+        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"订单量 {ppm['ordered_qty']:,.0f}", f"Order qty {ppm['ordered_qty']:,.0f}"), "level": "high"},
+        {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("缺订单量，不计算 PPM", "No order qty; PPM unavailable"), "level": "medium"},
+        {"label": t("FSD 检验 NC率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "note": t("AQL / DKL 检验", "AQL / DKL inspection"), "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"},
+        {"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "note": t("退货 / 来料", "Returns / incoming qty"), "level": "medium"},
+        {"label": t("未结案返工", "Open Rework"), "value": f"{len(open_rework):,}", "note": t("流程未结案", "Workflow still open"), "level": "high" if len(open_rework) else "low"},
+        {"label": t("疑似录入错误", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "note": t("不计入控制限", "Excluded from control limits"), "level": "high" if torque_suspects else "low"},
+    ], variant="bme-overall")
     if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联PO的NC占比低于90%，因此暂不显示PPM。", "FSD PO-link coverage is below 90%; PPM is hidden."))
 
-    st.subheader(t("3 · SPC（统计过程控制）", "3 · SPC & Attribute Control"))
+    st.subheader(t("SPC（统计过程控制）", "SPC & Attribute Control"))
     st.caption(t(
         "SPC 用连续数据判断生产过程有没有突然异常或持续偏移。红点表示过程可能发生了异常变化，不等于这一件产品一定不合格。",
         "SPC uses sequential data to detect sudden changes or sustained process shifts. A red point indicates a possible process change, not necessarily a defective product.",
@@ -14330,12 +14334,12 @@ def render_bme_bike_quality_dashboard_v3(
         lambda value: value if len(value) <= 34 else value[:33] + "…"
     )
     if pareto.empty:
-        st.subheader(t("4 · 主要质量问题 Pareto", "4 · Top Issue Pareto"))
+        st.subheader(t("主要质量问题 Pareto", "Top Issue Pareto"))
         st.info(t("当前没有问题 Pareto 数据。", "No issue Pareto data is available."))
     else:
         render_chart_heading(
-            "4 · 主要质量问题 Pareto",
-            "4 · Top Issue Pareto",
+            "主要质量问题 Pareto",
+            "Top Issue Pareto",
             "找出当前范围内不良数量最多的问题，明确应该先改善什么。",
             "Directly identify the real issues and checkpoints contributing most in the current scope.",
             "只汇总已触发 Alert 且有不良数量的真实问题；多选问题拆分后分别累计。",
@@ -14356,7 +14360,7 @@ def render_bme_bike_quality_dashboard_v3(
         )
         render_bme_chart_conclusion(pareto_conclusion, pareto_conclusion)
 
-    st.subheader(t("5 · 客诉问题 Pareto", "5 · Customer Quality Pareto"))
+    st.subheader(t("客诉问题 Pareto", "Customer Quality Pareto"))
     if not scoped_nc.empty:
         customer_pareto = scoped_nc.groupby(["supplier", "model", "defect_code"], as_index=False)["nc_qty"].sum().sort_values("nc_qty", ascending=False).head(15).sort_values("nc_qty")
         customer_pareto["problem"] = customer_pareto["model"].replace("", t("未记录Model", "Model unrecorded")) + " · " + customer_pareto["defect_code"]
@@ -14382,7 +14386,7 @@ def render_bme_bike_quality_dashboard_v3(
             f"当前客诉 NC 数量最高的是 {top_customer_problem['supplier']} · {top_customer_problem['model']} · {top_customer_problem['defect_code']}，NC 数量 {top_customer_problem['nc_qty']:,.0f}，占图中 Top 15 客诉问题 {customer_share:.1%}。Defect Code 保留源编码，不能在没有定义表的情况下推断 W / V / M / D 的含义。",
             f"The largest customer NC combination is {top_customer_problem['supplier']} · {top_customer_problem['model']} · {top_customer_problem['defect_code']} with {top_customer_problem['nc_qty']:,.0f} NC quantity, representing {customer_share:.1%} of the Top 15 shown. Defect Codes remain source codes; W / V / M / D meanings are not inferred without a definition table.",
         )
-    st.subheader(t("6 · 生产过程与返工分析", "6 · Process & Rework Analysis"))
+    st.subheader(t("生产过程与返工分析", "Process & Rework Analysis"))
     if not cmw_iqc.empty:
         incoming = cmw_iqc.groupby("material_supplier", as_index=False).agg(
             receipts=("source_row", "count"),
@@ -14997,10 +15001,6 @@ def _render_bme_data_map(events: pd.DataFrame) -> None:
     status_rows.append(access_row)
     status_matrix = pd.DataFrame(status_rows, columns=display_columns)
 
-    st.caption(t(
-        "按当前筛选范围显示每家供应商哪些质量环节已接入，以及数据是怎样加载的。BME 当前均为手动 Excel，尚未接入 API。",
-        "Show which quality gates are loaded for each supplier under the current filters and how the data is loaded. BME currently uses manual Excel only and has no API connection.",
-    ))
     render_data_gap_matrix(status_matrix, wrapper_class="bme-data-map-matrix")
 
 
