@@ -7,11 +7,13 @@
   - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-9525f676-23e4-451d-a316-e8bc016d1d13.png` — SPC explanation popover.
   - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-d61c72a7-50f2-42d5-bbd6-cbbec9ed13e0.png` — Pareto conclusion.
 - Local implementation route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh`.
+- Verified production route: `https://quality-decathlon-nea.streamlit.app/?scope=BME_CMW&lang=zh&v=0fd5070`.
 - CSS viewport: `1280 × 720`.
 - Implementation screenshots:
   - `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/01-customer-cards-top.png`
   - `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/02-spc-explanation.png`
   - `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/03-pareto-conclusion.png`
+  - `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/05-production-top.png`
 - Same-input comparison: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-spc-qa/04-reference-implementation-comparison.png`.
 - State: BME Chinese page, default suppliers and quality gates, `2025-08-11` to `2026-08-11`; the second screenshot has the CMW I-MR explanation open.
 
@@ -35,6 +37,7 @@
 - Opening the CMW I-MR `说明` shows all four explanation sections and the correct source workbook link; Escape closes the popover.
 - Pareto chart and conclusion card render together; the first issue is `表面有划伤`, count `3,500`, share `41.7%`, with `202` unclassified records called out.
 - Browser console errors: none.
+- Production DOM confirms `先看客诉情况`, `SPC（统计过程控制）`, `本期结论`, and `客诉问题 Pareto`; no Streamlit error state and no console error were present.
 - `python3 -m py_compile app.py`: passed with the project path configuration.
 - `git diff --check`: passed.
 - `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed. The first unconfigured run could not load `.xls` because system Python did not include the repo's bundled `xlrd`; the project-configured rerun passed.
