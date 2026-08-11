@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-11-v5"
+BME_QUALITY_LOGIC_VERSION = "2026-08-11-v6"
 
 
 EVENT_COLUMNS = [
@@ -120,9 +120,14 @@ def _text(series: pd.Series, default: str = "") -> pd.Series:
     return result.replace({"nan": "", "None": ""}).where(result.ne(""), default)
 
 
+def _identifier(series: pd.Series, default: str = "") -> pd.Series:
+    """Keep source identifiers readable when Excel coerces them to floats."""
+    return _text(series, default).str.replace(r"(?<=\d)\.0$", "", regex=True)
+
+
 def _negative(series: pd.Series) -> pd.Series:
     text = _text(series).str.upper()
-    return text.str.contains(
+    return text.str.fullmatch(r"NO", na=False) | text.str.contains(
         r"NOK|FAIL|FAILED|NG|REJECT|BLOCK|不合格|不通过|拒收|退回|报废|超差",
         regex=True,
         na=False,
@@ -212,20 +217,29 @@ def spc_run_rule_flags(values: pd.Series, center: float, ucl: float, lcl: float)
 
 
 def build_imr_chart_data(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
-    """Build an I-MR chart; flagged data-entry suspects do not estimate limits."""
+    """Build an I-MR chart without turning data-entry suspects into SPC signals."""
     chart = frame.copy().sort_values(["event_timestamp", "date", "source_row"], na_position="last")
     chart["value"] = pd.to_numeric(chart["measured_value"], errors="coerce")
     chart = chart[chart["value"].notna()].reset_index(drop=True)
-    estimate = chart[~chart.get("data_quality_flag", pd.Series("", index=chart.index)).fillna("").astype(str).ne("")]
+    chart["is_data_quality_suspect"] = chart.get(
+        "data_quality_flag", pd.Series("", index=chart.index)
+    ).fillna("").astype(str).ne("")
+    estimate = chart[~chart["is_data_quality_suspect"]].copy()
     if len(estimate) < 2:
         return chart, {}
     center = float(estimate["value"].mean())
     mrbar = float(estimate["value"].diff().abs().dropna().mean())
     ucl, lcl = center + 2.66 * mrbar, center - 2.66 * mrbar
-    chart["moving_range"] = chart["value"].diff().abs()
-    chart = pd.concat([chart, spc_run_rule_flags(chart["value"], center, ucl, lcl)], axis=1)
+    chart["moving_range"] = np.nan
+    chart.loc[estimate.index, "moving_range"] = estimate["value"].diff().abs().to_numpy()
+    for column in ["beyond_3sigma", "eight_one_side", "six_trend", "signal"]:
+        chart[column] = False
+    estimate_flags = spc_run_rule_flags(estimate["value"], center, ucl, lcl)
+    chart.loc[estimate.index, estimate_flags.columns] = estimate_flags.to_numpy()
     limits = {"center": center, "ucl": ucl, "lcl": lcl, "mrbar": mrbar, "mr_ucl": 3.267 * mrbar}
-    stable = not bool(chart["signal"].any()) and not bool(chart["moving_range"].gt(limits["mr_ucl"]).any())
+    stable = not bool(estimate_flags["signal"].any()) and not bool(
+        chart.loc[estimate.index, "moving_range"].gt(limits["mr_ucl"]).any()
+    )
     limits["stable"] = stable
     low = pd.to_numeric(estimate.get("spec_low"), errors="coerce").dropna()
     high = pd.to_numeric(estimate.get("spec_high"), errors="coerce").dropna()
@@ -354,9 +368,14 @@ def _load_fsd(root: Path) -> list[pd.DataFrame]:
             continue
         inspected = _number(_col(raw, "InspectedQty检验数量", "Nbrofframeforkcontroled"), None)
         nc = _number(_col(raw, "NCQty不良数量", "NCQty"), None)
-        result = _text(_col(raw, "FinalDecisionofSupplier决定"))
+        result = _text(
+            _col(raw, "FinalDecisionofSupplier决定")
+            if stage == "AQL"
+            else _col(raw, "FinalDecisionofPL")
+        )
         control_start = 15 if stage == "AQL" else 16
-        control_columns = list(raw.columns[control_start:40])
+        control_end = 36 if stage == "AQL" else 46
+        control_columns = list(raw.columns[control_start:control_end])
         issue = raw[control_columns].apply(
             lambda row: " / ".join(str(column).split("\n")[0] for column, value in row.items() if str(value).upper().strip() == "NOK"),
             axis=1,
@@ -414,7 +433,7 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
             defects = _number(_col(raw, "总不良数量", "拒收数量"), 0)
             frames.append(_frame(
                 community="BME", supplier="CMW", supplier_code="CMW", stage="AQL",
-                date=date, order_po=_text(_col(raw, "工单")), model_item_code=_text(_col(raw, "整车料号")),
+                date=date, order_po=_text(_col(raw, "工单")), model_item_code=_identifier(_col(raw, "整车料号")),
                 item_name=_text(_col(raw, "整车描述", "整车分类")), family=_text(_col(raw, "整车家族")),
                 process=_text(_col(raw, "不良的部位"), sheet), issue_driver=_text(_col(raw, "不良描述", "不良原因"), "Inspection result"),
                 inspected_qty=inspected, defect_qty=defects,
@@ -449,7 +468,7 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
         frames.append(_frame(
             community="BME", supplier="CMW", supplier_code="CMW", stage="IQC",
             date=_date(_col(raw, "FinishedDate检验完成日期", "ReceivingDate收货日期")),
-            order_po=_text(_col(raw, "P/O工单号", "P/O")), model_item_code=_text(_col(raw, "Itemcode料号", "Itemcode")),
+            order_po=_text(_col(raw, "P/O工单号", "P/O")), model_item_code=_identifier(_col(raw, "Itemcode料号", "Itemcode")),
             item_name=_text(_col(raw, "component零件名称", "component")), family="", process="Incoming material",
             material_supplier=_text(_col(raw, "Supplier供应商", "Supplier"), "Unrecorded"),
             issue_driver=_text(_col(raw, "NoncomfromingDescription不良描述", "不良描述"), "Inspection result"),
@@ -683,6 +702,11 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
         family = _compact_product_text(row.get("family", ""))
         haystack = code + name + family
         group = product_groups.get(supplier, supplier or "未记录产品类型")
+        if supplier == "CMW" and str(row.get("stage", "")) == "IQC":
+            # CMW IQC only identifies the incoming component. Without a BOM
+            # relationship, labelling it as a finished-bike style would create
+            # a false product link in the management view.
+            group = "来料零部件"
         if supplier == "FSD":
             matched = next((alias for alias in fsd_aliases if alias in haystack), "")
             if matched:
@@ -710,6 +734,10 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
     resolved.columns = ["product_key", "product_label", "product_link_method"]
     source[["product_key", "product_label", "product_link_method"]] = resolved
     source["product_group"] = source["supplier"].map(product_groups).fillna(source["supplier"])
+    source.loc[
+        source["supplier"].eq("CMW") & source["stage"].eq("IQC"),
+        "product_group",
+    ] = "来料零部件"
     return source.reset_index(drop=True)
 
 
@@ -801,9 +829,13 @@ def build_bme_issue_pareto(
         )
         missing_issue_alerts = int(generic_issue.sum())
         process_source = alerts.loc[~generic_issue].copy()
-        process_source["issue_driver"] = process_source["issue_driver"].astype(str).str.split(r"\s*/\s*")
-        process_source = process_source.explode("issue_driver")
-        process_source["issue_driver"] = process_source["issue_driver"].fillna("").astype(str).str.strip()
+        # A slash can be part of one source description (for example
+        # "Frame/fork" or a combined inspection result). Splitting it and
+        # copying the full source quantity to every term inflates the Pareto.
+        process_source["issue_driver"] = (
+            process_source["issue_driver"].fillna("").astype(str).str.strip()
+            .str.replace(r"\s*\n+\s*", " / ", regex=True)
+        )
         process_source = process_source[
             process_source["issue_driver"].ne("")
             & process_source["issue_driver"].str.contains(r"[A-Za-z\u4e00-\u9fff]", regex=True, na=False)

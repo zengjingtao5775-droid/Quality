@@ -38,6 +38,10 @@ class BmeAnalysisFormulaTest(unittest.TestCase):
         self.assertAlmostEqual(limits["mrbar"], (2 + 1 + 2) / 3)
         self.assertAlmostEqual(limits["ucl"], 11.5 + 2.66 * limits["mrbar"])
         self.assertEqual(len(chart), 5)
+        suspect = chart.loc[chart["is_data_quality_suspect"]].iloc[0]
+        self.assertFalse(bool(suspect["signal"]))
+        self.assertTrue(pd.isna(suspect["moving_range"]))
+        self.assertTrue(bool(limits["stable"]))
 
     def test_run_rules_find_eight_on_one_side_and_six_point_trend(self) -> None:
         flags = spc_run_rule_flags(pd.Series(range(1, 10)), center=0, ucl=100, lcl=-100)
@@ -64,6 +68,23 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         self.assertEqual(len(dkl), 335)
         self.assertEqual(int(dkl["date"].notna().sum()), 335)
 
+    def test_fsd_dkl_reads_final_decision_and_all_control_columns(self) -> None:
+        dkl = self.events[(self.events["supplier"].eq("FSD")) & (self.events["stage"].eq("DKL"))]
+        period = dkl[dkl["date"].between(pd.Timestamp("2025-08-11"), pd.Timestamp("2026-08-11"))]
+        self.assertEqual(period["result"].value_counts().to_dict(), {"OK": 124, "NOK": 28})
+        nok_items = int(
+            period.loc[period["result"].eq("NOK"), "issue_driver"]
+            .map(lambda value: len([item for item in str(value).split(" / ") if item]))
+            .sum()
+        )
+        self.assertEqual(nok_items, 81)
+
+    def test_fsd_aql_no_decisions_are_alerts_even_when_nc_quantity_is_zero(self) -> None:
+        aql = self.events[(self.events["supplier"].eq("FSD")) & (self.events["stage"].eq("AQL"))]
+        no_decisions = aql[aql["result"].str.upper().eq("NO")]
+        self.assertEqual(int(no_decisions["defect_qty"].eq(0).sum()), 7)
+        self.assertTrue(no_decisions["is_alert"].all())
+
     def test_cmw_iqc_blank_template_rows_are_excluded(self) -> None:
         iqc = self.events[(self.events["supplier"].eq("CMW")) & (self.events["stage"].eq("IQC"))]
         self.assertEqual(len(iqc), 3329)
@@ -86,6 +107,8 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         self.assertEqual(set(expl100["quality_gate"]), {"PQC", "FQC"})
         cmw_iqc = master[master["supplier"].eq("CMW") & master["quality_gate"].eq("IQC")]
         self.assertTrue(cmw_iqc["product_link_method"].eq("CMW component code; no BOM link to bike model").all())
+        self.assertTrue(cmw_iqc["product_group"].eq("来料零部件").all())
+        self.assertFalse(cmw_iqc["model_item_code"].astype(str).str.endswith(".0").any())
 
     def test_combined_issue_pareto_includes_tektro_component_nc(self) -> None:
         start, end = pd.Timestamp("2025-08-11"), pd.Timestamp("2026-08-11")
@@ -103,6 +126,22 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         ]
         self.assertEqual(float(tektro_w["defect_qty"].iloc[0]), 2681.0)
         self.assertTrue({"CMW", "FSD", "TEKTRO"}.issubset(set(pareto["supplier"])))
+        process_source_total = float(
+            period_events.loc[
+                period_events["is_alert"]
+                & period_events["defect_qty"].gt(0)
+                & ~period_events["issue_driver"].fillna("").str.fullmatch(
+                    r"|No recorded NOK control|Inspection result|Not recorded|未记录",
+                    case=False,
+                    na=True,
+                ),
+                "defect_qty",
+            ].sum()
+        )
+        self.assertEqual(
+            float(pareto.loc[pareto["source_scope"].eq("Process"), "defect_qty"].sum()),
+            process_source_total,
+        )
 
     def test_component_source_and_fsd_po_coverage_are_usable(self) -> None:
         self.assertEqual(set(self.customer["supplier"]), {"FSD", "TEKTRO"})
