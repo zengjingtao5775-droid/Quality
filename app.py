@@ -14416,7 +14416,7 @@ def render_bme_bike_quality_dashboard_v3(
                     continue
                 gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(10).copy()
                 gate_top_frames.append(gate_top)
-                if supplier_name == "CMW" and gate_name == "IQC":
+                if supplier_name == "CMW":
                     gate_top["product_display"] = gate_top["item_code"]
                 else:
                     gate_top["product_display"] = gate_top["product_label"].map(
@@ -14445,7 +14445,18 @@ def render_bme_bike_quality_dashboard_v3(
             combined_gate_fig = make_subplots(
                 rows=len(supplier_gate_charts),
                 cols=1,
-                subplot_titles=[gate_name for gate_name, _, _ in supplier_gate_charts],
+                subplot_titles=[
+                    (
+                        f"IQC · {t('料号', 'Item Code')}"
+                        if supplier_name == "CMW" and gate_name == "IQC"
+                        else f"PQC · {t('Model / 车型', 'Model')}"
+                        if supplier_name == "CMW" and gate_name == "PQC"
+                        else f"FQC · {t('整车料号', 'Whole-bike Item Code')}"
+                        if supplier_name == "CMW" and gate_name == "FQC"
+                        else gate_name
+                    )
+                    for gate_name, _, _ in supplier_gate_charts
+                ],
                 vertical_spacing=min(0.09, 0.18 / max(len(supplier_gate_charts) - 1, 1)),
             )
             conclusion_cn: list[str] = []
@@ -14477,6 +14488,40 @@ def render_bme_bike_quality_dashboard_v3(
                         f"{t('退货数量', 'Return Quantity')}  %{{customdata[6]:,.0f}}<br>"
                         f"{t('不良记录数', 'Defect Records')}  %{{customdata[7]:,.0f}}<br>"
                         f"{t('最近检验日期', 'Latest Inspection Date')}  %{{customdata[8]}}<extra></extra>"
+                    )
+                elif supplier_name == "CMW" and gate_name == "PQC":
+                    gate_customdata = np.column_stack([
+                        gate_top["item_code"],
+                        gate_top["item_names"],
+                        gate_top["main_pos"],
+                        gate_top["defect_qty"],
+                        gate_top["issue_records"],
+                        gate_top["latest_date_label"],
+                    ])
+                    gate_hovertemplate = (
+                        f"{t('Model / 车型', 'Model')}  %{{customdata[0]}}<br>"
+                        f"{t('产品名称', 'Product Name')}  %{{customdata[1]}}<br>"
+                        f"{t('工单 / PO', 'Order / PO')}  %{{customdata[2]}}<br>"
+                        f"{t('不良数量', 'Defect Quantity')}  %{{customdata[3]:,.0f}}<br>"
+                        f"{t('不良记录数', 'Defect Records')}  %{{customdata[4]:,.0f}}<br>"
+                        f"{t('最近检验日期', 'Latest Inspection Date')}  %{{customdata[5]}}<extra></extra>"
+                    )
+                elif supplier_name == "CMW" and gate_name == "FQC":
+                    gate_customdata = np.column_stack([
+                        gate_top["item_code"],
+                        gate_top["item_names"],
+                        gate_top["main_pos"],
+                        gate_top["defect_qty"],
+                        gate_top["issue_records"],
+                        gate_top["latest_date_label"],
+                    ])
+                    gate_hovertemplate = (
+                        f"{t('整车料号', 'Whole-bike Item Code')}  %{{customdata[0]}}<br>"
+                        f"{t('整车描述', 'Bike Description')}  %{{customdata[1]}}<br>"
+                        f"{t('工单 / PO', 'Order / PO')}  %{{customdata[2]}}<br>"
+                        f"{t('不良数量', 'Defect Quantity')}  %{{customdata[3]:,.0f}}<br>"
+                        f"{t('不良记录数', 'Defect Records')}  %{{customdata[4]:,.0f}}<br>"
+                        f"{t('最近检验日期', 'Latest Inspection Date')}  %{{customdata[5]}}<extra></extra>"
                     )
                 else:
                     gate_customdata = np.column_stack([
@@ -14510,24 +14555,32 @@ def render_bme_bike_quality_dashboard_v3(
                 combined_gate_fig.update_yaxes(
                     categoryorder="array",
                     categoryarray=gate_order,
-                    type="category" if supplier_name == "CMW" and gate_name == "IQC" else None,
-                    title_text=(
-                        t("料号", "Item Code")
-                        if supplier_name == "CMW" and gate_name == "IQC"
-                        else t("产品 / 款式", "Product / Style")
-                    ),
+                    type="category" if supplier_name == "CMW" else None,
+                    title_text=None,
+                    tickangle=0,
                     row=row_index,
                     col=1,
                 )
                 combined_gate_fig.update_xaxes(
                     title_text=t("不良数量", "Defect Quantity"),
                     rangemode="tozero",
+                    tickangle=0,
                     row=row_index,
                     col=1,
                 )
                 gate_leader = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).iloc[0]
-                leader_label_cn = f"料号 {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "IQC" else str(gate_leader["product_label"])
-                leader_label_en = f"item code {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "IQC" else str(gate_leader["product_label"])
+                leader_label_cn = (
+                    f"料号 {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "IQC"
+                    else f"Model / 车型 {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "PQC"
+                    else f"整车料号 {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "FQC"
+                    else str(gate_leader["product_label"])
+                )
+                leader_label_en = (
+                    f"item code {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "IQC"
+                    else f"model {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "PQC"
+                    else f"whole-bike item code {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "FQC"
+                    else str(gate_leader["product_label"])
+                )
                 conclusion_cn.append(f"{gate_name}：{leader_label_cn}，{gate_leader['defect_qty']:,.0f} 个")
                 conclusion_en.append(f"{gate_name}: {leader_label_en} ({gate_leader['defect_qty']:,.0f})")
                 combined_height += max(290, 34 * len(gate_top) + 90)
@@ -14535,6 +14588,7 @@ def render_bme_bike_quality_dashboard_v3(
                 height=combined_height,
                 margin=dict(l=230, r=95, t=45, b=40),
                 showlegend=False,
+                hoverlabel=dict(align="left"),
             )
             st.plotly_chart(combined_gate_fig, use_container_width=True, config={"displayModeBar": False})
             render_bme_chart_conclusion(
@@ -14659,7 +14713,10 @@ def render_bme_bike_quality_dashboard_v3(
                 height=max(420, 38 * len(issue_order) + 150),
                 margin=dict(l=190, r=45, t=25, b=40),
                 legend_title_text="",
+                hoverlabel=dict(align="left"),
             )
+            defect_fig.update_xaxes(tickangle=0)
+            defect_fig.update_yaxes(title_text=None, tickangle=0)
             st.plotly_chart(defect_fig, use_container_width=True, config={"displayModeBar": False})
             top_defect = issue_summary.iloc[0]
             top_gate = defect_pareto[defect_pareto["issue_driver"].eq(top_defect["issue_driver"])].sort_values(
@@ -14905,7 +14962,14 @@ def render_bme_bike_quality_dashboard_v3(
                 f"{t('备注', 'Comments')}  %{{customdata[2]}}<br>"
                 f"SPC  %{{customdata[3]}}<extra></extra>"
             )
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=.12, row_heights=[.68, .32])
+            fig = make_subplots(
+                rows=2,
+                cols=1,
+                shared_xaxes=True,
+                vertical_spacing=.12,
+                row_heights=[.68, .32],
+                subplot_titles=[measured_label, t("相邻两次变化", "Consecutive Change")],
+            )
             fig.add_trace(go.Scatter(
                 x=chart_plot["spc_time"], y=chart_plot["value"], mode="lines+markers", name=t("实测值", "Measured"),
                 marker=dict(color=np.where(chart_plot["spc_event_signal"], "#c01048", "#3341c4")),
@@ -14924,9 +14988,10 @@ def render_bme_bike_quality_dashboard_v3(
             if method == "imr":
                 if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="LSL", row=1, col=1)
                 if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="USL", row=1, col=1)
-            fig.update_xaxes(title_text=time_label, row=2, col=1)
-            fig.update_yaxes(title_text=measured_label, row=1, col=1)
-            fig.update_yaxes(title_text=t("相邻两次变化", "Consecutive Change"), row=2, col=1)
+            fig.update_xaxes(title_text=time_label, tickangle=0, row=2, col=1)
+            fig.update_xaxes(tickangle=0, row=1, col=1)
+            fig.update_yaxes(title_text=None, tickangle=0, row=1, col=1)
+            fig.update_yaxes(title_text=None, tickangle=0, row=2, col=1)
             fig.update_layout(height=570, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
             if limits:
@@ -14956,7 +15021,8 @@ def render_bme_bike_quality_dashboard_v3(
             fig.add_trace(go.Scatter(x=chart["date"], y=chart["ucl"], mode="lines", name="UCL", line=dict(color="#c01048", dash="dot")))
             fig.add_trace(go.Scatter(x=chart["date"], y=chart["lcl"], mode="lines", name="LCL", line=dict(color="#c01048", dash="dot")))
             fig.add_hline(y=limits["center"], line_color="#168a5b", annotation_text="CL")
-            fig.update_yaxes(tickformat=".1%")
+            fig.update_xaxes(tickangle=0)
+            fig.update_yaxes(tickformat=".1%", title_text=None, tickangle=0)
             fig.update_layout(height=460, margin=dict(l=20, r=20, t=25, b=30), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             peak = chart.loc[chart["rate"].idxmax()]
@@ -14968,12 +15034,21 @@ def render_bme_bike_quality_dashboard_v3(
             )
         else:
             chart, limits = build_xbar_r_chart_data(data)
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[.68, .32], vertical_spacing=.12)
+            fig = make_subplots(
+                rows=2,
+                cols=1,
+                shared_xaxes=True,
+                row_heights=[.68, .32],
+                vertical_spacing=.12,
+                subplot_titles=[t("组平均值 X̄", "Subgroup Mean X̄"), t("组内极差 R", "Within-subgroup Range R")],
+            )
             fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["mean"], mode="lines+markers", name="X̄", marker=dict(color=np.where(chart["signal"], "#c01048", "#3341c4"))), row=1, col=1)
             fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["range"], mode="lines+markers", name="R", line=dict(color="#d99a00"), marker=dict(color=np.where(chart["range_signal"], "#c01048", "#d99a00"))), row=2, col=1)
             for value, name in [(limits["center"], "CL"), (limits["ucl"], "UCL"), (limits["lcl"], "LCL")]: fig.add_hline(y=value, annotation_text=name, line_dash="dot" if name != "CL" else "solid", row=1, col=1)
             fig.add_hline(y=200, annotation_text="LSL", line_color="#d99a00", line_dash="dash", row=1, col=1)
             fig.add_hline(y=limits["r_ucl"], annotation_text="R UCL", line_color="#c01048", line_dash="dot", row=2, col=1)
+            fig.update_xaxes(tickangle=0)
+            fig.update_yaxes(title_text=None, tickangle=0)
             fig.update_layout(height=560, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             mean_signals = int(chart["signal"].sum())
@@ -15048,6 +15123,8 @@ def render_bme_bike_quality_dashboard_v3(
         if parameter_view["spec_high"].notna().any():
             parameter_fig.add_hline(y=float(parameter_view["spec_high"].dropna().iloc[0]), line_color="#d99a00", line_dash="dash", annotation_text="USL")
         parameter_fig.update_layout(height=410, margin=dict(l=20, r=25, t=25, b=40), showlegend=False)
+        parameter_fig.update_xaxes(tickangle=0)
+        parameter_fig.update_yaxes(title_text=None, tickangle=0)
         st.plotly_chart(parameter_fig, use_container_width=True, config={"displayModeBar": False})
         measured_min = float(parameter_view["measured_value"].min())
         measured_max = float(parameter_view["measured_value"].max())
@@ -15156,8 +15233,8 @@ def render_bme_bike_quality_dashboard_v3(
                 overall_ppm = panel.get("overall")
                 if pd.notna(overall_ppm):
                     supplementary_fig.add_vline(x=float(overall_ppm), line_color="#168a5b", line_dash="dash", annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"), row=row_index, col=1)
-                supplementary_fig.update_xaxes(title_text=t("退货 PPM", "Return PPM"), rangemode="tozero", row=row_index, col=1)
-                supplementary_fig.update_yaxes(title_text=t("来料供应商", "Incoming Supplier"), row=row_index, col=1)
+                supplementary_fig.update_xaxes(title_text=t("退货 PPM", "Return PPM"), rangemode="tozero", tickangle=0, row=row_index, col=1)
+                supplementary_fig.update_yaxes(title_text=None, tickangle=0, row=row_index, col=1)
                 supplementary_height += max(420, 32 * len(panel_data) + 130)
             elif panel_kind == "component":
                 supplementary_fig.add_trace(go.Bar(
@@ -15169,8 +15246,8 @@ def render_bme_bike_quality_dashboard_v3(
                                    f"{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>"),
                     showlegend=False,
                 ), row=row_index, col=1)
-                supplementary_fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1, row=row_index, col=1)
-                supplementary_fig.update_yaxes(title_text=t("零部件", "Component"), row=row_index, col=1)
+                supplementary_fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1, tickangle=0, row=row_index, col=1)
+                supplementary_fig.update_yaxes(title_text=None, tickangle=0, row=row_index, col=1)
                 supplementary_height += max(390, 32 * len(panel_data) + 120)
             else:
                 supplementary_fig.add_trace(go.Bar(
@@ -15180,10 +15257,10 @@ def render_bme_bike_quality_dashboard_v3(
                     hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>",
                     showlegend=False,
                 ), row=row_index, col=1)
-                supplementary_fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1, row=row_index, col=1)
-                supplementary_fig.update_yaxes(title_text=t("返工原因", "Rework Reason"), row=row_index, col=1)
+                supplementary_fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1, tickangle=0, row=row_index, col=1)
+                supplementary_fig.update_yaxes(title_text=None, tickangle=0, row=row_index, col=1)
                 supplementary_height += max(330, 42 * len(panel_data) + 110)
-        supplementary_fig.update_layout(height=supplementary_height, margin=dict(l=210, r=80, t=45, b=40), showlegend=False)
+        supplementary_fig.update_layout(height=supplementary_height, margin=dict(l=210, r=80, t=45, b=40), showlegend=False, hoverlabel=dict(align="left"))
         st.plotly_chart(supplementary_fig, use_container_width=True, config={"displayModeBar": False})
         render_bme_chart_conclusion(
             f"本期重点：{'；'.join(supplementary_conclusion_cn)}。返工样本较少，只用于定位和回查。",
