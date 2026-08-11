@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from bme_quality import (
+    build_bme_issue_pareto,
     build_imr_chart_data,
     build_p_chart_data,
     build_xbar_r_chart_data,
@@ -71,6 +72,23 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         pqc = self.events[(self.events["supplier"].eq("TEKTRO")) & (self.events["stage"].eq("PQC"))]
         self.assertTrue({"850", "950", "1000"}.issubset(set(pqc["family"])))
         self.assertEqual(int(pqc["measured_value"].notna().sum()), 1776)
+
+    def test_combined_issue_pareto_includes_tektro_customer_nc(self) -> None:
+        start, end = pd.Timestamp("2025-08-11"), pd.Timestamp("2026-08-11")
+        period_events = self.events[
+            self.events["date"].notna() & self.events["date"].between(start, end)
+        ]
+        period_customer = self.customer[
+            self.customer["date"].notna() & self.customer["date"].between(start, end)
+        ]
+        pareto, _ = build_bme_issue_pareto(period_events, period_customer, limit=0)
+        tektro_w = pareto[
+            pareto["supplier"].eq("TEKTRO")
+            & pareto["source_scope"].eq("Customer")
+            & pareto["issue_driver"].eq("Defect Code W")
+        ]
+        self.assertEqual(float(tektro_w["defect_qty"].iloc[0]), 2681.0)
+        self.assertTrue({"CMW", "FSD", "TEKTRO"}.issubset(set(pareto["supplier"])))
 
     def test_customer_source_and_fsd_po_coverage_are_usable(self) -> None:
         self.assertEqual(set(self.customer["supplier"]), {"FSD", "TEKTRO"})

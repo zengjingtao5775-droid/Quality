@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-10-v2"
+BME_QUALITY_LOGIC_VERSION = "2026-08-11-v3"
 
 
 EVENT_COLUMNS = [
@@ -660,6 +660,78 @@ def load_bme_customer_quality(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         subcontractor=("subcontractor", "first"),
     )
     return nc, orders
+
+
+def build_bme_issue_pareto(
+    events: pd.DataFrame,
+    customer_nc: pd.DataFrame,
+    limit: int = 15,
+) -> tuple[pd.DataFrame, int]:
+    """Combine clearly labeled process defects and customer NC defect codes.
+
+    Process issues and customer NCs remain separate rows so quantities from
+    different quality stages are never silently merged under one label.
+    """
+    columns = ["supplier", "source_scope", "issue_driver", "defect_qty", "alert_records"]
+    process = pd.DataFrame(columns=columns)
+    missing_issue_alerts = 0
+    if not events.empty:
+        alerts = events[events.get("is_alert", pd.Series(False, index=events.index)).fillna(False)].copy()
+        raw_issue = alerts.get("issue_driver", pd.Series("", index=alerts.index)).fillna("").astype(str).str.strip()
+        generic_issue = raw_issue.str.fullmatch(
+            r"|No recorded NOK control|Inspection result|Not recorded|未记录",
+            case=False,
+            na=True,
+        )
+        missing_issue_alerts = int(generic_issue.sum())
+        process_source = alerts.loc[~generic_issue].copy()
+        process_source["issue_driver"] = process_source["issue_driver"].astype(str).str.split(r"\s*/\s*")
+        process_source = process_source.explode("issue_driver")
+        process_source["issue_driver"] = process_source["issue_driver"].fillna("").astype(str).str.strip()
+        process_source = process_source[
+            process_source["issue_driver"].ne("")
+            & process_source["issue_driver"].str.contains(r"[A-Za-z\u4e00-\u9fff]", regex=True, na=False)
+            & pd.to_numeric(process_source.get("defect_qty", 0), errors="coerce").fillna(0).gt(0)
+        ]
+        if not process_source.empty:
+            process = (
+                process_source.groupby(["supplier", "issue_driver"], as_index=False)
+                .agg(defect_qty=("defect_qty", "sum"), alert_records=("issue_driver", "size"))
+            )
+            process["source_scope"] = "Process"
+            process = process[columns]
+
+    customer = pd.DataFrame(columns=columns)
+    if not customer_nc.empty:
+        customer_source = customer_nc.copy()
+        customer_source["defect_code"] = customer_source.get(
+            "defect_code", pd.Series("", index=customer_source.index)
+        ).fillna("").astype(str).str.strip()
+        customer_source["nc_qty"] = pd.to_numeric(
+            customer_source.get("nc_qty", 0), errors="coerce"
+        ).fillna(0)
+        customer_source = customer_source[
+            customer_source["defect_code"].ne("")
+            & ~customer_source["defect_code"].str.fullmatch(r"Unrecorded|Not recorded|未记录", case=False, na=False)
+            & customer_source["nc_qty"].gt(0)
+        ]
+        if not customer_source.empty:
+            customer = (
+                customer_source.groupby(["supplier", "defect_code"], as_index=False)
+                .agg(defect_qty=("nc_qty", "sum"), alert_records=("defect_code", "size"))
+                .rename(columns={"defect_code": "issue_driver"})
+            )
+            customer["issue_driver"] = "Defect Code " + customer["issue_driver"]
+            customer["source_scope"] = "Customer"
+            customer = customer[columns]
+
+    result = pd.concat([process, customer], ignore_index=True)
+    if result.empty:
+        return pd.DataFrame(columns=columns), missing_issue_alerts
+    result = result.sort_values(["defect_qty", "alert_records"], ascending=False)
+    if limit > 0:
+        result = result.head(limit)
+    return result.sort_values("defect_qty").reset_index(drop=True), missing_issue_alerts
 
 
 def calculate_fsd_customer_ppm(

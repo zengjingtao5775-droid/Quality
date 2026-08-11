@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-10-v2"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-11-v3"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -43,6 +43,7 @@ bme_source_fingerprint = _bme_quality.bme_source_fingerprint
 build_imr_chart_data = _bme_quality.build_imr_chart_data
 build_p_chart_data = _bme_quality.build_p_chart_data
 build_xbar_r_chart_data = _bme_quality.build_xbar_r_chart_data
+build_bme_issue_pareto = _bme_quality.build_bme_issue_pareto
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
@@ -14461,56 +14462,42 @@ def render_bme_bike_quality_dashboard_v3(
             )
 
     alerts = view[view["is_alert"]].copy()
-    raw_issue = alerts["issue_driver"].fillna("").astype(str).str.strip()
-    generic_issue = raw_issue.str.fullmatch(
-        r"|No recorded NOK control|Inspection result|Not recorded|未记录",
-        case=False,
-        na=True,
+    pareto, missing_issue_alerts = build_bme_issue_pareto(view, scoped_nc, limit=15)
+    source_prefix = pareto["source_scope"].map({
+        "Process": t("制程", "Process"),
+        "Customer": t("客诉", "Customer"),
+    })
+    localized_issue = pareto["issue_driver"].str.replace(
+        r"^Defect Code ", t("缺陷代码 ", "Defect Code "), regex=True
     )
-    missing_issue_alerts = int(generic_issue.sum())
-    pareto_source = alerts.loc[~generic_issue].copy()
-    # Checkbox/multi-select defects such as “外观不良 / 尺寸不良” must
-    # contribute to each real issue instead of becoming a third category.
-    pareto_source["issue_driver"] = pareto_source["issue_driver"].astype(str).str.split(r"\s*/\s*")
-    pareto_source = pareto_source.explode("issue_driver")
-    pareto_source["issue_driver"] = pareto_source["issue_driver"].fillna("").astype(str).str.strip()
-    pareto_source = pareto_source[
-        pareto_source["issue_driver"].ne("")
-        & pareto_source["issue_driver"].str.contains(r"[A-Za-z\u4e00-\u9fff]", regex=True, na=False)
-        & pareto_source["defect_qty"].fillna(0).gt(0)
-    ]
-    pareto = pareto_source.groupby(["supplier", "issue_driver"], as_index=False).agg(
-        defect_qty=("defect_qty", "sum"),
-        alert_records=("source_row", "count"),
-    )
-    pareto = pareto.sort_values(["defect_qty", "alert_records"], ascending=False).head(15).sort_values("defect_qty")
-    pareto["issue_label"] = pareto["issue_driver"].map(
-        lambda value: value if len(value) <= 34 else value[:33] + "…"
+    pareto["issue_display"] = source_prefix + " · " + localized_issue
+    pareto["issue_label"] = pareto["issue_display"].map(
+        lambda value: value if len(value) <= 38 else value[:37] + "…"
     )
     if pareto.empty:
         st.subheader(t("主要质量问题 Pareto", "Top Issue Pareto"))
         st.info(t("当前没有问题 Pareto 数据。", "No issue Pareto data is available."))
     else:
         render_chart_heading(
-            "主要质量问题 Pareto",
+            "主要质量问题 Pareto（制程 + 客诉）",
             "Top Issue Pareto",
-            "找出当前范围内不良数量最多的问题，明确应该先改善什么。",
-            "Directly identify the real issues and checkpoints contributing most in the current scope.",
-            "只汇总已触发 Alert 且有不良数量的真实问题；多选问题拆分后分别累计。",
-            "Aggregate real issues only when an alert and defect quantity exist; multi-select issues are split and counted separately.",
-            "横轴为源不良数量，按供应商分色；未记录问题单独作为数据质量缺口，不进入缺陷排名。",
-            "The horizontal axis is source defect quantity colored by supplier. Missing issue descriptions are treated as a data-quality gap, not ranked as defects.",
-            bme_chart_source(alerts),
+            "把制程发现的问题和客户 NC 放在一张图中，查看各供应商当前数量最大的质量问题。",
+            "Show the largest current quality problems by supplier across process findings and customer NCs.",
+            "制程问题按已触发 Alert 的不良数量汇总；客诉问题按源 Defect Code 的 NC 数量汇总，两类来源分开标注，不合并计算。",
+            "Process issues use alert defect quantity; customer issues use NC quantity by source Defect Code. The two sources remain separately labeled.",
+            "横轴为不良或 NC 数量，按供应商分色；TEKTRO 制程参数因缺少规格不判 NG，其真实客诉 NC 在这里按缺陷代码展示。",
+            "The axis shows defect or NC quantity by supplier. TEKTRO process parameters lack specifications and are not judged NG; its customer NCs are shown by defect code.",
+            bme_chart_source(alerts) + " + BME Database/Customer/non_conforms_export_22062026.xlsx",
             "bme_v4_issue_pareto_info",
         )
-        fig = px.bar(pareto, x="defect_qty", y="issue_label", color="supplier", orientation="h", labels={"defect_qty": t("不良数量", "Defect Quantity"), "issue_label": t("问题 / 检查点", "Issue / Checkpoint")}, color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"], hover_data={"issue_driver": True, "alert_records": True, "issue_label": False})
+        fig = px.bar(pareto, x="defect_qty", y="issue_label", color="supplier", orientation="h", labels={"defect_qty": t("不良 / NC数量", "Defect / NC Quantity"), "issue_label": t("来源 · 问题", "Source · Issue")}, color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"], hover_data={"issue_display": True, "source_scope": True, "alert_records": True, "issue_label": False})
         fig.update_layout(height=540, margin=dict(l=220, r=25, t=25, b=30), legend_title_text="")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         top_issue = pareto.sort_values("defect_qty", ascending=False).iloc[0]
         total_defects = float(pareto["defect_qty"].sum())
         pareto_conclusion = t(
-            f"当前第一问题：{top_issue['issue_driver']}，不良数量 {top_issue['defect_qty']:,.0f}，占图中主要问题 {top_issue['defect_qty'] / total_defects:.1%}；另有 {missing_issue_alerts:,} 条异常记录没有填写具体问题，因此没有放进排名。",
-            f"Top issue: {top_issue['issue_driver']} with {top_issue['defect_qty']:,.0f} defects ({top_issue['defect_qty'] / total_defects:.1%} of defects shown); {missing_issue_alerts:,} alerts without a specific issue are excluded from the ranking.",
+            f"当前第一问题：{top_issue['issue_display']}，数量 {top_issue['defect_qty']:,.0f}，占图中主要问题 {top_issue['defect_qty'] / total_defects:.1%}；TEKTRO 客诉按源缺陷代码展示，另有 {missing_issue_alerts:,} 条制程异常没有填写具体问题，因此没有放进排名。",
+            f"Top issue: {top_issue['issue_display']} with {top_issue['defect_qty']:,.0f} ({top_issue['defect_qty'] / total_defects:.1%} of the issues shown). TEKTRO customer NCs retain source defect codes; {missing_issue_alerts:,} process alerts without a specific issue are excluded.",
         )
         render_bme_chart_conclusion(pareto_conclusion, pareto_conclusion)
 
@@ -15634,32 +15621,34 @@ def _render_quality_reporting_content(
                     )
         with bme_right:
             with st.container(key="quality_reporting_bme_pareto"):
-                pareto_source = bme_view[bme_view["is_alert"]].copy()
-                raw_issue = pareto_source["issue_driver"].fillna("").astype(str).str.strip()
-                generic_issue = raw_issue.str.fullmatch(
-                    r"|No recorded NOK control|Inspection result|Not recorded|未记录", case=False, na=True
+                reporting_customer_nc = bme_customer_nc.copy()
+                if not reporting_customer_nc.empty:
+                    reporting_customer_nc["date"] = pd.to_datetime(reporting_customer_nc["date"], errors="coerce")
+                    reporting_customer_nc = reporting_customer_nc[
+                        reporting_customer_nc["supplier"].isin(bme_suppliers)
+                        & reporting_customer_nc["date"].notna()
+                        & reporting_customer_nc["date"].dt.date.between(start_date, end_date)
+                    ].copy()
+                pareto, _ = build_bme_issue_pareto(bme_view, reporting_customer_nc, limit=12)
+                source_prefix = pareto["source_scope"].map({
+                    "Process": t("制程", "Process"),
+                    "Customer": t("客诉", "Customer"),
+                })
+                localized_issue = pareto["issue_driver"].str.replace(
+                    r"^Defect Code ", t("缺陷代码 ", "Defect Code "), regex=True
                 )
-                pareto_source = pareto_source.loc[~generic_issue].copy()
-                pareto_source["issue_driver"] = pareto_source["issue_driver"].astype(str).str.split(r"\s*/\s*")
-                pareto_source = pareto_source.explode("issue_driver")
-                pareto_source["issue_driver"] = pareto_source["issue_driver"].fillna("").astype(str).str.strip()
-                pareto_source = pareto_source[
-                    pareto_source["issue_driver"].ne("")
-                    & pareto_source["issue_driver"].str.contains(r"[A-Za-z\u4e00-\u9fff]", regex=True, na=False)
-                    & pareto_source["defect_qty"].fillna(0).gt(0)
-                ]
-                pareto = pareto_source.groupby(["supplier", "issue_driver"], as_index=False)["defect_qty"].sum().nlargest(12, "defect_qty").sort_values("defect_qty")
-                pareto["issue_label"] = pareto["issue_driver"].map(lambda value: value if len(value) <= 28 else value[:27] + "…")
+                pareto["issue_display"] = source_prefix + " · " + localized_issue
+                pareto["issue_label"] = pareto["issue_display"].map(lambda value: value if len(value) <= 30 else value[:29] + "…")
                 render_chart_heading(
-                    "BME 主要质量问题 Pareto", "BME Top Quality Problems Pareto",
-                    "定位当前 BME 数据中数量最大的具体质量问题。", "Identify the largest specific quality problems in the current BME scope.",
-                    "先处理最长的柱，并进入 BME 看板查看工序、型号和源记录。", "Start with the longest bars, then open the BME dashboard for process, model, and source records.",
-                    "只汇总已触发 Alert 且有不良数量的具体问题；未填写具体问题的记录不进入排名。", "Aggregate specific issues only when an alert and defect quantity exist; records without a specific issue are excluded.",
-                    reporting_source(bme_view, "BME Database"), "quality_reporting_bme_pareto_info",
+                    "BME 主要质量问题 Pareto（制程 + 客诉）", "BME Top Quality Problems Pareto",
+                    "同时查看制程问题和客户 NC，确保 FSD、CMW、TEKTRO 的主要问题都能进入总览。", "Review both process issues and customer NCs so all selected BME suppliers can appear in the overview.",
+                    "先处理最长的柱；标签会明确区分制程和客诉来源。", "Start with the longest bars; labels distinguish process and customer sources.",
+                    "制程按 Alert 不良数量汇总，客诉按源 Defect Code 的 NC 数量汇总，两类来源不合并。", "Process uses alert defect quantity; customer uses NC quantity by source Defect Code. Sources remain separate.",
+                    reporting_source(bme_view, "BME Database") + " + BME Database/Customer/non_conforms_export_22062026.xlsx", "quality_reporting_bme_pareto_info",
                     compact=True,
                 )
-                fig = px.bar(pareto, x="defect_qty", y="issue_label", color="supplier", orientation="h", color_discrete_sequence=["#3546c4", "#d99a00", "#60a5fa"], hover_data={"issue_driver": True, "issue_label": False})
-                fig.update_xaxes(title_text=t("不良数量", "Defect Quantity"))
+                fig = px.bar(pareto, x="defect_qty", y="issue_label", color="supplier", orientation="h", color_discrete_sequence=["#3546c4", "#d99a00", "#60a5fa"], hover_data={"issue_display": True, "source_scope": True, "alert_records": True, "issue_label": False})
+                fig.update_xaxes(title_text=t("不良 / NC数量", "Defect / NC Quantity"))
                 fig.update_yaxes(title_text="")
                 _style_zx_alert_chart(fig, "")
                 fig.update_layout(height=300, margin=dict(l=8, r=12, t=12, b=42))
@@ -15667,8 +15656,8 @@ def _render_quality_reporting_content(
                 if not pareto.empty:
                     top = pareto.sort_values("defect_qty", ascending=False).iloc[0]
                     render_bme_chart_conclusion(
-                        f"当前第一问题是 {top['issue_driver']}，来自 {top['supplier']}，不良数量 {top['defect_qty']:,.0f}。",
-                        f"The top current problem is {top['issue_driver']} from {top['supplier']}, with an aggregated quantity of {top['defect_qty']:,.0f}.",
+                        f"当前第一问题是 {top['issue_display']}，来自 {top['supplier']}，数量 {top['defect_qty']:,.0f}。",
+                        f"The top current problem is {top['issue_display']} from {top['supplier']}, with an aggregated quantity of {top['defect_qty']:,.0f}.",
                     )
 
 
