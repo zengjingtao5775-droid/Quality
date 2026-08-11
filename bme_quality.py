@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-11-v4"
+BME_QUALITY_LOGIC_VERSION = "2026-08-11-v5"
 
 
 EVENT_COLUMNS = [
@@ -599,6 +599,118 @@ def load_bme_quality_events(root: Path) -> pd.DataFrame:
     events["stage"] = _text(events["stage"])
     events["source_row"] = pd.to_numeric(events["source_row"], errors="coerce").astype("Int64")
     return events.sort_values(["date", "supplier", "stage"], ascending=[False, True, True], na_position="last").reset_index(drop=True)
+
+
+def _compact_product_text(value: object) -> str:
+    """Normalize a source product alias without inventing a new identifier."""
+    if value is None or (not isinstance(value, (list, tuple, dict, set)) and pd.isna(value)):
+        return ""
+    return re.sub(r"[^A-Z0-9\u4e00-\u9fff]", "", str(value).upper())
+
+
+def _first_model_token(value: object) -> str:
+    """Return the first usable model-family token from a source description."""
+    if value is None or (not isinstance(value, (list, tuple, dict, set)) and pd.isna(value)):
+        return ""
+    tokens = re.findall(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", str(value).upper())
+    excluded = {"RAW", "FRAME", "FORK", "FRK", "BIKE", "MM", "CN", "ST", "OLD"}
+    for token in tokens:
+        compact = _compact_product_text(token)
+        if (
+            len(compact) >= 4
+            and compact not in excluded
+            and re.search(r"[A-Z]", compact)
+            and re.search(r"\d", compact)
+        ):
+            return compact
+    return ""
+
+
+def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
+    """Create an auditable product master for IQC, PQC and FQC analysis.
+
+    The source files do not share one universal product code. This function
+    therefore uses only source-native identifiers and explicit supplier rules:
+    FSD family/model aliases, CMW PQC model aliases, and TEKTRO source model
+    codes. CMW IQC components stay as component-level products because no BOM
+    mapping to a finished-bike model is available.
+    """
+    if events.empty:
+        return events.assign(
+            quality_gate=pd.Series(dtype="object"),
+            product_group=pd.Series(dtype="object"),
+            product_key=pd.Series(dtype="object"),
+            product_label=pd.Series(dtype="object"),
+            product_link_method=pd.Series(dtype="object"),
+        )
+    source = events[events["stage"].isin(["IQC", "PQC", "AQL", "DKL"])].copy()
+    if source.empty:
+        return source.assign(
+            quality_gate=pd.Series(dtype="object"),
+            product_group=pd.Series(dtype="object"),
+            product_key=pd.Series(dtype="object"),
+            product_label=pd.Series(dtype="object"),
+            product_link_method=pd.Series(dtype="object"),
+        )
+    source["quality_gate"] = source["stage"].replace({"AQL": "FQC", "DKL": "FQC"})
+
+    fsd_alias_labels: dict[str, str] = {}
+    fsd_rows = source[source["supplier"].eq("FSD")]
+    for value in fsd_rows.loc[fsd_rows["stage"].eq("IQC"), "family"]:
+        alias = _compact_product_text(value)
+        if len(alias) >= 4 and re.search(r"[A-Z]", alias) and re.search(r"\d", alias):
+            fsd_alias_labels.setdefault(alias, str(value).strip())
+    for value in fsd_rows.loc[fsd_rows["stage"].eq("PQC"), "model_item_code"]:
+        alias = _first_model_token(value)
+        if alias:
+            fsd_alias_labels.setdefault(alias, alias)
+
+    cmw_alias_labels: dict[str, str] = {}
+    cmw_models = source[source["supplier"].eq("CMW") & source["stage"].eq("PQC")]["model_item_code"]
+    for value in cmw_models:
+        alias = _compact_product_text(value)
+        if alias:
+            cmw_alias_labels.setdefault(alias, str(value).strip())
+
+    fsd_aliases = sorted(fsd_alias_labels, key=len, reverse=True)
+    cmw_aliases = sorted(cmw_alias_labels, key=len, reverse=True)
+    product_groups = {"FSD": "车架 / 前叉", "CMW": "整车", "TEKTRO": "刹车系统"}
+
+    def resolve_product(row: pd.Series) -> tuple[str, str, str]:
+        supplier = str(row.get("supplier", "") or "").strip()
+        code = _compact_product_text(row.get("model_item_code", ""))
+        name = _compact_product_text(row.get("item_name", ""))
+        family = _compact_product_text(row.get("family", ""))
+        haystack = code + name + family
+        group = product_groups.get(supplier, supplier or "未记录产品类型")
+        if supplier == "FSD":
+            matched = next((alias for alias in fsd_aliases if alias in haystack), "")
+            if matched:
+                identifier = fsd_alias_labels[matched] or matched
+                return f"FSD|{matched}", f"{group} · {identifier}", "FSD family / model alias"
+        elif supplier == "CMW" and str(row.get("stage", "")) in {"PQC", "AQL", "DKL"}:
+            matched = next((alias for alias in cmw_aliases if alias in haystack), "")
+            if matched:
+                identifier = cmw_alias_labels[matched] or matched
+                return f"CMW|{matched}", f"{group} · {identifier}", "CMW model alias"
+
+        fallback = code or name or family or "UNMAPPED"
+        raw_identifier = ""
+        for value in [row.get("model_item_code", ""), row.get("item_name", ""), row.get("family", "")]:
+            if value is not None and not pd.isna(value) and str(value).strip():
+                raw_identifier = str(value).strip()
+                break
+        identifier = raw_identifier or "未记录产品"
+        method = "Source item / model code"
+        if supplier == "CMW" and str(row.get("stage", "")) == "IQC":
+            method = "CMW component code; no BOM link to bike model"
+        return f"{supplier}|{fallback}", f"{group} · {identifier}", method
+
+    resolved = source.apply(resolve_product, axis=1, result_type="expand")
+    resolved.columns = ["product_key", "product_label", "product_link_method"]
+    source[["product_key", "product_label", "product_link_method"]] = resolved
+    source["product_group"] = source["supplier"].map(product_groups).fillna(source["supplier"])
+    return source.reset_index(drop=True)
 
 
 def bme_source_fingerprint(root: Path) -> tuple[tuple[str, int, int], ...]:

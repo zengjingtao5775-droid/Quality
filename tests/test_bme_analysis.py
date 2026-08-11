@@ -8,6 +8,7 @@ import pandas as pd
 
 from bme_quality import (
     build_bme_issue_pareto,
+    build_bme_product_master,
     build_imr_chart_data,
     build_p_chart_data,
     build_xbar_r_chart_data,
@@ -72,6 +73,19 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         pqc = self.events[(self.events["supplier"].eq("TEKTRO")) & (self.events["stage"].eq("PQC"))]
         self.assertTrue({"850", "950", "1000"}.issubset(set(pqc["family"])))
         self.assertEqual(int(pqc["measured_value"].notna().sum()), 1776)
+        self.assertTrue(pqc["spec_low"].isna().all())
+        self.assertTrue(pqc["spec_high"].isna().all())
+        self.assertFalse(pqc["result"].astype(str).str.strip().ne("").any())
+
+    def test_product_master_links_only_auditable_quality_gates(self) -> None:
+        master = build_bme_product_master(self.events)
+        self.assertEqual(set(master["quality_gate"]), {"IQC", "PQC", "FQC"})
+        mpa25 = master[master["product_key"].eq("FSD|MPA25")]
+        self.assertEqual(set(mpa25["quality_gate"]), {"IQC", "PQC", "FQC"})
+        expl100 = master[master["product_key"].eq("CMW|EXPL100MULTI")]
+        self.assertEqual(set(expl100["quality_gate"]), {"PQC", "FQC"})
+        cmw_iqc = master[master["supplier"].eq("CMW") & master["quality_gate"].eq("IQC")]
+        self.assertTrue(cmw_iqc["product_link_method"].eq("CMW component code; no BOM link to bike model").all())
 
     def test_combined_issue_pareto_includes_tektro_component_nc(self) -> None:
         start, end = pd.Timestamp("2025-08-11"), pd.Timestamp("2026-08-11")
