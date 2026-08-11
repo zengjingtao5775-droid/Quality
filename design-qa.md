@@ -59,6 +59,38 @@ final result: passed
 
 ---
 
+# Quality Reporting integration — Design QA
+
+## Source and target
+
+- DPCP-style source screen: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/01-quality-alert-before.png`.
+- Current Textile screen: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/02-textile-current.png`.
+- Current BME screen: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/03-bme-current.png`.
+- Implemented Reporting top: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/04-local-reporting-top.png`.
+- Implemented Textile charts: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/05-local-reporting-charts.png`.
+- Implemented BME charts: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/06-local-reporting-bme-charts.png`.
+- Viewport: `1280 × 720` CSS pixels.
+
+## Findings
+
+- The page keeps the DPCP visual hierarchy: compact header, filter toolbar, reporting-scope row, `6 × 2` KPI grid, and two-column chart rows.
+- The former alert-count cards are replaced by the current dashboard metrics: six Textile KPIs and six BME KPIs. Metrics retain their original units and trend periods; RFT, PPM, NC rate, NC quantity, NQC, and IV are not summed across communities.
+- Textile and BME have separate chart sections and direct links to their full dashboards. This keeps the integrated page useful for management without hiding the different factory processes.
+- Textile RFT comparison uses three valid release gates on the latest available month. The BME NC-rate chart keeps suppliers as separate lines, and BME Pareto excludes generic `Inspection result` and missing issue labels, matching the detailed BME dashboard logic.
+- Every chart has a top-right explanation and a visible `本期结论`.
+- Sidebar names now read `Textile Alert 看板` and `质量 Reporting`; the Reporting code changes from `AL` to `RP`.
+- Community filter verification: selecting only BME removes all Textile KPI cards and Textile charts while retaining BME content.
+- Reset verification: restores both communities and all twelve KPI cards.
+- Browser console errors: `0`.
+- No Streamlit exception remains.
+- `PYTHONPYCACHEPREFIX=/tmp/quality-pycache python3 -m py_compile app.py`: passed.
+- `git diff --check`: passed.
+- `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
+
+final result: passed
+
+---
+
 # BME KPI trends and compact SPC — Design QA
 
 ## Requested changes

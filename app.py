@@ -1924,8 +1924,8 @@ DASHBOARD_SCOPES = {
     },
     "ZX": {
         "code": "TU",
-        "label_cn": "Textile ZX Alert",
-        "label_en": "Textile ZX Alert",
+        "label_cn": "Textile Alert 看板",
+        "label_en": "Textile Alert Dashboard",
         "subtitle_cn": "49425 · 中兴",
         "subtitle_en": "49425 · Zhongxing",
         "factories": ["ZX"],
@@ -1953,9 +1953,9 @@ DASHBOARD_SCOPES = {
         "section_en": "Community",
     },
     "QUALITY_ALERT": {
-        "code": "AL",
-        "label_cn": "质量 Alert 总览",
-        "label_en": "Quality Alert Overview",
+        "code": "RP",
+        "label_cn": "质量 Reporting",
+        "label_en": "Quality Reporting",
         "subtitle_cn": "ZX + BME",
         "subtitle_en": "ZX + BME",
         "factories": ["ZX"],
@@ -15210,10 +15210,466 @@ def _render_bme_specific_charts(events: pd.DataFrame) -> None:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def _quality_reporting_trend(
+    series: pd.Series,
+    start_date: dt.date,
+    end_date: dt.date,
+    formatter: Callable[[float], str],
+    *,
+    lower_is_better: bool = True,
+) -> dict[str, str]:
+    clean = pd.to_numeric(series, errors="coerce").dropna().sort_index()
+    eligible = [
+        period for period in clean.index
+        if period.start_time.date() <= end_date and period.end_time.date() >= start_date
+    ]
+    if not eligible:
+        return {
+            "trend_direction": "flat", "trend_tone": "flat",
+            "trend_label": t("暂无可比趋势", "No comparable trend"),
+            "note": t("没有可比较月份", "No comparable month"),
+        }
+    current_period = max(eligible)
+    previous_period = current_period - 1
+    comparison_cn, comparison_en = "环比", "vs prior month"
+    if previous_period not in clean.index:
+        previous_period = current_period - 12
+        comparison_cn, comparison_en = "同比", "year over year"
+    if previous_period not in clean.index:
+        return {
+            "trend_direction": "flat", "trend_tone": "flat",
+            "trend_label": t("暂无可比趋势", "No comparable trend"),
+            "note": t("没有可比较月份", "No comparable month"),
+        }
+    current_value = float(clean.loc[current_period])
+    previous_value = float(clean.loc[previous_period])
+    change = current_value - previous_value
+    if np.isclose(change, 0.0):
+        direction, tone = "flat", "flat"
+        label_cn, label_en = f"{comparison_cn}持平", f"Flat {comparison_en}"
+    else:
+        direction = "up" if change > 0 else "down"
+        tone = ("bad" if change > 0 else "good") if lower_is_better else ("good" if change > 0 else "bad")
+        direction_cn, direction_en = ("上升", "up") if change > 0 else ("下降", "down")
+        if np.isclose(previous_value, 0.0):
+            label_cn, label_en = f"{comparison_cn}{direction_cn}", f"{direction_en} {comparison_en}"
+        else:
+            change_pct = abs(change / previous_value)
+            label_cn = f"{comparison_cn}{direction_cn} {change_pct:.1%}"
+            label_en = f"{direction_en} {change_pct:.1%} {comparison_en}"
+    return {
+        "trend_direction": direction,
+        "trend_tone": tone,
+        "trend_label": t(label_cn, label_en),
+        "note": f"{current_period.strftime('%Y-%m')} {formatter(current_value)} / {previous_period.strftime('%Y-%m')} {formatter(previous_value)}",
+    }
+
+
+def _build_bme_reporting_cards(
+    events: pd.DataFrame,
+    customer_nc: pd.DataFrame,
+    fsd_orders: pd.DataFrame,
+    start_date: dt.date,
+    end_date: dt.date,
+    suppliers: list[str],
+) -> list[dict[str, str]]:
+    if events.empty:
+        return []
+    history = events[
+        events["supplier"].isin(suppliers)
+        & events["date"].notna()
+        & events["date"].dt.date.le(end_date)
+    ].copy()
+    view = history[history["date"].dt.date.ge(start_date)].copy()
+    for column, default_value in {"data_quality_flag": "", "status": ""}.items():
+        if column not in history.columns:
+            history[column] = default_value
+            view[column] = default_value
+
+    def monthly_sum(frame: pd.DataFrame, value_column: str) -> pd.Series:
+        if frame.empty:
+            return pd.Series(dtype="float64")
+        return frame.assign(month=frame["date"].dt.to_period("M")).groupby("month")[value_column].sum()
+
+    def monthly_ratio(frame: pd.DataFrame, multiplier: float = 1.0) -> pd.Series:
+        if frame.empty:
+            return pd.Series(dtype="float64")
+        monthly = frame.assign(month=frame["date"].dt.to_period("M")).groupby("month").agg(
+            defects=("defect_qty", "sum"), inspected=("inspected_qty", "sum")
+        )
+        return monthly["defects"].div(monthly["inspected"].replace(0, np.nan)).mul(multiplier)
+
+    nc_history = customer_nc.copy() if not customer_nc.empty else pd.DataFrame()
+    if not nc_history.empty:
+        nc_history["date"] = pd.to_datetime(nc_history["date"], errors="coerce")
+        nc_history = nc_history[
+            nc_history["supplier"].isin(suppliers)
+            & nc_history["date"].notna()
+            & nc_history["date"].dt.date.le(end_date)
+        ].copy()
+    nc_view = nc_history[nc_history["date"].dt.date.ge(start_date)].copy() if not nc_history.empty else pd.DataFrame()
+    fsd_nc_history = nc_history[nc_history["supplier"].eq("FSD")].copy() if not nc_history.empty else pd.DataFrame()
+    tektro_nc_history = nc_history[nc_history["supplier"].eq("TEKTRO")].copy() if not nc_history.empty else pd.DataFrame()
+    fsd_nc_monthly = monthly_sum(fsd_nc_history, "nc_qty")
+    tektro_nc_monthly = monthly_sum(tektro_nc_history, "nc_qty")
+    fsd_ppm_monthly = pd.Series(dtype="float64")
+    if not fsd_nc_monthly.empty:
+        fsd_ppm_monthly = pd.Series({
+            period: calculate_fsd_customer_ppm(customer_nc, fsd_orders, period.start_time, period.end_time)["ppm"]
+            for period in fsd_nc_monthly.index
+        }, dtype="float64")
+
+    ppm = (
+        calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date)
+        if "FSD" in suppliers and not customer_nc.empty
+        else {"ppm": np.nan, "nc_qty": 0.0, "ordered_qty": 0.0, "coverage": np.nan}
+    )
+    tektro_nc_qty = float(nc_view.loc[nc_view["supplier"].eq("TEKTRO"), "nc_qty"].sum()) if not nc_view.empty else 0.0
+    fsd_attr = view[
+        view["supplier"].eq("FSD") & view["stage"].isin(["AQL", "DKL"]) & view["inspected_qty"].gt(0)
+    ]
+    fsd_attr_history = history[
+        history["supplier"].eq("FSD") & history["stage"].isin(["AQL", "DKL"]) & history["inspected_qty"].gt(0)
+    ]
+    fsd_rate = fsd_attr["defect_qty"].sum() / fsd_attr["inspected_qty"].sum() if fsd_attr["inspected_qty"].sum() > 0 else np.nan
+    cmw_iqc = view[view["supplier"].eq("CMW") & view["stage"].eq("IQC")]
+    cmw_iqc_history = history[history["supplier"].eq("CMW") & history["stage"].eq("IQC")]
+    return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
+    open_rework = view[view["stage"].eq("REWORK") & ~view["status"].eq("Closed")]
+
+    trends = {
+        "fsd_ppm": _quality_reporting_trend(fsd_ppm_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
+        "fsd_nc": _quality_reporting_trend(fsd_nc_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
+        "tektro_nc": _quality_reporting_trend(tektro_nc_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
+        "fsd_rate": _quality_reporting_trend(monthly_ratio(fsd_attr_history), start_date, end_date, lambda value: f"{value:.2%}"),
+        "cmw_ppm": _quality_reporting_trend(monthly_ratio(cmw_iqc_history, 1_000_000), start_date, end_date, lambda value: f"{value:,.0f}"),
+        "rework": {
+            "trend_direction": "flat", "trend_tone": "flat",
+            "trend_label": t("暂无历史快照", "No historical snapshot"),
+            "note": t("当前未结案数量", "Current open count"),
+        },
+    }
+
+    def card(label_cn: str, label_en: str, value: str, trend_key: str, level: str) -> dict[str, str]:
+        return {
+            "label": t(f"BME · {label_cn}", f"BME · {label_en}"),
+            "value": value,
+            "level": level,
+            **trends[trend_key],
+        }
+
+    cards: list[dict[str, str]] = []
+    if "FSD" in suppliers:
+        cards.extend([
+            card("FSD 客诉 PPM", "FSD Customer PPM", f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) else "N/A", "fsd_ppm", "high"),
+            card("FSD 客诉 NC数量", "FSD Customer NC Qty", f"{ppm['nc_qty']:,.0f}", "fsd_nc", "high"),
+            card("FSD 检验 NC率", "FSD Inspection NC Rate", pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "fsd_rate", "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"),
+        ])
+    if "TEKTRO" in suppliers:
+        cards.append(card("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty", f"{tektro_nc_qty:,.0f}", "tektro_nc", "medium"))
+    if "CMW" in suppliers:
+        cards.extend([
+            card("CMW 来料退货 PPM", "CMW Incoming Return PPM", f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "cmw_ppm", "medium"),
+            card("未结案返工", "Open Rework", f"{len(open_rework):,}", "rework", "high" if len(open_rework) else "low"),
+        ])
+    return cards
+
+
+def _render_quality_reporting_content(
+    finished_df: pd.DataFrame,
+    voice_df: pd.DataFrame,
+    jdy_fqc: pd.DataFrame,
+    bme_events: pd.DataFrame,
+    bme_customer_nc: pd.DataFrame,
+    bme_fsd_orders: pd.DataFrame,
+) -> None:
+    st.markdown(
+        """
+        <style>
+        .st-key-quality_reporting_filters {
+            background:#fff; border:0; padding:8px 14px 10px; margin-bottom:10px;
+        }
+        .st-key-quality_reporting_filters [data-testid="stWidgetLabel"] {display:none !important;}
+        .st-key-quality_reporting_filters div[data-baseweb="input"] > div,
+        .st-key-quality_reporting_filters div[data-baseweb="select"] > div {
+            min-height:34px !important; border-radius:3px !important; border-color:#d5d8dd !important;
+            background:#fff !important; box-shadow:none !important;
+        }
+        .st-key-quality_reporting_actions {
+            background:#fff; border:0; padding:8px 14px; margin-bottom:10px;
+        }
+        .st-key-quality_reporting_actions button {min-height:32px !important; border-radius:3px !important; font-size:.72rem !important;}
+        .kpi-grid.quality-reporting {grid-template-columns:repeat(6,minmax(0,1fr)); gap:8px; margin:0 0 12px;}
+        .quality-reporting .kpi-card {min-height:112px; padding:13px 12px 12px; border-radius:2px; border-color:#eceef1; box-shadow:none;}
+        .quality-reporting .kpi-card::before {height:3px;}
+        .quality-reporting .kpi-label {font-size:.75rem; margin-bottom:8px;}
+        .quality-reporting .kpi-value {font-size:1.45rem;}
+        .quality-reporting .kpi-value-row {gap:7px;}
+        .quality-reporting .kpi-value-row .kpi-trend {font-size:.72rem;}
+        .quality-reporting .kpi-note {font-size:.68rem; margin-top:7px;}
+        .quality-report-section-head {display:flex; align-items:center; justify-content:space-between; gap:12px; margin:16px 0 8px;}
+        .quality-report-section-head h3 {margin:0; color:#20242b; font-size:1rem; font-weight:760;}
+        .quality-report-section-head a {color:#3546c4 !important; font-size:.72rem; font-weight:720; text-decoration:none !important;}
+        .st-key-quality_reporting_textile_rft,
+        .st-key-quality_reporting_textile_trend,
+        .st-key-quality_reporting_bme_rate,
+        .st-key-quality_reporting_bme_pareto {
+            background:#fff; border:0; border-bottom:1px solid #eceef1; padding:4px 8px 10px; min-height:395px;
+        }
+        @media(max-width:1000px){.kpi-grid.quality-reporting{grid-template-columns:repeat(3,minmax(0,1fr));}}
+        @media(max-width:620px){.kpi-grid.quality-reporting{grid-template-columns:repeat(2,minmax(0,1fr));}}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    date_sources = [
+        pd.to_datetime(finished_df.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce"),
+        pd.to_datetime(bme_events.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce"),
+    ]
+    all_dates = pd.concat(date_sources, ignore_index=True).dropna()
+    today = dt.date.today()
+    min_date = all_dates.min().date() if not all_dates.empty else today
+    max_date = min(all_dates.max().date(), today) if not all_dates.empty else today
+    default_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
+    community_options = ["Textile", "BME"]
+    supplier_options = ["49425 中兴", *sorted(bme_events.get("supplier", pd.Series(dtype=object)).dropna().astype(str).unique())]
+
+    def reporting_source(frame: pd.DataFrame, fallback: str) -> str:
+        if frame.empty or "source_file" not in frame.columns:
+            return fallback
+        sources = sorted(frame["source_file"].dropna().astype(str).loc[lambda values: values.ne("")].unique())
+        return " + ".join(sources) if sources else fallback
+
+    def reset_reporting_filters() -> None:
+        st.session_state["quality_reporting_community"] = []
+        st.session_state["quality_reporting_supplier"] = []
+        st.session_state["quality_reporting_dates"] = (default_start, max_date)
+
+    with st.container(key="quality_reporting_filters"):
+        st.markdown(
+            f'<div class="zx-alert-filter-toolbar"><div class="zx-alert-presets"><span class="zx-alert-preset active">Default</span><span class="zx-alert-preset">+ Add New</span></div><span class="zx-alert-filter-status">Textile + BME<span class="material-symbols-rounded">settings</span></span></div>',
+            unsafe_allow_html=True,
+        )
+        filter_cols = st.columns([1.0, 1.35, 1.25, 1.2, 1.2], gap="small")
+        selected_communities = filter_cols[0].multiselect(
+            "Community", community_options, default=[], key="quality_reporting_community", placeholder="Community · All"
+        )
+        selected_suppliers = filter_cols[1].multiselect(
+            "Supplier / DPP", supplier_options, default=[], key="quality_reporting_supplier", placeholder="Supplier / DPP · All"
+        )
+        selected_dates = filter_cols[2].date_input(
+            "Period", value=(default_start, max_date), min_value=min_date, max_value=max_date, key="quality_reporting_dates", label_visibility="collapsed"
+        )
+        filter_cols[3].text_input("Sector", value="Sector · Bikes + Textile", disabled=True, label_visibility="collapsed")
+        filter_cols[4].text_input("Customer", value="Customer · Decathlon", disabled=True, label_visibility="collapsed")
+
+    start_date, end_date = default_start, max_date
+    if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
+        start_date, end_date = selected_dates
+    active_communities = selected_communities or community_options
+    active_suppliers = selected_suppliers or supplier_options
+    show_textile = "Textile" in active_communities and "49425 中兴" in active_suppliers
+    bme_suppliers = [supplier for supplier in ["CMW", "FSD", "TEKTRO"] if supplier in active_suppliers]
+    show_bme = "BME" in active_communities and bool(bme_suppliers)
+
+    textile_view = finished_df[
+        finished_df["date"].notna() & finished_df["date"].dt.date.between(start_date, end_date)
+    ].copy() if show_textile else pd.DataFrame()
+    jdy_view = jdy_fqc.copy() if show_textile else pd.DataFrame()
+    if not jdy_view.empty and "date" in jdy_view.columns:
+        jdy_dates = pd.to_datetime(jdy_view["date"], errors="coerce", utc=True).dt.tz_convert(None)
+        jdy_view = jdy_view[jdy_dates.dt.date.between(start_date, end_date)].copy()
+    textile_cards = build_zx_kpi_cards(textile_view, voice_df, jdy_view) if show_textile else []
+    for item in textile_cards:
+        item["label"] = f"Textile · {item['label']}"
+    bme_cards = _build_bme_reporting_cards(
+        bme_events, bme_customer_nc, bme_fsd_orders, start_date, end_date, bme_suppliers
+    ) if show_bme else []
+    all_cards = textile_cards + bme_cards
+
+    summary_download = pd.DataFrame([
+        {"Community": card["label"].split(" · ", 1)[0], "KPI": card["label"].split(" · ", 1)[-1], "Value": card["value"], "Trend": card.get("trend_label", ""), "Comparison": card.get("note", "")}
+        for card in all_cards
+    ])
+    with st.container(key="quality_reporting_actions"):
+        action_text, reset_col, download_col = st.columns([4.5, 1, 1.2], vertical_alignment="center")
+        action_text.markdown(
+            f'<div class="zx-alert-type-checks"><strong>{html.escape(t("Reporting 范围", "Reporting Scope"))}</strong><span><span class="material-symbols-rounded">check_box</span>Textile</span><span><span class="material-symbols-rounded">check_box</span>BME</span><span><span class="material-symbols-rounded">check_box</span>{html.escape(t("生产质量", "Production"))}</span><span><span class="material-symbols-rounded">check_box</span>{html.escape(t("客户质量", "Customer"))}</span></div>',
+            unsafe_allow_html=True,
+        )
+        reset_col.button(t("Reset", "Reset"), key="quality_reporting_reset", on_click=reset_reporting_filters, use_container_width=True)
+        download_col.download_button(
+            t("Download", "Download"),
+            summary_download.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"Quality_Reporting_{start_date}_{end_date}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    if not all_cards:
+        st.info(t("当前筛选范围没有可显示的 Reporting 指标。", "No reporting metrics are available under the current filters."))
+        return
+    render_kpi_cards(all_cards, variant="quality-reporting")
+
+    if show_textile:
+        st.markdown(
+            f'<div class="quality-report-section-head"><h3>Textile Reporting</h3><a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self">{html.escape(t("查看完整 Textile 看板", "Open full Textile dashboard"))} →</a></div>',
+            unsafe_allow_html=True,
+        )
+        textile_left, textile_right = st.columns(2, gap="small")
+        with textile_left:
+            with st.container(key="quality_reporting_textile_rft"):
+                rft_rows: list[dict[str, object]] = []
+                eol_stage = textile_view[textile_view["inspection_stage"].eq("End QC / FQC")].copy()
+                if not eol_stage.empty:
+                    eol_stage["month_period"] = eol_stage["date"].dt.to_period("M")
+                    latest_eol = eol_stage[eol_stage["month_period"].eq(eol_stage["month_period"].max())]
+                    inspected = float(latest_eol["qty_inspected"].sum())
+                    defects = float(latest_eol["defect_qty"].sum())
+                    if inspected > 0:
+                        rft_rows.append({"gate": "End of line", "rft": 1 - defects / inspected})
+                if not jdy_view.empty:
+                    owner_view = jdy_view.copy()
+                    if "inspector_owner" not in owner_view.columns:
+                        owner_view["inspector_owner"] = owner_view.get("inspector", pd.Series("", index=owner_view.index)).map(zx_inspector_owner)
+                    owner_view["date"] = pd.to_datetime(owner_view["date"], errors="coerce", utc=True).dt.tz_convert(None)
+                    owner_view = owner_view.dropna(subset=["date"])
+                    owner_view["month_period"] = owner_view["date"].dt.to_period("M")
+                    for owner, gate in [("Decathlon", t("迪卡侬 FQC", "Decathlon FQC")), ("ZX Factory", t("中兴自检", "ZX Self-Inspection"))]:
+                        owner_rows = owner_view[owner_view["inspector_owner"].eq(owner)]
+                        if owner_rows.empty:
+                            continue
+                        owner_rows = owner_rows[owner_rows["month_period"].eq(owner_rows["month_period"].max())]
+                        owner_metrics = jdy_fqc_rft_metrics(owner_rows)
+                        if pd.notna(owner_metrics["rft"]):
+                            rft_rows.append({"gate": gate, "rft": float(owner_metrics["rft"])})
+                stage_summary = pd.DataFrame(rft_rows, columns=["gate", "rft"])
+                render_chart_heading(
+                    "Textile 三个放行环节 RFT", "Textile RFT across Three Release Gates",
+                    "比较迪卡侬 FQC、中兴工厂自检和产线末端的最新月一次通过表现。", "Compare the latest-month first-pass performance across Decathlon FQC, ZX self-inspection, and end of line.",
+                    "柱越高，一次通过表现越好；三个环节分别计算，不能相加。", "Higher bars indicate better first-pass performance; the three gates are calculated separately.",
+                    "FQC 按首次 PASS ÷ 有效首次结果；End of line 沿用 Textile 看板 RFT 口径。", "FQC uses first PASS divided by valid first results; end of line follows the Textile dashboard RFT definition.",
+                    community_source_label("ZX"), "quality_reporting_textile_rft_info",
+                )
+                fig = px.bar(stage_summary, x="gate", y="rft", text_auto=".2%", color_discrete_sequence=["#3546c4"])
+                fig.update_xaxes(title_text="")
+                fig.update_yaxes(title_text="", tickformat=".0%", range=[0, 1.05])
+                _style_zx_alert_chart(fig, "")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                if not stage_summary.empty:
+                    weakest = stage_summary.sort_values("rft").iloc[0]
+                    render_bme_chart_conclusion(
+                        f"最新月较低环节是 {weakest['gate']}，一次通过率 {weakest['rft']:.2%}；应进入 Textile 看板查看对应 CC、Model 和主要疵点。",
+                        f"The lowest latest-month gate is {weakest['gate']} at {weakest['rft']:.2%}; open the Textile dashboard for the related CCs, models, and defects.",
+                    )
+        with textile_right:
+            with st.container(key="quality_reporting_textile_trend"):
+                eol = textile_view[textile_view["inspection_stage"].eq("End QC / FQC")].copy()
+                eol["month"] = eol["date"].dt.to_period("M").dt.to_timestamp()
+                monthly = eol.groupby("month", as_index=False).agg(inspected=("qty_inspected", "sum"), defects=("defect_qty", "sum"))
+                monthly["rft"] = 1 - safe_rate(monthly["defects"], monthly["inspected"])
+                render_chart_heading(
+                    "Textile End of line RFT 趋势", "Textile End-of-Line RFT Trend",
+                    "查看产线末端一次通过率是否持续改善或下降。", "Track whether end-of-line first-pass performance is improving or declining.",
+                    "按月查看 RFT，重点关注连续下降而不是单月小波动。", "Review monthly RFT and focus on sustained decline rather than one small fluctuation.",
+                    "每月 RFT = 1 - 当月疵点数 ÷ 当月检验数。", "Monthly RFT = 1 - monthly defects divided by monthly inspected quantity.",
+                    community_source_label("ZX"), "quality_reporting_textile_trend_info",
+                )
+                fig = px.line(monthly, x="month", y="rft", markers=True, color_discrete_sequence=["#3546c4"])
+                fig.update_xaxes(title_text="")
+                fig.update_yaxes(title_text="", tickformat=".1%")
+                _style_zx_alert_chart(fig, "")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                if not monthly.empty:
+                    latest = monthly.sort_values("month").iloc[-1]
+                    render_bme_chart_conclusion(
+                        f"最新有数据月份为 {latest['month']:%Y-%m}，End of line RFT 为 {latest['rft']:.2%}。",
+                        f"The latest available month is {latest['month']:%Y-%m}, with end-of-line RFT at {latest['rft']:.2%}.",
+                    )
+
+    if show_bme:
+        st.markdown(
+            f'<div class="quality-report-section-head"><h3>BME Reporting</h3><a href="?scope=BME_CMW&lang={language_query_code()}" target="_self">{html.escape(t("查看完整 BME 看板", "Open full BME dashboard"))} →</a></div>',
+            unsafe_allow_html=True,
+        )
+        bme_view = bme_events[
+            bme_events["supplier"].isin(bme_suppliers)
+            & bme_events["date"].notna()
+            & bme_events["date"].dt.date.between(start_date, end_date)
+        ].copy()
+        bme_left, bme_right = st.columns(2, gap="small")
+        with bme_left:
+            with st.container(key="quality_reporting_bme_rate"):
+                inspection_source = bme_view[
+                    bme_view["stage"].isin(["AQL", "DKL"]) & bme_view["inspected_qty"].gt(0)
+                ].copy()
+                inspection_source["month"] = inspection_source["date"].dt.to_period("M").dt.to_timestamp()
+                monthly = inspection_source.groupby(["supplier", "month"], as_index=False).agg(inspected=("inspected_qty", "sum"), defects=("defect_qty", "sum"))
+                monthly["nc_rate"] = safe_rate(monthly["defects"], monthly["inspected"])
+                render_chart_heading(
+                    "BME 检验 NC率趋势", "BME Inspection NC-Rate Trend",
+                    "查看当前所选 BME 供应商 AQL 与 DKL 检验不合格率的月度变化。", "Track monthly AQL and DKL inspection NC rates for the selected BME suppliers.",
+                    "按供应商分线；上升表示检验发现的不良占比增加。", "Each supplier has a separate line; an increase means a higher share of detected nonconformity.",
+                    "每家供应商的 NC率 = 当月 NC数量 ÷ 当月检验数量。", "Each supplier NC rate = monthly NC quantity divided by monthly inspected quantity.",
+                    reporting_source(inspection_source, "BME Database"), "quality_reporting_bme_rate_info",
+                )
+                fig = px.line(monthly, x="month", y="nc_rate", color="supplier", markers=True, color_discrete_sequence=["#d99a00", "#3546c4", "#60a5fa"])
+                fig.update_xaxes(title_text="")
+                fig.update_yaxes(title_text="", tickformat=".1%")
+                _style_zx_alert_chart(fig, "")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                if not monthly.empty:
+                    latest_month = monthly["month"].max()
+                    latest = monthly[monthly["month"].eq(latest_month)].sort_values("nc_rate", ascending=False).iloc[0]
+                    render_bme_chart_conclusion(
+                        f"最新有数据月份为 {latest['month']:%Y-%m}；该月所选供应商中 {latest['supplier']} 的检验 NC率最高，为 {latest['nc_rate']:.2%}（NC {latest['defects']:,.0f} / 检验 {latest['inspected']:,.0f}）。",
+                        f"The latest available month is {latest['month']:%Y-%m}; {latest['supplier']} has the highest selected-supplier NC rate that month at {latest['nc_rate']:.2%} ({latest['defects']:,.0f} NC / {latest['inspected']:,.0f} inspected).",
+                    )
+        with bme_right:
+            with st.container(key="quality_reporting_bme_pareto"):
+                pareto_source = bme_view[bme_view["is_alert"]].copy()
+                raw_issue = pareto_source["issue_driver"].fillna("").astype(str).str.strip()
+                generic_issue = raw_issue.str.fullmatch(
+                    r"|No recorded NOK control|Inspection result|Not recorded|未记录", case=False, na=True
+                )
+                pareto_source = pareto_source.loc[~generic_issue].copy()
+                pareto_source["issue_driver"] = pareto_source["issue_driver"].astype(str).str.split(r"\s*/\s*")
+                pareto_source = pareto_source.explode("issue_driver")
+                pareto_source["issue_driver"] = pareto_source["issue_driver"].fillna("").astype(str).str.strip()
+                pareto_source = pareto_source[
+                    pareto_source["issue_driver"].ne("")
+                    & pareto_source["issue_driver"].str.contains(r"[A-Za-z\u4e00-\u9fff]", regex=True, na=False)
+                    & pareto_source["defect_qty"].fillna(0).gt(0)
+                ]
+                pareto = pareto_source.groupby(["supplier", "issue_driver"], as_index=False)["defect_qty"].sum().nlargest(12, "defect_qty").sort_values("defect_qty")
+                pareto["issue_label"] = pareto["issue_driver"].map(lambda value: value if len(value) <= 28 else value[:27] + "…")
+                render_chart_heading(
+                    "BME 主要质量问题 Pareto", "BME Top Quality Problems Pareto",
+                    "定位当前 BME 数据中数量最大的具体质量问题。", "Identify the largest specific quality problems in the current BME scope.",
+                    "先处理最长的柱，并进入 BME 看板查看工序、型号和源记录。", "Start with the longest bars, then open the BME dashboard for process, model, and source records.",
+                    "只汇总已触发 Alert 且有不良数量的具体问题；未填写具体问题的记录不进入排名。", "Aggregate specific issues only when an alert and defect quantity exist; records without a specific issue are excluded.",
+                    reporting_source(bme_view, "BME Database"), "quality_reporting_bme_pareto_info",
+                )
+                fig = px.bar(pareto, x="defect_qty", y="issue_label", color="supplier", orientation="h", color_discrete_sequence=["#3546c4", "#d99a00", "#60a5fa"], hover_data={"issue_driver": True, "issue_label": False})
+                fig.update_xaxes(title_text=t("不良数量", "Defect Quantity"))
+                fig.update_yaxes(title_text="")
+                _style_zx_alert_chart(fig, "")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                if not pareto.empty:
+                    top = pareto.sort_values("defect_qty", ascending=False).iloc[0]
+                    render_bme_chart_conclusion(
+                        f"当前第一问题是 {top['issue_driver']}，来自 {top['supplier']}，不良数量 {top['defect_qty']:,.0f}。",
+                        f"The top current problem is {top['issue_driver']} from {top['supplier']}, with an aggregated quantity of {top['defect_qty']:,.0f}.",
+                    )
+
+
 def render_zx_alert_dashboard(
     finished_df: pd.DataFrame,
     incoming_df: pd.DataFrame,
     jdy_fqc: pd.DataFrame,
+    voice_df: pd.DataFrame | None = None,
+    bme_customer_nc: pd.DataFrame | None = None,
+    bme_fsd_orders: pd.DataFrame | None = None,
     extra_alerts: pd.DataFrame | None = None,
     combined: bool = False,
     supplier_scope_options: list[str] | None = None,
@@ -15823,14 +16279,22 @@ def render_zx_alert_dashboard(
 
     if is_bme:
         return_links_html = (
-            f'<a href="?scope=QUALITY_ALERT&lang={language_query_code()}" target="_self"><span class="material-symbols-rounded">arrow_back</span>{html.escape(t("返回 Alert 总览", "Back to Alert Overview"))}</a>'
-            f'<a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self">{html.escape(t("返回 Textile ZX Alert", "Back to Textile ZX Alert"))}</a>'
+            f'<a href="?scope=QUALITY_ALERT&lang={language_query_code()}" target="_self"><span class="material-symbols-rounded">arrow_back</span>{html.escape(t("返回质量 Reporting", "Back to Quality Reporting"))}</a>'
+            f'<a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self">{html.escape(t("返回 Textile Alert", "Back to Textile Alert"))}</a>'
         )
     else:
         return_links_html = (
-            f'<a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self"><span class="material-symbols-rounded">arrow_back</span>{html.escape(t("返回 Textile ZX Alert", "Back to Textile ZX Alert"))}</a>'
+            f'<a href="?scope=ZX&page=reporting&lang={language_query_code()}" target="_self"><span class="material-symbols-rounded">arrow_back</span>{html.escape(t("返回 Textile Alert", "Back to Textile Alert"))}</a>'
             f'<a href="?scope=BME_CMW&lang={language_query_code()}" target="_self">{html.escape(t("返回 BME Alert", "Back to BME Alert"))}</a>'
         )
+
+    breadcrumb = (
+        "Cockpit&nbsp;&nbsp;/&nbsp;&nbsp;Quality&nbsp;&nbsp;/&nbsp;&nbsp;Reporting&nbsp;&nbsp;/&nbsp;&nbsp;<strong>Overview</strong>"
+        if is_combined else
+        "Cockpit&nbsp;&nbsp;/&nbsp;&nbsp;Alert&nbsp;&nbsp;/&nbsp;&nbsp;Order Alert&nbsp;&nbsp;/&nbsp;&nbsp;<strong>Overview</strong>"
+    )
+    page_title = t("质量 Reporting", "Quality Reporting") if is_combined else "Overview"
+    refresh_label = t("Reporting 数据刷新时间", "Reporting data refreshed at") if is_combined else "Latest Alert Data Refreshed at"
 
     st.markdown(
         f"""
@@ -15839,10 +16303,10 @@ def render_zx_alert_dashboard(
             <div class="zx-alert-return-links">
               {return_links_html}
             </div>
-            <div class="zx-alert-breadcrumb">Cockpit&nbsp;&nbsp;/&nbsp;&nbsp;Alert&nbsp;&nbsp;/&nbsp;&nbsp;Order Alert&nbsp;&nbsp;/&nbsp;&nbsp;<strong>Overview</strong></div>
-            <h1 class="zx-alert-title">Overview</h1>
+            <div class="zx-alert-breadcrumb">{breadcrumb}</div>
+            <h1 class="zx-alert-title">{html.escape(page_title)}</h1>
             <div class="zx-alert-subtitle">
-              Latest Alert Data Refreshed at: {html.escape(beijing_timestamp())} Local Time
+              {html.escape(refresh_label)}: {html.escape(beijing_timestamp())} Local Time
               &nbsp;({html.escape(t('数据截止', 'Source through'))}: {html.escape(source_cutoff)})
             </div>
           </div>
@@ -15854,6 +16318,17 @@ def render_zx_alert_dashboard(
         """,
         unsafe_allow_html=True,
     )
+
+    if is_combined:
+        _render_quality_reporting_content(
+            finished_df,
+            voice_df if isinstance(voice_df, pd.DataFrame) else pd.DataFrame(),
+            jdy_fqc,
+            bme_source_events if isinstance(bme_source_events, pd.DataFrame) else pd.DataFrame(),
+            bme_customer_nc if isinstance(bme_customer_nc, pd.DataFrame) else pd.DataFrame(),
+            bme_fsd_orders if isinstance(bme_fsd_orders, pd.DataFrame) else pd.DataFrame(),
+        )
+        return
 
     inspection_options = list(ZX_ALERT_TYPES)
     supplier_options = sorted(set(
@@ -16753,7 +17228,7 @@ def get_active_zx_page(scope_key: str) -> str:
 def zx_page_display(page_key: str) -> str:
     if page_key == "alert":
         return t("ZX Alert 看板", "ZX Alert Dashboard")
-    return t("Textile ZX Alert 看板", "Textile ZX Alert Dashboard")
+    return t("Textile Alert 看板", "Textile Alert Dashboard")
 
 
 def scope_display(scope_key: str) -> str:
@@ -16871,7 +17346,7 @@ bme_events = (
 )
 bme_customer_nc, bme_fsd_orders = (
     load_bme_customer_quality_cached(bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION)
-    if active_scope_key == "BME_CMW"
+    if active_scope_key in {"BME_CMW", "QUALITY_ALERT"}
     else (pd.DataFrame(), pd.DataFrame())
 )
 
@@ -16903,9 +17378,13 @@ if active_scope_key == "QUALITY_ALERT":
         finished_all,
         incoming_all,
         sidebar_jdy_fqc,
+        voice_df=voice_all,
+        bme_customer_nc=bme_customer_nc,
+        bme_fsd_orders=bme_fsd_orders,
         extra_alerts=combined_bme_alerts,
         combined=True,
         supplier_scope_options=["49425 中兴", *sorted(bme_events["supplier"].dropna().astype(str).unique())],
+        bme_source_events=bme_events,
     )
     st.stop()
 
