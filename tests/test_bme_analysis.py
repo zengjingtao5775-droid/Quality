@@ -103,8 +103,15 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         self.assertEqual(set(master["quality_gate"]), {"IQC", "PQC", "FQC"})
         mpa25 = master[master["product_key"].eq("FSD|MPA25")]
         self.assertEqual(set(mpa25["quality_gate"]), {"IQC", "PQC", "FQC"})
-        expl100 = master[master["product_key"].eq("CMW|EXPL100MULTI")]
-        self.assertEqual(set(expl100["quality_gate"]), {"PQC", "FQC"})
+        expl100_grey = master[master["product_key"].eq("CMW|5535130")]
+        self.assertEqual(set(expl100_grey["quality_gate"]), {"FQC"})
+        self.assertTrue(expl100_grey["product_label"].str.startswith("整车料号 5535130 ·").all())
+        self.assertTrue(expl100_grey["product_link_method"].eq("CMW FQC whole-bike item code").all())
+        cmw_fqc = master[master["supplier"].eq("CMW") & master["quality_gate"].eq("FQC")]
+        self.assertTrue(cmw_fqc["product_key"].str.match(r"CMW\|\d+$").all())
+        cmw_pqc = master[master["supplier"].eq("CMW") & master["quality_gate"].eq("PQC")]
+        self.assertTrue(cmw_pqc["product_link_method"].eq("CMW PQC model; no exact whole-bike item-code link").all())
+        self.assertTrue(cmw_pqc["product_group"].eq("PQC 车型（未对应整车料号）").all())
         cmw_iqc = master[master["supplier"].eq("CMW") & master["quality_gate"].eq("IQC")]
         self.assertTrue(cmw_iqc["product_link_method"].eq("CMW component code; no BOM link to bike model").all())
         self.assertTrue(cmw_iqc["product_group"].eq("来料零部件").all())

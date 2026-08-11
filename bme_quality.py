@@ -650,9 +650,10 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
 
     The source files do not share one universal product code. This function
     therefore uses only source-native identifiers and explicit supplier rules:
-    FSD family/model aliases, CMW PQC model aliases, and TEKTRO source model
-    codes. CMW IQC components stay as component-level products because no BOM
-    mapping to a finished-bike model is available.
+    FSD family/model aliases, CMW FQC whole-bike item codes, and TEKTRO source
+    model codes. CMW PQC rows only contain a model name and CMW IQC rows only
+    contain component codes, so neither is assigned to a whole-bike style
+    without an auditable one-to-one relationship.
     """
     if events.empty:
         return events.assign(
@@ -684,16 +685,8 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
         if alias:
             fsd_alias_labels.setdefault(alias, alias)
 
-    cmw_alias_labels: dict[str, str] = {}
-    cmw_models = source[source["supplier"].eq("CMW") & source["stage"].eq("PQC")]["model_item_code"]
-    for value in cmw_models:
-        alias = _compact_product_text(value)
-        if alias:
-            cmw_alias_labels.setdefault(alias, str(value).strip())
-
     fsd_aliases = sorted(fsd_alias_labels, key=len, reverse=True)
-    cmw_aliases = sorted(cmw_alias_labels, key=len, reverse=True)
-    product_groups = {"FSD": "车架 / 前叉", "CMW": "整车", "TEKTRO": "刹车系统"}
+    product_groups = {"FSD": "车架 / 前叉", "CMW": "CMW 整车料号", "TEKTRO": "刹车系统"}
 
     def resolve_product(row: pd.Series) -> tuple[str, str, str]:
         supplier = str(row.get("supplier", "") or "").strip()
@@ -712,11 +705,21 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
             if matched:
                 identifier = fsd_alias_labels[matched] or matched
                 return f"FSD|{matched}", f"{group} · {identifier}", "FSD family / model alias"
-        elif supplier == "CMW" and str(row.get("stage", "")) in {"PQC", "AQL", "DKL"}:
-            matched = next((alias for alias in cmw_aliases if alias in haystack), "")
-            if matched:
-                identifier = cmw_alias_labels[matched] or matched
-                return f"CMW|{matched}", f"{group} · {identifier}", "CMW model alias"
+        elif supplier == "CMW" and str(row.get("stage", "")) in {"AQL", "DKL"} and code:
+            source_code = str(row.get("model_item_code", "")).strip()
+            description = str(row.get("item_name", "") or "").strip()
+            label = f"整车料号 {source_code}"
+            if description:
+                label += f" · {description}"
+            return f"CMW|{code}", label, "CMW FQC whole-bike item code"
+        elif supplier == "CMW" and str(row.get("stage", "")) == "PQC":
+            identifier = str(row.get("model_item_code", "") or row.get("item_name", "") or "未记录车型").strip()
+            fallback = code or name or "UNMAPPED"
+            return (
+                f"CMW_MODEL|{fallback}",
+                f"PQC 车型（未对应整车料号） · {identifier}",
+                "CMW PQC model; no exact whole-bike item-code link",
+            )
 
         fallback = code or name or family or "UNMAPPED"
         raw_identifier = ""
@@ -738,6 +741,10 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
         source["supplier"].eq("CMW") & source["stage"].eq("IQC"),
         "product_group",
     ] = "来料零部件"
+    source.loc[
+        source["supplier"].eq("CMW") & source["stage"].eq("PQC"),
+        "product_group",
+    ] = "PQC 车型（未对应整车料号）"
     return source.reset_index(drop=True)
 
 

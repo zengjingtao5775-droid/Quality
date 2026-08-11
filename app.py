@@ -14317,6 +14317,17 @@ def render_bme_bike_quality_dashboard_v3(
     selected_product_label = ""
     selected_product_supplier = ""
     product_master = build_bme_product_master(view)
+    product_master = product_master[
+        ~(
+            product_master["supplier"].eq("CMW")
+            & product_master["product_link_method"].isin(
+                [
+                    "CMW component code; no BOM link to bike model",
+                    "CMW PQC model; no exact whole-bike item-code link",
+                ]
+            )
+        )
+    ].copy()
     product_master["defect_qty"] = pd.to_numeric(product_master.get("defect_qty"), errors="coerce").fillna(0)
     product_issues = product_master[
         product_master.get("is_alert", pd.Series(False, index=product_master.index)).fillna(False)
@@ -14335,9 +14346,21 @@ def render_bme_bike_quality_dashboard_v3(
             defect_qty=("defect_qty", "sum"),
             issue_records=("issue_records", "sum"),
         ).sort_values(["affected_gates", "defect_qty", "issue_records"], ascending=False)
+        product_summary["supplier"] = product_summary["product_key"].str.split("|", n=1).str[0]
         common_products = product_summary[product_summary["affected_gates"].ge(2)].copy()
-        focus_products = common_products if not common_products.empty else product_summary
-        top_products = focus_products.head(15).copy()
+        supplier_count = max(int(product_summary["supplier"].nunique()), 1)
+        per_supplier_limit = max(1, 15 // supplier_count)
+        top_products = (
+            product_summary.sort_values(
+                ["supplier", "affected_gates", "defect_qty", "issue_records"],
+                ascending=[True, False, False, False],
+            )
+            .groupby("supplier", as_index=False, group_keys=False)
+            .head(per_supplier_limit)
+            .sort_values(["affected_gates", "defect_qty", "issue_records"], ascending=False)
+            .head(15)
+            .copy()
+        )
         chart_products = product_gate[product_gate["product_key"].isin(top_products["product_key"])].copy()
         chart_products = chart_products.merge(
             top_products[["product_key", "affected_gates", "defect_qty"]].rename(columns={"defect_qty": "product_defect_qty"}),
@@ -14355,12 +14378,12 @@ def render_bme_bike_quality_dashboard_v3(
         render_chart_heading(
             "需优先关注的产品",
             "Products Requiring Priority Attention",
-            "先找同一产品在哪些质量环节重复出现问题；覆盖环节越多，越值得优先回查。",
-            "Identify products recurring across quality gates; products affecting more gates deserve earlier review.",
+            "按供应商分别找出最需要关注的产品款式；同一款式覆盖环节越多、问题数量越高，越值得优先回查。",
+            "Identify the highest-priority product styles for each supplier using affected gates and defect quantity.",
             "每根横柱代表产品主数据中的一个产品，颜色区分 IQC、PQC 和 FQC，柱长为源不良数量。",
             "Each horizontal bar is one product-master item; color separates IQC, PQC, and FQC, while bar length uses source defect quantity.",
-            "FSD 用车系 / 型号别名串联，CMW 用 PQC 与 FQC 的车型别名串联，TEKTRO 保留源型号。CMW IQC 没有 BOM 可连接整车型号，因此归入来料零部件，不强行合并。AQL 与 DKL 在本分析中统一归为 FQC；RPM / IV 不参与。",
-            "FSD uses family/model aliases, CMW links PQC and FQC model aliases, and TEKTRO retains source models. CMW IQC has no BOM-to-bike-model link, so it remains at component level. AQL and DKL are grouped as FQC; RPM and IV are excluded.",
+            "CMW 款式只使用 FQC 源表的整车料号。CMW PQC 只有车型名称、IQC 只有零部件料号，无法一对一对应整车料号，因此不分摊到具体款式。FSD 使用车系 / 型号别名，TEKTRO 保留源型号；AQL 与 DKL 统一归为 FQC，RPM / IV 不参与。",
+            "CMW styles use only the whole-bike item code from the FQC source. CMW PQC model names and IQC component codes are not assigned to a bike style without a one-to-one link. FSD uses family/model aliases and TEKTRO retains source models; AQL and DKL are grouped as FQC, while RPM and IV are excluded.",
             bme_chart_source(product_issues),
             "bme_v6_product_common_info",
         )
@@ -14410,8 +14433,8 @@ def render_bme_bike_quality_dashboard_v3(
         st.plotly_chart(common_fig, use_container_width=True, config={"displayModeBar": False})
         top_product = top_products.iloc[0]
         render_bme_chart_conclusion(
-            f"本期共有 {len(common_products):,} 个产品在两个以上检验环节出现问题。最需要关注的是 {top_product['product_label']}：涉及 {int(top_product['affected_gates'])} 个环节，共 {top_product['defect_qty']:,.0f} 个不良。请先核对不同环节是否属于同一问题。",
-            f"{len(common_products):,} products have issues in at least two quality gates. The first priority is {top_product['product_label']}, covering {int(top_product['affected_gates'])} gates with {top_product['defect_qty']:,.0f} defects. This indicates a cross-gate review priority, not a confirmed common root cause.",
+            f"本期重点列表按各供应商分别选取。最需要关注的是 {top_product['product_label']}：涉及 {int(top_product['affected_gates'])} 个环节，共 {top_product['defect_qty']:,.0f} 个不良；另有 {len(common_products):,} 个产品在两个以上检验环节出现问题。",
+            f"The priority list selects products within each supplier. The first priority is {top_product['product_label']}, covering {int(top_product['affected_gates'])} gates with {top_product['defect_qty']:,.0f} defects; {len(common_products):,} products appear in at least two quality gates.",
         )
 
         with st.container(key="bme_product_defect_filter"):
@@ -14616,6 +14639,23 @@ def render_bme_bike_quality_dashboard_v3(
             return re.sub(r"[^A-Z0-9\u4e00-\u9fff]+", "", str(value or "").upper())
 
         focus_alias = compact_machine_text(selected_product_key.split("|", 1)[1]) if "|" in selected_product_key else ""
+        cmw_order_item_codes: dict[str, str] = {}
+        cmw_fqc_links = view[
+            view["supplier"].eq("CMW")
+            & view["stage"].isin(["AQL", "DKL"])
+            & view["order_po"].fillna("").astype(str).str.strip().ne("")
+            & view["model_item_code"].fillna("").astype(str).str.strip().ne("")
+        ][["order_po", "model_item_code"]].copy()
+        if not cmw_fqc_links.empty:
+            cmw_fqc_links["order_key"] = cmw_fqc_links["order_po"].map(compact_machine_text)
+            for order_key, order_rows in cmw_fqc_links.groupby("order_key"):
+                item_codes = {
+                    compact_machine_text(value)
+                    for value in order_rows["model_item_code"]
+                    if compact_machine_text(value)
+                }
+                if len(item_codes) == 1:
+                    cmw_order_item_codes[str(order_key)] = next(iter(item_codes))
 
         def matches_selected_product(label: str) -> bool:
             if not selected_product_supplier or selected_product_supplier not in {"CMW", "TEKTRO"}:
@@ -14623,6 +14663,14 @@ def render_bme_bike_quality_dashboard_v3(
             if not label.startswith(f"{selected_product_supplier} ·"):
                 return False
             option_data = method_options[label][1]
+            if selected_product_supplier == "CMW" and focus_alias:
+                option_item_codes = {
+                    cmw_order_item_codes[compact_machine_text(value)]
+                    for value in option_data.get("order_po", pd.Series(dtype=object)).dropna().unique()
+                    if compact_machine_text(value) in cmw_order_item_codes
+                }
+                if focus_alias in option_item_codes:
+                    return True
             candidates = {
                 compact_machine_text(value)
                 for column in ["model_item_code", "item_name", "family"]
