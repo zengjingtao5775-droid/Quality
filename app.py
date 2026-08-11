@@ -14542,6 +14542,9 @@ def render_bme_bike_quality_dashboard_v3(
     spc_heading_slot = st.empty()
     selected_machine_label = ""
     selected_machine_data = pd.DataFrame()
+    machine_scope_linked = False
+    machine_scope_note_cn = ""
+    machine_scope_note_en = ""
     method_options: dict[str, tuple[str, pd.DataFrame]] = {}
     for keys, group in cmw_torque.groupby(
         ["model_item_code", "item_name", "process", "spec_low", "spec_high", "unit"],
@@ -14641,37 +14644,40 @@ def render_bme_bike_quality_dashboard_v3(
             key=lambda label: (*spc_risk_key(method_options[label]), -len(method_options[label][1]), label),
         )
         linked_methods = [label for label in ranked_all_methods if matches_selected_product(label)]
-        if selected_product_supplier in {"CMW", "TEKTRO"}:
+        if linked_methods:
             ranked_methods = linked_methods
-        elif selected_product_supplier:
-            ranked_methods = []
+            machine_scope_linked = True
+            machine_scope_note_cn = "当前控制图已与上方所选产品对应。"
+            machine_scope_note_en = "The control chart is linked to the product selected above."
         else:
             ranked_methods = ranked_all_methods
-
-        if not ranked_methods:
+            machine_scope_note_cn = "当前控制图来自全厂 Machine Data，与上方所选款式未建立关联。"
+            machine_scope_note_en = "The control chart uses factory-wide Machine Data and is not linked to the product selected above."
             st.info(t(
-                f"{selected_product_label or '所选产品'} 暂无可确认对应的 Machine Data。",
-                f"No reliably linked Machine Data is available for {selected_product_label or 'the selected product'}.",
+                f"{selected_product_label or '所选产品'} 暂无可确认对应的 Machine Data；下面显示全厂高风险过程，不代表该款式。",
+                f"No reliably linked Machine Data is available for {selected_product_label or 'the selected product'}. The factory-wide high-risk process below does not represent that product.",
             ))
-            selected_method = ""
-        else:
-            focus_signature = selected_product_key or "ALL"
-            if st.session_state.get("bme_v6_spc_focus") != focus_signature:
-                st.session_state["bme_v6_spc_focus"] = focus_signature
-                st.session_state["bme_v6_spc"] = ranked_methods[0]
-            if st.session_state.get("bme_v6_spc") not in ranked_methods:
-                st.session_state["bme_v6_spc"] = ranked_methods[0]
-            with st.container(key="bme_spc_filter"):
-                filter_label, filter_control = st.columns([0.13, 0.87], vertical_alignment="center")
-                with filter_label:
-                    st.markdown(f'<div class="bme-spc-filter-label">{html.escape(t("查看过程", "Process"))}</div>', unsafe_allow_html=True)
-                with filter_control:
-                    selected_method = st.selectbox(
-                        t("选择同一产品的过程参数", "Select a process parameter for the same product"),
-                        ranked_methods,
-                        key="bme_v6_spc",
-                        label_visibility="collapsed",
-                    )
+
+        focus_signature = f"{selected_product_key or 'ALL'}|{'linked' if machine_scope_linked else 'factory'}"
+        if st.session_state.get("bme_v6_spc_focus") != focus_signature:
+            st.session_state["bme_v6_spc_focus"] = focus_signature
+            st.session_state["bme_v6_spc"] = ranked_methods[0]
+        if st.session_state.get("bme_v6_spc") not in ranked_methods:
+            st.session_state["bme_v6_spc"] = ranked_methods[0]
+        with st.container(key="bme_spc_filter"):
+            filter_label, filter_control = st.columns([0.13, 0.87], vertical_alignment="center")
+            with filter_label:
+                st.markdown(f'<div class="bme-spc-filter-label">{html.escape(t("查看过程", "Process"))}</div>', unsafe_allow_html=True)
+            with filter_control:
+                selected_method = st.selectbox(
+                    t(
+                        "选择同一产品的过程参数" if machine_scope_linked else "选择全厂过程（高风险优先）",
+                        "Select a process parameter for the same product" if machine_scope_linked else "Select a factory process (high risk first)",
+                    ),
+                    ranked_methods,
+                    key="bme_v6_spc",
+                    label_visibility="collapsed",
+                )
         if not selected_method:
             method = ""
             data = pd.DataFrame()
@@ -14704,6 +14710,11 @@ def render_bme_bike_quality_dashboard_v3(
             spc_read_en = "The X̄ chart shows whether each five-piece subgroup average is stable, while the R chart shows whether within-subgroup variation suddenly increases. Red points require batch and test-condition investigation. The orange 200 kgf LSL is the product minimum specification and must not be confused with statistical control limits."
             spc_logic_cn = "拔脱力按连续 5 件组成子组，使用 A2=0.577、D3=0、D4=2.114 的 X̄-R 控制图；不完整子组不参与控制限估计。只有稳定时才显示单边 PPL。"
             spc_logic_en = "Pull-out force uses consecutive subgroups of five with X̄-R constants A2=0.577, D3=0, and D4=2.114. Incomplete subgroups are excluded from limit estimation, and one-sided PPL is shown only when stable."
+        if method:
+            spc_logic_cn = f"{machine_scope_note_cn}{spc_logic_cn}"
+            spc_logic_en = f"{machine_scope_note_en} {spc_logic_en}"
+        scope_conclusion_cn = "" if machine_scope_linked else "本图为全厂高风险过程，不代表上方所选款式。"
+        scope_conclusion_en = "" if machine_scope_linked else "This is a factory-wide high-risk process and does not represent the product selected above. "
         with spc_heading_slot.container():
             render_chart_heading(
                 "SPC（统计过程控制）",
@@ -14773,8 +14784,8 @@ def render_bme_bike_quality_dashboard_v3(
                     spec_text_cn = "；源数据没有产品规格，本图只判断过程是否稳定"
                     spec_text_en = "; source specifications are unavailable, so the chart assesses stability only"
                 render_bme_chart_conclusion(
-                    f"本期 {len(chart_plot):,} 个有效测量点，发现 {signal_count} 个 SPC 异常点{spec_text_cn}。请优先回查红点对应的工单、设备、人员和物料批次。",
-                    f"This period has {len(chart_plot):,} valid measurements, {signal_count} SPC signal points{spec_text_en}. Review the related order, equipment, operator, and material batch first.",
+                    f"{scope_conclusion_cn}本期 {len(chart_plot):,} 个有效测量点，发现 {signal_count} 个 SPC 异常点{spec_text_cn}。请优先回查红点对应的工单、设备、人员和物料批次。",
+                    f"{scope_conclusion_en}This period has {len(chart_plot):,} valid measurements, {signal_count} SPC signal points{spec_text_en}. Review the related order, equipment, operator, and material batch first.",
                 )
             else:
                 render_bme_chart_conclusion(
@@ -14795,8 +14806,8 @@ def render_bme_bike_quality_dashboard_v3(
             peak_date = pd.Timestamp(peak["date"]).strftime("%Y-%m-%d")
             signal_count = int(chart["signal"].sum())
             render_bme_chart_conclusion(
-                f"本期 {len(chart)} 个检验周期，平均 NC 率 {limits['center']:.2%}，发现 {signal_count} 个 SPC 异常点。最高点为 {peak_date} 的 {peak['rate']:.2%}，请优先回查该周期。",
-                f"This period has {len(chart)} inspection periods, an average NC rate of {limits['center']:.2%}, and {signal_count} SPC signal points. The peak is {peak['rate']:.2%} on {peak_date}; review that period first.",
+                f"{scope_conclusion_cn}本期 {len(chart)} 个检验周期，平均 NC 率 {limits['center']:.2%}，发现 {signal_count} 个 SPC 异常点。最高点为 {peak_date} 的 {peak['rate']:.2%}，请优先回查该周期。",
+                f"{scope_conclusion_en}This period has {len(chart)} inspection periods, an average NC rate of {limits['center']:.2%}, and {signal_count} SPC signal points. The peak is {peak['rate']:.2%} on {peak_date}; review that period first.",
             )
         else:
             chart, limits = build_xbar_r_chart_data(data)
@@ -14813,8 +14824,8 @@ def render_bme_bike_quality_dashboard_v3(
             below_lsl = int(data["measured_value"].lt(200).sum())
             incomplete_groups = int(limits.get("incomplete_groups", 0))
             render_bme_chart_conclusion(
-                f"本期 {len(chart)} 个完整子组，发现 {mean_signals + range_signals} 个 SPC 异常子组，{below_lsl} 个单件结果低于 200 kgf 规格。请优先回查异常子组的试验批次和测试条件。",
-                f"This period has {len(chart)} complete subgroups, {mean_signals + range_signals} SPC signal subgroups, and {below_lsl} individual results below the 200 kgf specification. Review the related test batches and conditions first.",
+                f"{scope_conclusion_cn}本期 {len(chart)} 个完整子组，发现 {mean_signals + range_signals} 个 SPC 异常子组，{below_lsl} 个单件结果低于 200 kgf 规格。请优先回查异常子组的试验批次和测试条件。",
+                f"{scope_conclusion_en}This period has {len(chart)} complete subgroups, {mean_signals + range_signals} SPC signal subgroups, and {below_lsl} individual results below the 200 kgf specification. Review the related test batches and conditions first.",
             )
 
     if not selected_machine_data.empty:
@@ -14831,12 +14842,12 @@ def render_bme_bike_quality_dashboard_v3(
         render_chart_heading(
             "同一过程的实测趋势",
             "Measured Trend for the Same Process",
-            "查看上方同一产品、同一过程的实测值，并与源规格直接比较。",
-            "Review the same product and process selected above against source specifications.",
+            "查看上方 SPC 所选过程的实测值，并与源规格直接比较。",
+            "Review measurements for the process selected in the SPC chart against source specifications.",
             "横轴是时间，纵轴是实测值；橙色虚线是源数据中的规格上下限。",
             "The x-axis is time and the y-axis is the measured value; orange dashed lines are source specification limits.",
-            "本图与上方 SPC 共用一个过程选择，不再使用第二套筛选。只显示源数据已有的规格；疑似录入错误不进入趋势和规格超限判断。",
-            "This chart shares the process selector above. It shows source specifications only, and suspected data-entry errors are excluded from the trend and specification-breach check.",
+            f"{machine_scope_note_cn}本图与上方 SPC 共用一个过程选择，不再使用第二套筛选。只显示源数据已有的规格；疑似录入错误不进入趋势和规格超限判断。",
+            f"{machine_scope_note_en} This chart shares the process selector above. It shows source specifications only, and suspected data-entry errors are excluded from the trend and specification-breach check.",
             bme_chart_source(parameter_view),
             "bme_v6_parameter_trend_info",
         )
@@ -14882,8 +14893,8 @@ def render_bme_bike_quality_dashboard_v3(
         measured_max = float(parameter_view["measured_value"].max())
         limits_available = parameter_view["spec_low"].notna().any() or parameter_view["spec_high"].notna().any()
         render_bme_chart_conclusion(
-            f"本期 {len(parameter_view):,} 个实测点，范围 {measured_min:,.2f}–{measured_max:,.2f}{'；已与源规格对比' if limits_available else '；源数据没有规格，只能查看变化'}。",
-            f"This period has {len(parameter_view):,} measurements ranging from {measured_min:,.2f} to {measured_max:,.2f}{'; source specifications are shown' if limits_available else '; source specifications are unavailable, so only the trend is shown'}.",
+            f"{'' if machine_scope_linked else '本图为全厂高风险过程，不代表上方所选款式。'}本期 {len(parameter_view):,} 个实测点，范围 {measured_min:,.2f}–{measured_max:,.2f}{'；已与源规格对比' if limits_available else '；源数据没有规格，只能查看变化'}。",
+            f"{'' if machine_scope_linked else 'This is a factory-wide high-risk process and does not represent the product selected above. '}This period has {len(parameter_view):,} measurements ranging from {measured_min:,.2f} to {measured_max:,.2f}{'; source specifications are shown' if limits_available else '; source specifications are unavailable, so only the trend is shown'}.",
         )
 
     st.subheader(t("补充分析：来料与返工", "Supplementary Analysis: Incoming and Rework"))
