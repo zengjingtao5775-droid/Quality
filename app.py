@@ -794,6 +794,27 @@ st.markdown(
         font-weight: 850;
         white-space: nowrap;
     }
+    .bme-data-map-matrix .gap-matrix-table {
+        min-width: 0;
+        table-layout: fixed;
+    }
+    .bme-data-map-matrix .gap-matrix-table th,
+    .bme-data-map-matrix .gap-matrix-table td {
+        padding: 9px 4px;
+        font-size: 0.7rem;
+        overflow-wrap: anywhere;
+    }
+    .bme-data-map-matrix .gap-status {
+        min-width: 0;
+        padding: 4px 6px;
+        font-size: 0.7rem;
+        white-space: nowrap;
+    }
+    .bme-data-map-matrix .gap-method {
+        padding: 4px 5px;
+        font-size: 0.68rem;
+        white-space: normal;
+    }
     div[data-testid="stMetric"] {
         background: #ffffff;
         border: 1px solid #e2e7fb;
@@ -8583,6 +8604,15 @@ def render_readme_popover(
             extra_renderer()
 
 
+def render_bme_chart_conclusion(text_cn: str, text_en: str) -> None:
+    """Render one filter-aware management takeaway directly below a BME chart."""
+    conclusion = t(text_cn, text_en)
+    st.markdown(
+        f'<div class="bme-chart-conclusion"><strong>{html.escape(t("本期结论", "Period Conclusion"))}</strong>{html.escape(conclusion)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_chart_heading(
     title_cn: str,
     title_en: str,
@@ -8811,7 +8841,7 @@ def build_data_gap_matrix(
     return pd.DataFrame(rows)
 
 
-def render_data_gap_matrix(matrix: pd.DataFrame) -> None:
+def render_data_gap_matrix(matrix: pd.DataFrame, wrapper_class: str = "") -> None:
     if matrix.empty:
         st.info(t("当前没有可展示的数据接入状态。", "No data-availability status to display."))
         return
@@ -8834,8 +8864,12 @@ def render_data_gap_matrix(matrix: pd.DataFrame) -> None:
             else:
                 cells.append(f"<td>{html.escape(value)}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
+    safe_wrapper_class = " ".join(
+        part for part in wrapper_class.split() if part.replace("-", "").replace("_", "").isalnum()
+    )
+    wrapper_classes = "gap-matrix-wrap" + (f" {safe_wrapper_class}" if safe_wrapper_class else "")
     st.markdown(
-        "<div class='gap-matrix-wrap'><table class='gap-matrix-table'>"
+        f"<div class='{wrapper_classes}'><table class='gap-matrix-table'>"
         f"<thead><tr>{header}</tr></thead><tbody>{''.join(body_rows)}</tbody>"
         "</table></div>",
         unsafe_allow_html=True,
@@ -14051,7 +14085,7 @@ def render_bme_bike_quality_dashboard_v3(
         st.warning(t("FSD 已关联PO的NC占比低于90%，因此暂不显示PPM。", "FSD PO-link coverage is below 90%; PPM is hidden."))
 
     st.subheader(t("1 · 数据来源与完整性", "1 · Data Map & Confidence"))
-    with st.expander(t("查看数据情况", "Data Map"), expanded=True):
+    with st.expander(t("数据地图", "Data Map"), expanded=True):
         _render_bme_data_map(view)
         if undated_records:
             st.warning(t(
@@ -14205,13 +14239,32 @@ def render_bme_bike_quality_dashboard_v3(
             fig.update_layout(height=570, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
             if limits:
-                status_text = t("过程稳定", "Stable") if limits.get("stable") else t("发现特殊原因信号", "Special-cause signals detected")
-                capability = f" · Ppk {limits['ppk']:.2f}" if "ppk" in limits else ""
-                signal_summary = t(
-                    f"共 {int(chart['signal'].sum())} 个触发点（超出3σ {int(chart['beyond_3sigma'].sum())}、连续8点在中心线同侧 {int(chart['eight_one_side'].sum())}、连续6点上升或下降 {int(chart['six_trend'].sum())}）",
-                    f"{int(chart['signal'].sum())} signal events ({int(chart['beyond_3sigma'].sum())} beyond 3σ, {int(chart['eight_one_side'].sum())} eight-on-one-side, {int(chart['six_trend'].sum())} six-point trends)",
+                signal_count = int(chart["signal"].sum())
+                beyond_count = int(chart["beyond_3sigma"].sum())
+                side_count = int(chart["eight_one_side"].sum())
+                trend_count = int(chart["six_trend"].sum())
+                capability_cn = f"；Ppk 为 {limits['ppk']:.2f}" if "ppk" in limits else ""
+                capability_en = f"; Ppk is {limits['ppk']:.2f}" if "ppk" in limits else ""
+                if method == "imr":
+                    below_spec = data["spec_low"].notna() & data["measured_value"].lt(data["spec_low"])
+                    above_spec = data["spec_high"].notna() & data["measured_value"].gt(data["spec_high"])
+                    spec_breaches = int((below_spec | above_spec).sum())
+                    spec_text_cn = f"；另有 {spec_breaches} 个实测值超出产品规格" if spec_breaches else "；没有实测值超出产品规格"
+                    spec_text_en = f"; {spec_breaches} measurements are outside product specifications" if spec_breaches else "; no measurement is outside product specifications"
+                else:
+                    spec_text_cn = "；源数据没有产品规格，因此不能据此判断产品是否合格"
+                    spec_text_en = "; source specifications are unavailable, so product conformity cannot be judged from this chart"
+                stability_cn = "过程稳定" if limits.get("stable") else "过程出现特殊原因信号，需要排查"
+                stability_en = "the process is stable" if limits.get("stable") else "special-cause signals require investigation"
+                render_bme_chart_conclusion(
+                    f"当前选择共 {len(chart):,} 个测量点，{stability_cn}{capability_cn}。识别 {signal_count} 个触发点（超出3σ {beyond_count}、连续8点在中心线同侧 {side_count}、连续6点上升或下降 {trend_count}）{spec_text_cn}。红点只提示回查工单、设备、人员和物料批次，不等于直接报废。",
+                    f"The selected scope contains {len(chart):,} measurements and {stability_en}{capability_en}. It has {signal_count} triggers ({beyond_count} beyond 3σ, {side_count} eight-on-one-side, and {trend_count} six-point trends){spec_text_en}. Red points require checking the order, equipment, operator, and material batch; they do not automatically mean rejection.",
                 )
-                st.info(f"{status_text}{capability} · {signal_summary}")
+            else:
+                render_bme_chart_conclusion(
+                    f"当前选择共 {len(chart):,} 个测量点，但有效数据不足以计算控制限；本图只能查看原始变化，不能判断过程稳定性。",
+                    f"The selected scope contains {len(chart):,} measurements, but valid data is insufficient for control limits. The chart shows raw variation only and cannot assess process stability.",
+                )
             if method == "imr_stability":
                 st.warning(t("源数据没有规格：这里只判断稳定性，不判定 NG，也不计算能力指数。", "Source specifications are unavailable: this view assesses stability only, without NG decisions or capability indices."))
             suspects = chart[chart["data_quality_flag"].fillna("").ne("")]
@@ -14227,10 +14280,13 @@ def render_bme_bike_quality_dashboard_v3(
             fig.update_yaxes(tickformat=".1%")
             fig.update_layout(height=460, margin=dict(l=20, r=20, t=25, b=30), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            st.caption(t(
-                f"当前范围共 {len(chart)} 个周期点，识别 {int(chart['signal'].sum())} 个特殊原因触发点。",
-                f"{len(chart)} period points are shown, with {int(chart['signal'].sum())} special-cause trigger points.",
-            ))
+            peak = chart.loc[chart["rate"].idxmax()]
+            peak_date = pd.Timestamp(peak["date"]).strftime("%Y-%m-%d")
+            signal_count = int(chart["signal"].sum())
+            render_bme_chart_conclusion(
+                f"当前共 {len(chart)} 个检验周期，平均 NC率为 {limits['center']:.2%}；最高点出现在 {peak_date}，NC率 {peak['rate']:.2%}。共识别 {signal_count} 个特殊原因触发点，需优先回查对应周期的产品、工序、人员和物料变化。",
+                f"The current scope contains {len(chart)} inspection periods with an average NC rate of {limits['center']:.2%}. The peak was {peak['rate']:.2%} on {peak_date}. {signal_count} special-cause triggers require priority review of product, process, operator, and material changes in those periods.",
+            )
         else:
             chart, limits = build_xbar_r_chart_data(data)
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[.68, .32], vertical_spacing=.12)
@@ -14241,10 +14297,14 @@ def render_bme_bike_quality_dashboard_v3(
             fig.add_hline(y=limits["r_ucl"], annotation_text="R UCL", line_color="#c01048", line_dash="dot", row=2, col=1)
             fig.update_layout(height=560, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            st.caption(t(
-                f"完整 n=5 子组 {len(chart)} 个；X̄ 信号 {int(chart['signal'].sum())} 个，R 超限 {int(chart['range_signal'].sum())} 个；不完整子组 {int(limits.get('incomplete_groups', 0))} 个未用于控制限。",
-                f"{len(chart)} complete n=5 subgroups; {int(chart['signal'].sum())} X̄ signals and {int(chart['range_signal'].sum())} R-limit breaches; {int(limits.get('incomplete_groups', 0))} incomplete subgroups excluded from limits.",
-            ))
+            mean_signals = int(chart["signal"].sum())
+            range_signals = int(chart["range_signal"].sum())
+            below_lsl = int(data["measured_value"].lt(200).sum())
+            incomplete_groups = int(limits.get("incomplete_groups", 0))
+            render_bme_chart_conclusion(
+                f"当前有 {len(chart)} 个完整 n=5 子组：X̄ 异常 {mean_signals} 个，组内波动 R 超限 {range_signals} 个，另有 {below_lsl} 个单件结果低于 200 kgf 规格下限；{incomplete_groups} 个不完整子组未参与控制限计算。应优先回查异常子组对应的试验批次和测试条件。",
+                f"There are {len(chart)} complete n=5 subgroups: {mean_signals} X̄ signals, {range_signals} R-limit breaches, and {below_lsl} individual results below the 200 kgf lower specification limit. {incomplete_groups} incomplete subgroups were excluded. Prioritize the related test batches and test conditions.",
+            )
 
     alerts = view[view["is_alert"]].copy()
     raw_issue = alerts["issue_driver"].fillna("").astype(str).str.strip()
@@ -14298,10 +14358,7 @@ def render_bme_bike_quality_dashboard_v3(
             f"当前第一问题：{top_issue['issue_driver']}，不良数量 {top_issue['defect_qty']:,.0f}，占图中主要问题 {top_issue['defect_qty'] / total_defects:.1%}；另有 {missing_issue_alerts:,} 条异常记录没有填写具体问题，因此没有放进排名。",
             f"Top issue: {top_issue['issue_driver']} with {top_issue['defect_qty']:,.0f} defects ({top_issue['defect_qty'] / total_defects:.1%} of defects shown); {missing_issue_alerts:,} alerts without a specific issue are excluded from the ranking.",
         )
-        st.markdown(
-            f'<div class="bme-chart-conclusion"><strong>{html.escape(t("本期结论", "Period Conclusion"))}</strong>{html.escape(pareto_conclusion)}</div>',
-            unsafe_allow_html=True,
-        )
+        render_bme_chart_conclusion(pareto_conclusion, pareto_conclusion)
 
     st.subheader(t("5 · 客诉问题 Pareto", "5 · Customer Quality Pareto"))
     if not scoped_nc.empty:
@@ -14322,7 +14379,13 @@ def render_bme_bike_quality_dashboard_v3(
         fig = px.bar(customer_pareto, x="nc_qty", y="problem", color="supplier", orientation="h", labels={"nc_qty": t("客户 NC 数量", "Customer NC Qty"), "problem": "Model · Defect Code"}, color_discrete_sequence=["#3341c4", "#d99a00"])
         fig.update_layout(height=480, margin=dict(l=20, r=20, t=25, b=30), legend_title_text="")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        st.caption(t("Defect Code 保留源编码，不推断 W / V / M / D 的含义。", "Defect Codes retain source values; meanings of W / V / M / D are not inferred."))
+        top_customer_problem = customer_pareto.sort_values("nc_qty", ascending=False).iloc[0]
+        customer_nc_shown = float(customer_pareto["nc_qty"].sum())
+        customer_share = top_customer_problem["nc_qty"] / customer_nc_shown if customer_nc_shown else 0
+        render_bme_chart_conclusion(
+            f"当前客诉 NC 数量最高的是 {top_customer_problem['supplier']} · {top_customer_problem['model']} · {top_customer_problem['defect_code']}，NC 数量 {top_customer_problem['nc_qty']:,.0f}，占图中 Top 15 客诉问题 {customer_share:.1%}。Defect Code 保留源编码，不能在没有定义表的情况下推断 W / V / M / D 的含义。",
+            f"The largest customer NC combination is {top_customer_problem['supplier']} · {top_customer_problem['model']} · {top_customer_problem['defect_code']} with {top_customer_problem['nc_qty']:,.0f} NC quantity, representing {customer_share:.1%} of the Top 15 shown. Defect Codes remain source codes; W / V / M / D meanings are not inferred without a definition table.",
+        )
     st.subheader(t("6 · 生产过程与返工分析", "6 · Process & Rework Analysis"))
     if not cmw_iqc.empty:
         incoming = cmw_iqc.groupby("material_supplier", as_index=False).agg(
@@ -14365,10 +14428,10 @@ def render_bme_bike_quality_dashboard_v3(
             fig.update_layout(height=max(420, 34 * len(incoming_chart) + 150), margin=dict(l=20, r=35, t=25, b=35), showlegend=False)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             highest = incoming_chart.sort_values("return_ppm", ascending=False).iloc[0]
-            st.caption(t(
+            render_bme_chart_conclusion(
                 f"当前最高：{highest['material_supplier']}，退货 PPM {highest['return_ppm']:,.0f}（退货 {highest['return_qty']:,.0f} / 来料 {highest['incoming_qty']:,.0f}）；当前周期覆盖 {int(incoming['receipts'].sum()):,} 条有效 IQC 记录。",
                 f"Highest: {highest['material_supplier']} at {highest['return_ppm']:,.0f} return PPM ({highest['return_qty']:,.0f} returned / {highest['incoming_qty']:,.0f} incoming); the current period covers {int(incoming['receipts'].sum()):,} valid IQC records.",
-            ))
+            )
 
     rework = view[view["stage"].eq("REWORK")].copy()
     if not rework.empty:
@@ -14384,7 +14447,8 @@ def render_bme_bike_quality_dashboard_v3(
                 closed_records=("source_row", "count"),
                 median_days=("workflow_days", "median"),
                 p90_days=("workflow_days", lambda values: values.quantile(.90) if len(values) >= 5 else np.nan),
-            )
+            ).sort_values("month")
+            low_sample_months = int(monthly_rework["closed_records"].lt(5).sum())
             render_chart_heading(
                 "CMW 返工流程周期趋势",
                 "CMW Rework Workflow Lead-Time Trend",
@@ -14403,6 +14467,29 @@ def render_bme_bike_quality_dashboard_v3(
             lead_fig.update_yaxes(title_text=t("流程天数", "Workflow Days"), rangemode="tozero")
             lead_fig.update_layout(height=360, margin=dict(l=20, r=20, t=25, b=35), legend=dict(orientation="h", y=1.08))
             st.plotly_chart(lead_fig, use_container_width=True, config={"displayModeBar": False})
+            latest_rework = monthly_rework.iloc[-1]
+            latest_month = pd.Timestamp(latest_rework["month"]).strftime("%Y-%m")
+            if len(monthly_rework) >= 2:
+                previous_median = float(monthly_rework.iloc[-2]["median_days"])
+                median_change = float(latest_rework["median_days"]) - previous_median
+                if median_change > 0:
+                    change_cn = f"，较上一个有数据月份增加 {median_change:.1f} 天"
+                    change_en = f", up {median_change:.1f} days versus the previous month with data"
+                elif median_change < 0:
+                    change_cn = f"，较上一个有数据月份减少 {abs(median_change):.1f} 天"
+                    change_en = f", down {abs(median_change):.1f} days versus the previous month with data"
+                else:
+                    change_cn = "，与上一个有数据月份持平"
+                    change_en = ", unchanged from the previous month with data"
+            else:
+                change_cn = ""
+                change_en = ""
+            p90_cn = f"，P90 为 {latest_rework['p90_days']:.1f} 天" if pd.notna(latest_rework["p90_days"]) else "；该月样本少于 5 条，因此不显示 P90"
+            p90_en = f", with P90 at {latest_rework['p90_days']:.1f} days" if pd.notna(latest_rework["p90_days"]) else "; P90 is hidden because the month has fewer than five records"
+            render_bme_chart_conclusion(
+                f"最新有数据月份为 {latest_month}，已结案返工流程中位周期 {latest_rework['median_days']:.1f} 天{change_cn}{p90_cn}。流程天数是申请到源更新时间，不是现场实际返工工时。",
+                f"The latest month with data is {latest_month}, with a median closed-rework workflow lead time of {latest_rework['median_days']:.1f} days{change_en}{p90_en}. Workflow days run from application to source update time and are not physical rework labor hours.",
+            )
 
             volume_fig = px.bar(
                 monthly_rework,
@@ -14414,11 +14501,12 @@ def render_bme_bike_quality_dashboard_v3(
             volume_fig.update_traces(marker_color="#8aa4e8", textposition="outside", cliponaxis=False)
             volume_fig.update_layout(height=260, margin=dict(l=20, r=20, t=15, b=35), showlegend=False)
             st.plotly_chart(volume_fig, use_container_width=True, config={"displayModeBar": False})
-            low_sample_months = int(monthly_rework["closed_records"].lt(5).sum())
-            st.caption(t(
-                f"共 {len(monthly_rework)} 个月，其中 {low_sample_months} 个月样本少于 5 条，已隐藏这些月份的 P90；柱形图直接显示每月样本量。",
-                f"Across {len(monthly_rework)} months, {low_sample_months} months have fewer than five records and their P90 is hidden; the bar chart shows each monthly sample size directly.",
-            ))
+            peak_volume = monthly_rework.loc[monthly_rework["closed_records"].idxmax()]
+            peak_month = pd.Timestamp(peak_volume["month"]).strftime("%Y-%m")
+            render_bme_chart_conclusion(
+                f"当前周期共结案 {int(monthly_rework['closed_records'].sum()):,} 条返工申请；结案量最高的是 {peak_month}，共 {int(peak_volume['closed_records']):,} 条。{low_sample_months} 个月样本少于 5 条，解读周期趋势时不要把小样本波动当成稳定改善或恶化。",
+                f"The current period contains {int(monthly_rework['closed_records'].sum()):,} closed rework applications. Peak throughput was {int(peak_volume['closed_records']):,} records in {peak_month}. {low_sample_months} months have fewer than five records, so small-sample variation should not be treated as stable improvement or deterioration.",
+            )
 
         open_rework_chart = rework[~rework["status"].eq("Closed") & rework["event_timestamp"].notna()].copy()
         if not open_rework_chart.empty:
@@ -14453,6 +14541,14 @@ def render_bme_bike_quality_dashboard_v3(
             fig.update_traces(texttemplate="%{text:.1f}", textposition="outside", cliponaxis=False)
             fig.update_layout(height=max(320, 54 * len(open_rework_chart) + 150), margin=dict(l=20, r=55, t=25, b=35), legend_title_text="")
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            longest_open = open_rework_chart.sort_values("open_days", ascending=False).iloc[0]
+            longest_status = str(longest_open.get("status", "") or "").strip()
+            if not longest_status or longest_status.lower() in {"nan", "none"}:
+                longest_status = t("未记录", "Unrecorded")
+            render_bme_chart_conclusion(
+                f"当前有 {len(open_rework_chart):,} 条返工申请尚未结案；持续时间最长的是型号 {longest_open['item']}，已持续 {longest_open['open_days']:.1f} 天，流程状态为 {longest_status}。应优先确认该申请是否仍在处理，以及源流程状态是否及时更新。",
+                f"There are {len(open_rework_chart):,} rework applications still open. The longest is model {longest_open['item']} at {longest_open['open_days']:.1f} days with status {longest_status}. Prioritize confirming whether it is still in process and whether the source workflow status is current.",
+            )
 
 
 ZX_ALERT_TYPES = {
@@ -14882,63 +14978,34 @@ def _render_bme_data_map(events: pd.DataFrame) -> None:
     stage_labels = {"END_QC": "End of QC", "MACHINE": "Machine", "LAB": "Lab", "REWORK": "Rework"}
     suppliers = sorted(events.get("supplier", pd.Series(dtype=object)).dropna().astype(str).unique())
     connected = set(events.get("stage", pd.Series(dtype=object)).dropna().astype(str))
-    access_rows: list[dict[str, object]] = []
+    community_col = t("Community", "Community")
+    supplier_col = t("Supplier", "Supplier")
+    api_col = "API"
+    display_columns = [community_col, supplier_col] + [stage_labels.get(stage, stage) for stage in expected_stages] + [api_col]
+    status_rows: list[dict[str, str]] = []
+    for supplier in suppliers:
+        supplier_events = events[events.get("supplier", pd.Series("", index=events.index)).astype(str).eq(supplier)]
+        row = {community_col: "BME", supplier_col: supplier}
+        for stage in expected_stages:
+            has_stage = supplier_events.get("stage", pd.Series("", index=supplier_events.index)).eq(stage).any()
+            row[stage_labels.get(stage, stage)] = source_loaded_label(bool(has_stage))
+        row[api_col] = source_loaded_label(False)
+        status_rows.append(row)
+    access_row = {column: "-" for column in display_columns}
+    access_row[community_col] = t("加载格式", "Load Format")
+    access_row[supplier_col] = t("当前方式", "Current")
     for stage in expected_stages:
-        scoped = events[events.get("stage", pd.Series("", index=events.index)).eq(stage)]
-        access_rows.append({
-            t("数据类型", "Data Type"): stage_labels.get(stage, stage),
-            t("接入状态", "Connection Status"): t("已接入", "Connected") if not scoped.empty else t("未接入", "Not Connected"),
-            t("接入方式", "Access Method"): _bme_access_method(scoped),
-            t("供应商覆盖", "Supplier Coverage"): int(scoped.get("supplier", pd.Series(dtype=object)).nunique()) if not scoped.empty else 0,
-            t("记录数", "Records"): len(scoped),
-            t("当前来源", "Current Source"): " / ".join(sorted(scoped.get("source_file", pd.Series(dtype=object)).dropna().astype(str).unique())) if not scoped.empty else "-",
-        })
-    access = pd.DataFrame(access_rows)
-    manual_count = int(access[t("接入方式", "Access Method")].eq(t("手动 Excel", "Manual Excel")).sum())
-    api_count = int(access[t("接入方式", "Access Method")].eq("API").sum())
-    missing_count = len(expected_stages) - len(connected.intersection(expected_stages))
+        label = stage_labels.get(stage, stage)
+        if stage in connected:
+            access_row[label] = t("手动 Excel", "Manual Excel")
+    status_rows.append(access_row)
+    status_matrix = pd.DataFrame(status_rows, columns=display_columns)
 
-    st.markdown(f"### {t('BME 数据来源与覆盖情况', 'BME Data Connection Map')}")
     st.caption(t(
-        "这里显示当前筛选范围内，各供应商有哪些质量数据。现在的数据来自人工更新的 Excel，并不是系统自动同步。",
-        "Data coverage follows the current supplier, quality-gate, and date filters. Local workbooks are Manual Excel, not API synchronization.",
+        "按当前筛选范围显示每家供应商哪些质量环节已接入，以及数据是怎样加载的。BME 当前均为手动 Excel，尚未接入 API。",
+        "Show which quality gates are loaded for each supplier under the current filters and how the data is loaded. BME currently uses manual Excel only and has no API connection.",
     ))
-    render_kpi_cards([
-        {"label": t("已有数据的环节", "Connected Data Types"), "value": f"{len(connected.intersection(expected_stages))}/{len(expected_stages)}", "note": t("按质量环节统计", "By quality gate"), "level": "medium"},
-        {"label": t("Excel 手工更新", "Manual Excel"), "value": f"{manual_count}", "note": t("需要人工更新文件", "Requires file refresh"), "level": "medium"},
-        {"label": "API", "value": f"{api_count}", "note": t("当前尚无 BME API", "No BME API currently"), "level": "high" if api_count == 0 else "low"},
-        {"label": t("暂无数据的环节", "Missing Types"), "value": f"{missing_count}", "note": t("没有数据不代表没有质量风险", "Missing is not no risk"), "level": "high" if missing_count else "low"},
-    ])
-
-    if suppliers:
-        counts = events.groupby(["supplier", "stage"], as_index=False).size().rename(columns={"size": "records"})
-        pivot = counts.pivot(index="supplier", columns="stage", values="records").reindex(index=suppliers, columns=expected_stages)
-        text_values = pivot.map(lambda value: f"{int(value):,}" if pd.notna(value) else "-")
-        source_files = sorted(events.get("source_file", pd.Series(dtype=object)).dropna().astype(str).loc[lambda values: values.ne("")].unique())
-        render_chart_heading(
-            "各供应商现有数据量",
-            "Supplier × Data-Type Coverage Heatmap",
-            "查看每个 BME 供应商目前有哪些质量环节的数据，以及各有多少条。",
-            "See which quality-gate sources are currently available for each BME supplier and whether the volume is sufficient.",
-            "按供应商和质量环节统计记录数；颜色经过调整，避免数据量最大的一个环节让其他数据看不清。",
-            "Aggregate source-record count by supplier and quality gate; logarithmic density prevents one large source from washing out smaller valid sources.",
-            "格子里的数字是真实记录数；“-”表示当前没有数据，不代表没有质量风险。End of QC 不会用 AQL 或 DKL 数据代替。",
-            "Cells show actual record counts. A dash means the source is not connected, not that quality risk is absent. End of QC is not fabricated from AQL or DKL.",
-            " + ".join(source_files) if source_files else "BME Database",
-            "bme_v4_data_map_info",
-        )
-        fig = go.Figure(go.Heatmap(
-            z=np.log1p(pivot.fillna(0).values),
-            x=[stage_labels.get(value, value) for value in pivot.columns],
-            y=pivot.index,
-            text=text_values.values,
-            texttemplate="%{text}",
-            colorscale=[[0, "#f1f4f8"], [0.35, "#b9c4ff"], [1, "#3341c4"]],
-            showscale=False,
-            hovertemplate="Supplier=%{y}<br>Data type=%{x}<br>Records=%{text}<extra></extra>",
-        ))
-        fig.update_layout(height=320, margin=dict(l=40, r=20, t=20, b=30), paper_bgcolor="#ffffff")
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    render_data_gap_matrix(status_matrix, wrapper_class="bme-data-map-matrix")
 
 
 def _render_bme_specific_charts(events: pd.DataFrame) -> None:
