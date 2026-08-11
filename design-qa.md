@@ -56,3 +56,31 @@
 - No visual fix was required after this comparison.
 
 final result: passed
+
+---
+
+# BME KPI trends and compact SPC — Design QA
+
+## Requested changes
+
+- Remove the yellow `172 条记录缺少日期` warning from the expanded data map.
+- Give every BME KPI a visible comparison state, using month-over-month first and year-over-year only when the prior month is unavailable.
+- Keep the selected-period KPI headline unchanged; label the comparison months below it so a monthly trend is not mistaken for the period total.
+- Simplify the SPC section to one heading, one compact process selector, and the chart. Move the explanatory paragraph and calculation method into the top-right `说明` popover.
+
+## Verification state
+
+- Local route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh`.
+- State: Chinese BME page, all three suppliers, all available quality gates, `2025-08-11` to `2026-08-11`.
+- The data-map warning is absent from the rendered DOM.
+- All seven KPI cards have a trend state. Six use monthly source history; `未结案返工` says `暂无历史快照` because the source contains current workflow status rather than historical inventory snapshots.
+- Default-period comparisons render as: FSD PPM `环比下降 68.8%`, FSD NC `环比下降 84.6%`, TEKTRO NC `环比下降 97.4%`, FSD inspection NC rate `环比下降 24.9%`, CMW incoming return PPM `环比下降 100.0%`, and suspected entry errors `环比持平`.
+- The SPC explanation is no longer visible above the selector. The top-right `说明` popover contains the purpose, chart-reading guidance, calculation logic, and source workbook.
+- The selector renders as one white bordered control row with a short `查看过程` label; the selected process title is no longer repeated as a second heading.
+- Browser console errors: `0`.
+- Rendered page contains no Streamlit exception or error state.
+- `PYTHONPYCACHEPREFIX=/tmp/quality-pycache python3 -m py_compile app.py`: passed.
+- `git diff --check`: passed.
+- `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
+
+final result: passed

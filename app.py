@@ -938,6 +938,27 @@ st.markdown(
         grid-template-columns: repeat(4, minmax(0, 1fr));
         margin-top: 22px;
     }
+    .st-key-bme_spc_filter {
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid #d6ddfb;
+        border-radius: 12px;
+        padding: 11px 14px 8px;
+        margin: 2px 0 16px;
+        box-shadow: 0 12px 28px rgba(36, 52, 167, 0.07);
+    }
+    .st-key-bme_spc_filter [data-baseweb="select"] > div {
+        background: #f8faff !important;
+        border-color: #cbd5ff !important;
+        border-radius: 9px !important;
+        min-height: 46px;
+    }
+    .bme-spc-filter-label {
+        color: #475467;
+        font-size: 0.86rem;
+        font-weight: 780;
+        line-height: 46px;
+        white-space: nowrap;
+    }
     .coverage-grid .kpi-card {
         min-height: 0;
         padding: 14px 17px;
@@ -14084,11 +14105,6 @@ def render_bme_bike_quality_dashboard_v3(
     tektro_nc = scoped_nc[scoped_nc["supplier"].eq("TEKTRO")] if not scoped_nc.empty else pd.DataFrame()
     with st.expander(t("数据地图", "Data Map"), expanded=True):
         _render_bme_data_map(view)
-        if undated_records:
-            st.warning(t(
-                f"{undated_records:,} 条记录缺少日期，未计入本期 KPI 和图表。",
-                f"{undated_records:,} undated records are excluded from period KPIs and charts.",
-            ))
 
     for optional_column, default_value in {
         "event_timestamp": pd.NaT,
@@ -14113,23 +14129,154 @@ def render_bme_bike_quality_dashboard_v3(
     open_rework = view[(view["stage"].eq("REWORK")) & ~view["status"].eq("Closed")]
     cmw_iqc = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("IQC"))]
     return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
+
+    # KPI headlines retain the selected-period totals. Trends deliberately use
+    # the latest available month inside that period and compare it with the
+    # preceding calendar month (or the same month last year when necessary).
+    trend_events = events[
+        events["supplier"].isin(selected_suppliers)
+        & events["stage"].isin(selected_stages)
+        & events["date"].notna()
+        & events["date"].dt.date.le(end_date)
+    ].copy()
+
+    def monthly_ratio(frame: pd.DataFrame, numerator: str, denominator: str, multiplier: float = 1.0) -> pd.Series:
+        if frame.empty:
+            return pd.Series(dtype="float64")
+        monthly = frame.assign(month=frame["date"].dt.to_period("M")).groupby("month").agg(
+            numerator=(numerator, "sum"), denominator=(denominator, "sum")
+        )
+        return monthly["numerator"].div(monthly["denominator"].replace(0, np.nan)).mul(multiplier)
+
+    def monthly_sum(frame: pd.DataFrame, value_column: str) -> pd.Series:
+        if frame.empty:
+            return pd.Series(dtype="float64")
+        return frame.assign(month=frame["date"].dt.to_period("M")).groupby("month")[value_column].sum()
+
+    def kpi_trend(
+        series: pd.Series,
+        formatter: Callable[[float], str],
+        *,
+        lower_is_better: bool = True,
+        unavailable_label_cn: str = "暂无可比趋势",
+        unavailable_label_en: str = "No comparable trend",
+        unavailable_note_cn: str = "没有可比较月份",
+        unavailable_note_en: str = "No comparable month",
+    ) -> dict[str, str]:
+        clean = pd.to_numeric(series, errors="coerce").dropna().sort_index()
+        eligible = [
+            period for period in clean.index
+            if period.start_time.date() <= end_date and period.end_time.date() >= start_date
+        ]
+        if not eligible:
+            return {
+                "trend_direction": "flat", "trend_tone": "flat",
+                "trend_label": t(unavailable_label_cn, unavailable_label_en),
+                "trend_note": t(unavailable_note_cn, unavailable_note_en),
+            }
+        current_period = max(eligible)
+        previous_period = current_period - 1
+        comparison_cn, comparison_en = "环比", "vs prior month"
+        if previous_period not in clean.index:
+            previous_period = current_period - 12
+            comparison_cn, comparison_en = "同比", "year over year"
+        if previous_period not in clean.index:
+            return {
+                "trend_direction": "flat", "trend_tone": "flat",
+                "trend_label": t(unavailable_label_cn, unavailable_label_en),
+                "trend_note": t(unavailable_note_cn, unavailable_note_en),
+            }
+        current_value = float(clean.loc[current_period])
+        previous_value = float(clean.loc[previous_period])
+        change = current_value - previous_value
+        if np.isclose(change, 0.0):
+            direction = "flat"
+            tone = "flat"
+            trend_cn = f"{comparison_cn}持平"
+            trend_en = f"Flat {comparison_en}"
+        else:
+            direction = "up" if change > 0 else "down"
+            tone = ("bad" if change > 0 else "good") if lower_is_better else ("good" if change > 0 else "bad")
+            direction_cn = "上升" if change > 0 else "下降"
+            direction_en = "up" if change > 0 else "down"
+            if not np.isclose(previous_value, 0.0):
+                change_pct = abs(change / previous_value)
+                trend_cn = f"{comparison_cn}{direction_cn} {change_pct:.1%}"
+                trend_en = f"{direction_en} {change_pct:.1%} {comparison_en}"
+            else:
+                trend_cn = f"{comparison_cn}{direction_cn}"
+                trend_en = f"{direction_en} {comparison_en}"
+        current_month = current_period.strftime("%Y-%m")
+        previous_month = previous_period.strftime("%Y-%m")
+        return {
+            "trend_direction": direction,
+            "trend_tone": tone,
+            "trend_label": t(trend_cn, trend_en),
+            "trend_note": f"{current_month} {formatter(current_value)} / {previous_month} {formatter(previous_value)}",
+        }
+
+    trend_customer = customer_nc.copy() if not customer_nc.empty else pd.DataFrame()
+    if not trend_customer.empty:
+        trend_customer["date"] = pd.to_datetime(trend_customer["date"], errors="coerce")
+        trend_customer = trend_customer[
+            trend_customer["supplier"].isin(selected_suppliers)
+            & trend_customer["date"].notna()
+            & trend_customer["date"].dt.date.le(end_date)
+        ].copy()
+    fsd_customer = trend_customer[trend_customer["supplier"].eq("FSD")].copy() if not trend_customer.empty else pd.DataFrame()
+    tektro_customer = trend_customer[trend_customer["supplier"].eq("TEKTRO")].copy() if not trend_customer.empty else pd.DataFrame()
+    fsd_nc_monthly = monthly_sum(fsd_customer, "nc_qty")
+    tektro_nc_monthly = monthly_sum(tektro_customer, "nc_qty")
+    fsd_ppm_monthly = pd.Series(dtype="float64")
+    if not fsd_nc_monthly.empty:
+        fsd_ppm_monthly = pd.Series({
+            period: calculate_fsd_customer_ppm(customer_nc, fsd_orders, period.start_time, period.end_time)["ppm"]
+            for period in fsd_nc_monthly.index
+        }, dtype="float64")
+    fsd_attr_trend = trend_events[
+        trend_events["supplier"].eq("FSD")
+        & trend_events["stage"].isin(["AQL", "DKL"])
+        & trend_events["inspected_qty"].gt(0)
+    ]
+    cmw_iqc_trend = trend_events[
+        trend_events["supplier"].eq("CMW") & trend_events["stage"].eq("IQC")
+    ]
+    torque_trend = trend_events[
+        trend_events["supplier"].eq("CMW")
+        & trend_events["stage"].eq("MACHINE")
+        & trend_events["measured_value"].notna()
+    ].copy()
+    if not torque_trend.empty:
+        torque_trend["suspect"] = torque_trend["data_quality_flag"].fillna("").ne("").astype(int)
+
+    fsd_ppm_trend = kpi_trend(fsd_ppm_monthly, lambda value: f"{value:,.0f}")
+    fsd_nc_trend = kpi_trend(fsd_nc_monthly, lambda value: f"{value:,.0f}")
+    tektro_nc_trend = kpi_trend(tektro_nc_monthly, lambda value: f"{value:,.0f}")
+    fsd_rate_trend = kpi_trend(monthly_ratio(fsd_attr_trend, "defect_qty", "inspected_qty"), lambda value: f"{value:.2%}")
+    cmw_return_trend = kpi_trend(monthly_ratio(cmw_iqc_trend, "defect_qty", "inspected_qty", 1_000_000), lambda value: f"{value:,.0f}")
+    torque_suspect_trend = kpi_trend(monthly_sum(torque_trend, "suspect"), lambda value: f"{value:,.0f}")
+    open_rework_trend = {
+        "trend_direction": "flat", "trend_tone": "flat",
+        "trend_label": t("暂无历史快照", "No historical snapshot"),
+        "trend_note": t("当前未结案数量", "Current open count"),
+    }
+
+    def with_trend(card: dict[str, str], trend: dict[str, str]) -> dict[str, str]:
+        return {**card, **{key: trend[key] for key in ("trend_direction", "trend_tone", "trend_label")}, "note": trend["trend_note"]}
+
     render_kpi_cards([
-        {"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "note": t(f"NC 关联 PO {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}", f"PO-linked NC {pct(ppm['coverage']) if pd.notna(ppm['coverage']) else 'N/A'}"), "level": "high"},
-        {"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "note": t(f"订单量 {ppm['ordered_qty']:,.0f}", f"Order qty {ppm['ordered_qty']:,.0f}"), "level": "high"},
-        {"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "note": t("缺订单量，不计算 PPM", "No order qty; PPM unavailable"), "level": "medium"},
-        {"label": t("FSD 检验 NC率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "note": t("AQL / DKL 检验", "AQL / DKL inspection"), "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"},
-        {"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "note": t("退货 / 来料", "Returns / incoming qty"), "level": "medium"},
-        {"label": t("未结案返工", "Open Rework"), "value": f"{len(open_rework):,}", "note": t("流程未结案", "Workflow still open"), "level": "high" if len(open_rework) else "low"},
-        {"label": t("疑似录入错误", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "note": t("不计入控制限", "Excluded from control limits"), "level": "high" if torque_suspects else "low"},
+        with_trend({"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "level": "high"}, fsd_ppm_trend),
+        with_trend({"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "level": "high"}, fsd_nc_trend),
+        with_trend({"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "level": "medium"}, tektro_nc_trend),
+        with_trend({"label": t("FSD 检验 NC率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"}, fsd_rate_trend),
+        with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "level": "medium"}, cmw_return_trend),
+        with_trend({"label": t("未结案返工", "Open Rework"), "value": f"{len(open_rework):,}", "level": "high" if len(open_rework) else "low"}, open_rework_trend),
+        with_trend({"label": t("疑似录入错误", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "level": "high" if torque_suspects else "low"}, torque_suspect_trend),
     ], variant="bme-overall")
     if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联PO的NC占比低于90%，因此暂不显示PPM。", "FSD PO-link coverage is below 90%; PPM is hidden."))
 
-    st.subheader(t("SPC（统计过程控制）", "SPC & Attribute Control"))
-    st.caption(t(
-        "SPC 用连续数据判断生产过程有没有突然异常或持续偏移。红点表示过程可能发生了异常变化，不等于这一件产品一定不合格。",
-        "SPC uses sequential data to detect sudden changes or sustained process shifts. A red point indicates a possible process change, not necessarily a defective product.",
-    ))
+    spc_heading_slot = st.empty()
     method_options: dict[str, tuple[str, pd.DataFrame]] = {}
     for keys, group in cmw_torque.groupby(["model_item_code", "process", "spec_low", "spec_high", "unit"], dropna=False):
         if len(group) >= 5:
@@ -14148,6 +14295,17 @@ def render_bme_bike_quality_dashboard_v3(
         if len(weekly) >= 3:
             method_options[f"FSD · p-chart · {keys[0]} · {keys[1]}"] = ("pchart", weekly)
     if not method_options:
+        with spc_heading_slot.container():
+            render_chart_heading(
+                "SPC（统计过程控制）", "SPC & Attribute Control",
+                "SPC 用连续数据判断生产过程是否稳定，帮助发现突然变化、持续偏移和需要回查的时间点。",
+                "Assess process stability and identify sudden changes, sustained shifts, and points requiring investigation.",
+                "先选择一个过程。控制图中的红点提示异常变化，但不等于产品一定不合格。",
+                "Select a process first. Red points indicate unusual process changes, not necessarily nonconforming products.",
+                "只有满足最小样本要求的同质过程才会进入选择列表。",
+                "Only homogeneous processes meeting the minimum sample requirement appear in the selector.",
+                "BME Database", "bme_v4_spc_info_empty",
+            )
         st.info(t("当前筛选没有满足最小样本要求的 SPC 数据。", "No SPC source meets the minimum sample requirement under current filters."))
     else:
         def spc_risk_key(option: tuple[str, pd.DataFrame]) -> tuple[float, float, float, float]:
@@ -14185,11 +14343,17 @@ def render_bme_bike_quality_dashboard_v3(
             method_options,
             key=lambda label: (*spc_risk_key(method_options[label]), -len(method_options[label][1]), label),
         )
-        selected_method = st.selectbox(
-            t("选择要查看的过程 / 检验范围（高风险优先）", "Select homogeneous process / inspection scope (highest risk first)"),
-            ranked_methods,
-            key="bme_v4_spc",
-        )
+        with st.container(key="bme_spc_filter"):
+            filter_label, filter_control = st.columns([0.13, 0.87], vertical_alignment="center")
+            with filter_label:
+                st.markdown(f'<div class="bme-spc-filter-label">{html.escape(t("查看过程", "Process"))}</div>', unsafe_allow_html=True)
+            with filter_control:
+                selected_method = st.selectbox(
+                    t("选择要查看的过程 / 检验范围（高风险优先）", "Select homogeneous process / inspection scope (highest risk first)"),
+                    ranked_methods,
+                    key="bme_v4_spc",
+                    label_visibility="collapsed",
+                )
         method, data = method_options[selected_method]
         if method == "imr":
             spc_read_cn = "上半图看每次扭力实测值：蓝点是实测值，绿线 CL 是过程平均值，红色 UCL/LCL 是根据历史波动算出的控制限，橙色 USL/LSL 是产品规格上下限。下半图 MR 看相邻两次测量变化有多大。红点表示出现超出控制限、连续偏在中心线一侧或连续上升/下降等异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
@@ -14211,18 +14375,19 @@ def render_bme_bike_quality_dashboard_v3(
             spc_read_en = "The X̄ chart shows whether each five-piece subgroup average is stable, while the R chart shows whether within-subgroup variation suddenly increases. Red points require batch and test-condition investigation. The orange 200 kgf LSL is the product minimum specification and must not be confused with statistical control limits."
             spc_logic_cn = "拔脱力按连续 5 件组成子组，使用 A2=0.577、D3=0、D4=2.114 的 X̄-R 控制图；不完整子组不参与控制限估计。只有稳定时才显示单边 PPL。"
             spc_logic_en = "Pull-out force uses consecutive subgroups of five with X̄-R constants A2=0.577, D3=0, and D4=2.114. Incomplete subgroups are excluded from limit estimation, and one-sided PPL is shown only when stable."
-        render_chart_heading(
-            selected_method,
-            selected_method,
-            "SPC 用连续数据判断生产过程是否稳定，帮助发现突然变化、持续偏移和需要回查的时间点。",
-            "Assess process stability while separating control limits from product specifications.",
-            spc_read_cn,
-            spc_read_en,
-            spc_logic_cn,
-            spc_logic_en,
-            bme_chart_source(data),
-            "bme_v4_spc_info",
-        )
+        with spc_heading_slot.container():
+            render_chart_heading(
+                "SPC（统计过程控制）",
+                "SPC & Attribute Control",
+                "SPC 用连续数据判断生产过程是否稳定，帮助发现突然变化、持续偏移和需要回查的时间点。",
+                "Assess process stability while separating control limits from product specifications.",
+                spc_read_cn,
+                spc_read_en,
+                spc_logic_cn,
+                spc_logic_en,
+                bme_chart_source(data),
+                "bme_v4_spc_info",
+            )
         if method.startswith("imr"):
             chart, limits = build_imr_chart_data(data)
             chart["sequence"] = np.arange(1, len(chart) + 1)
