@@ -15551,7 +15551,7 @@ def _render_quality_reporting_content(
                     inspected = float(latest_eol["qty_inspected"].sum())
                     defects = float(latest_eol["defect_qty"].sum())
                     if inspected > 0:
-                        rft_rows.append({"gate": "End of line", "rft": 1 - defects / inspected})
+                        rft_rows.append({"gate": t("产线末端检验", "End of line"), "rft": 1 - defects / inspected})
                 if not jdy_view.empty:
                     owner_view = jdy_view.copy()
                     if "inspector_owner" not in owner_view.columns:
@@ -15559,7 +15559,7 @@ def _render_quality_reporting_content(
                     owner_view["date"] = pd.to_datetime(owner_view["date"], errors="coerce", utc=True).dt.tz_convert(None)
                     owner_view = owner_view.dropna(subset=["date"])
                     owner_view["month_period"] = owner_view["date"].dt.to_period("M")
-                    for owner, gate in [("Decathlon", t("迪卡侬 FQC", "Decathlon FQC")), ("ZX Factory", t("中兴自检", "ZX Self-Inspection"))]:
+                    for owner, gate in [("Decathlon", t("迪卡侬验货", "Decathlon FQC")), ("ZX Factory", t("中兴工厂自检", "ZX Self-Inspection"))]:
                         owner_rows = owner_view[owner_view["inspector_owner"].eq(owner)]
                         if owner_rows.empty:
                             continue
@@ -15569,10 +15569,10 @@ def _render_quality_reporting_content(
                             rft_rows.append({"gate": gate, "rft": float(owner_metrics["rft"])})
                 stage_summary = pd.DataFrame(rft_rows, columns=["gate", "rft"])
                 render_chart_heading(
-                    "Textile 三个放行环节 RFT", "Textile RFT across Three Release Gates",
-                    "比较迪卡侬 FQC、中兴工厂自检和产线末端的最新月一次通过表现。", "Compare the latest-month first-pass performance across Decathlon FQC, ZX self-inspection, and end of line.",
-                    "柱越高，一次通过表现越好；三个环节分别计算，不能相加。", "Higher bars indicate better first-pass performance; the three gates are calculated separately.",
-                    "FQC 按首次 PASS ÷ 有效首次结果；End of line 沿用 Textile 看板 RFT 口径。", "FQC uses first PASS divided by valid first results; end of line follows the Textile dashboard RFT definition.",
+                    "Textile 各检验环节一次通过率", "Textile First-Pass Rate by Inspection Stage",
+                    "对比产线末端、迪卡侬验货和中兴工厂自检，看看哪个环节的一次通过率最低。", "Compare the latest-month first-pass performance across Decathlon FQC, ZX self-inspection, and end of line.",
+                    "柱子越高越好，重点关注最低的环节。", "Higher bars indicate better first-pass performance; focus on the lowest stage.",
+                    "迪卡侬验货和中兴自检按首次 PASS ÷ 有效首次结果计算；产线末端按 1 - 疵点数 ÷ 检验数计算。", "FQC uses first PASS divided by valid first results; end of line uses 1 minus defects divided by inspected quantity.",
                     community_source_label("ZX"), "quality_reporting_textile_rft_info",
                     compact=True,
                 )
@@ -15585,7 +15585,7 @@ def _render_quality_reporting_content(
                 if not stage_summary.empty:
                     weakest = stage_summary.sort_values("rft").iloc[0]
                     render_bme_chart_conclusion(
-                        f"最新月较低环节是 {weakest['gate']}，一次通过率 {weakest['rft']:.2%}；应进入 Textile 看板查看对应 CC、Model 和主要疵点。",
+                        f"本月一次通过率最低的是{weakest['gate']}，为 {weakest['rft']:.2%}。建议到 Textile 看板查看对应 CC、Model 和主要疵点。",
                         f"The lowest latest-month gate is {weakest['gate']} at {weakest['rft']:.2%}; open the Textile dashboard for the related CCs, models, and defects.",
                     )
         with textile_right:
@@ -15595,10 +15595,10 @@ def _render_quality_reporting_content(
                 monthly = eol.groupby("month", as_index=False).agg(inspected=("qty_inspected", "sum"), defects=("defect_qty", "sum"))
                 monthly["rft"] = 1 - safe_rate(monthly["defects"], monthly["inspected"])
                 render_chart_heading(
-                    "Textile End of line RFT 趋势", "Textile End-of-Line RFT Trend",
+                    "Textile 产线末端一次通过率趋势", "Textile End-of-Line First-Pass Rate Trend",
                     "查看产线末端一次通过率是否持续改善或下降。", "Track whether end-of-line first-pass performance is improving or declining.",
-                    "按月查看 RFT，重点关注连续下降而不是单月小波动。", "Review monthly RFT and focus on sustained decline rather than one small fluctuation.",
-                    "每月 RFT = 1 - 当月疵点数 ÷ 当月检验数。", "Monthly RFT = 1 - monthly defects divided by monthly inspected quantity.",
+                    "按月查看一次通过率，重点关注连续下降，而不是单月的小幅波动。", "Review monthly first-pass rate and focus on sustained decline rather than one small fluctuation.",
+                    "每月一次通过率 = 1 - 当月疵点数 ÷ 当月检验数。", "Monthly first-pass rate = 1 - monthly defects divided by monthly inspected quantity.",
                     community_source_label("ZX"), "quality_reporting_textile_trend_info",
                     compact=True,
                 )
@@ -15611,7 +15611,7 @@ def _render_quality_reporting_content(
                 if not monthly.empty:
                     latest = monthly.sort_values("month").iloc[-1]
                     render_bme_chart_conclusion(
-                        f"最新有数据月份为 {latest['month']:%Y-%m}，End of line RFT 为 {latest['rft']:.2%}。",
+                        f"最新有数据月份为 {latest['month']:%Y-%m}，产线末端一次通过率为 {latest['rft']:.2%}。",
                         f"The latest available month is {latest['month']:%Y-%m}, with end-of-line RFT at {latest['rft']:.2%}.",
                     )
 
