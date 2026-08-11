@@ -935,7 +935,7 @@ st.markdown(
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .kpi-grid.bme-overall {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(5, minmax(0, 1fr));
         margin-top: 22px;
     }
     .st-key-bme_spc_filter {
@@ -8879,7 +8879,10 @@ def render_data_gap_matrix(matrix: pd.DataFrame, wrapper_class: str = "") -> Non
         return
     matrix = localize_display_frame(matrix)
     loaded_labels = {t("已接入", "Loaded"), "已接入", "Loaded"}
-    missing_labels = {t("缺失", "Missing"), "缺失", "Missing"}
+    missing_labels = {
+        t("缺失", "Missing"), "缺失", "Missing",
+        t("未接入", "Not connected"), "未接入", "Not connected",
+    }
     method_labels = {t("手动 Excel", "Manual Excel"), "手动 Excel", "Manual Excel", "API"}
     header = "".join(f"<th>{html.escape(str(col))}</th>" for col in matrix.columns)
     body_rows: list[str] = []
@@ -14127,16 +14130,14 @@ def render_bme_bike_quality_dashboard_v3(
         return " + ".join(sources) if sources else fallback
 
     cmw_torque = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("MACHINE")) & view["measured_value"].notna()]
-    torque_suspects = int(cmw_torque["data_quality_flag"].fillna("").ne("").sum())
     fsd_attr = view[(view["supplier"].eq("FSD")) & view["stage"].isin(["AQL", "DKL"]) & view["inspected_qty"].gt(0)]
     fsd_rate = fsd_attr["defect_qty"].sum() / fsd_attr["inspected_qty"].sum() if not fsd_attr.empty else np.nan
-    open_rework = view[(view["stage"].eq("REWORK")) & ~view["status"].eq("Closed")]
     cmw_iqc = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("IQC"))]
     return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
 
-    # KPI headlines retain the selected-period totals. Trends deliberately use
-    # the latest available month inside that period and compare it with the
-    # preceding calendar month (or the same month last year when necessary).
+    # KPI headlines retain the selected-period totals. Trends use the latest
+    # available month inside that period and compare only with the immediately
+    # preceding calendar month; no year-over-year fallback is shown here.
     trend_events = events[
         events["supplier"].isin(selected_suppliers)
         & events["stage"].isin(selected_stages)
@@ -14179,25 +14180,24 @@ def render_bme_bike_quality_dashboard_v3(
                 "trend_note": t(unavailable_note_cn, unavailable_note_en),
             }
         current_period = max(eligible)
+        current_value = float(clean.loc[current_period])
         previous_period = current_period - 1
-        comparison_cn, comparison_en = "环比", "vs prior month"
-        if previous_period not in clean.index:
-            previous_period = current_period - 12
-            comparison_cn, comparison_en = "同比", "year over year"
         if previous_period not in clean.index:
             return {
                 "trend_direction": "flat", "trend_tone": "flat",
                 "trend_label": t(unavailable_label_cn, unavailable_label_en),
-                "trend_note": t(unavailable_note_cn, unavailable_note_en),
+                "trend_note": t(
+                    f"本月 {formatter(current_value)} / 上月无数据",
+                    f"Current month {formatter(current_value)} / Previous month unavailable",
+                ),
             }
-        current_value = float(clean.loc[current_period])
         previous_value = float(clean.loc[previous_period])
         change = current_value - previous_value
         if np.isclose(change, 0.0):
             direction = "flat"
             tone = "flat"
-            trend_cn = f"{comparison_cn}持平"
-            trend_en = f"Flat {comparison_en}"
+            trend_cn = "环比持平"
+            trend_en = "Flat vs prior month"
         else:
             direction = "up" if change > 0 else "down"
             tone = ("bad" if change > 0 else "good") if lower_is_better else ("good" if change > 0 else "bad")
@@ -14205,18 +14205,19 @@ def render_bme_bike_quality_dashboard_v3(
             direction_en = "up" if change > 0 else "down"
             if not np.isclose(previous_value, 0.0):
                 change_pct = abs(change / previous_value)
-                trend_cn = f"{comparison_cn}{direction_cn} {change_pct:.1%}"
-                trend_en = f"{direction_en} {change_pct:.1%} {comparison_en}"
+                trend_cn = f"环比{direction_cn} {change_pct:.1%}"
+                trend_en = f"{direction_en} {change_pct:.1%} vs prior month"
             else:
-                trend_cn = f"{comparison_cn}{direction_cn}"
-                trend_en = f"{direction_en} {comparison_en}"
-        current_month = current_period.strftime("%Y-%m")
-        previous_month = previous_period.strftime("%Y-%m")
+                trend_cn = f"环比{direction_cn}"
+                trend_en = f"{direction_en} vs prior month"
         return {
             "trend_direction": direction,
             "trend_tone": tone,
             "trend_label": t(trend_cn, trend_en),
-            "trend_note": f"{current_month} {formatter(current_value)} / {previous_month} {formatter(previous_value)}",
+            "trend_note": t(
+                f"本月 {formatter(current_value)} / 上月 {formatter(previous_value)}",
+                f"Current month {formatter(current_value)} / Previous month {formatter(previous_value)}",
+            ),
         }
 
     trend_customer = customer_nc.copy() if not customer_nc.empty else pd.DataFrame()
@@ -14245,25 +14246,11 @@ def render_bme_bike_quality_dashboard_v3(
     cmw_iqc_trend = trend_events[
         trend_events["supplier"].eq("CMW") & trend_events["stage"].eq("IQC")
     ]
-    torque_trend = trend_events[
-        trend_events["supplier"].eq("CMW")
-        & trend_events["stage"].eq("MACHINE")
-        & trend_events["measured_value"].notna()
-    ].copy()
-    if not torque_trend.empty:
-        torque_trend["suspect"] = torque_trend["data_quality_flag"].fillna("").ne("").astype(int)
-
     fsd_ppm_trend = kpi_trend(fsd_ppm_monthly, lambda value: f"{value:,.0f}")
     fsd_nc_trend = kpi_trend(fsd_nc_monthly, lambda value: f"{value:,.0f}")
     tektro_nc_trend = kpi_trend(tektro_nc_monthly, lambda value: f"{value:,.0f}")
     fsd_rate_trend = kpi_trend(monthly_ratio(fsd_attr_trend, "defect_qty", "inspected_qty"), lambda value: f"{value:.2%}")
     cmw_return_trend = kpi_trend(monthly_ratio(cmw_iqc_trend, "defect_qty", "inspected_qty", 1_000_000), lambda value: f"{value:,.0f}")
-    torque_suspect_trend = kpi_trend(monthly_sum(torque_trend, "suspect"), lambda value: f"{value:,.0f}")
-    open_rework_trend = {
-        "trend_direction": "flat", "trend_tone": "flat",
-        "trend_label": t("暂无历史快照", "No historical snapshot"),
-        "trend_note": t("当前未结案数量", "Current open count"),
-    }
 
     def with_trend(card: dict[str, str], trend: dict[str, str]) -> dict[str, str]:
         return {**card, **{key: trend[key] for key in ("trend_direction", "trend_tone", "trend_label")}, "note": trend["trend_note"]}
@@ -14274,8 +14261,6 @@ def render_bme_bike_quality_dashboard_v3(
         with_trend({"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "level": "medium"}, tektro_nc_trend),
         with_trend({"label": t("FSD 检验 NC率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"}, fsd_rate_trend),
         with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "level": "medium"}, cmw_return_trend),
-        with_trend({"label": t("未结案返工", "Open Rework"), "value": f"{len(open_rework):,}", "level": "high" if len(open_rework) else "low"}, open_rework_trend),
-        with_trend({"label": t("疑似录入错误", "Parameter Data Suspects"), "value": f"{torque_suspects:,}", "level": "high" if torque_suspects else "low"}, torque_suspect_trend),
     ], variant="bme-overall")
     if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联PO的NC占比低于90%，因此暂不显示PPM。", "FSD PO-link coverage is below 90%; PPM is hidden."))
@@ -15136,7 +15121,7 @@ def _bme_access_method(source: pd.Series) -> str:
             return t("手动 Excel", "Manual Excel")
     source_files = source.get("source_file", pd.Series(dtype=object)).dropna().astype(str)
     if source_files.empty:
-        return "-"
+        return t("未接入", "Not connected")
     if source_files.str.contains(r"api|https?://", case=False, regex=True).any():
         return "API"
     return t("手动 Excel", "Manual Excel")
@@ -15160,7 +15145,7 @@ def _render_bme_data_map(events: pd.DataFrame) -> None:
             row[stage_labels.get(stage, stage)] = source_loaded_label(bool(has_stage))
         row[api_col] = source_loaded_label(False)
         status_rows.append(row)
-    access_row = {column: "-" for column in display_columns}
+    access_row = {column: t("未接入", "Not connected") for column in display_columns}
     access_row[community_col] = t("加载格式", "Load Format")
     access_row[supplier_col] = t("当前方式", "Current")
     for stage in expected_stages:
@@ -15234,38 +15219,40 @@ def _quality_reporting_trend(
             "note": t("没有可比较月份", "No comparable month"),
         }
     current_period = max(eligible)
+    current_value = float(clean.loc[current_period])
     previous_period = current_period - 1
-    comparison_cn, comparison_en = "环比", "vs prior month"
-    if previous_period not in clean.index:
-        previous_period = current_period - 12
-        comparison_cn, comparison_en = "同比", "year over year"
     if previous_period not in clean.index:
         return {
             "trend_direction": "flat", "trend_tone": "flat",
             "trend_label": t("暂无可比趋势", "No comparable trend"),
-            "note": t("没有可比较月份", "No comparable month"),
+            "note": t(
+                f"本月 {formatter(current_value)} / 上月无数据",
+                f"Current month {formatter(current_value)} / Previous month unavailable",
+            ),
         }
-    current_value = float(clean.loc[current_period])
     previous_value = float(clean.loc[previous_period])
     change = current_value - previous_value
     if np.isclose(change, 0.0):
         direction, tone = "flat", "flat"
-        label_cn, label_en = f"{comparison_cn}持平", f"Flat {comparison_en}"
+        label_cn, label_en = "环比持平", "Flat vs prior month"
     else:
         direction = "up" if change > 0 else "down"
         tone = ("bad" if change > 0 else "good") if lower_is_better else ("good" if change > 0 else "bad")
         direction_cn, direction_en = ("上升", "up") if change > 0 else ("下降", "down")
         if np.isclose(previous_value, 0.0):
-            label_cn, label_en = f"{comparison_cn}{direction_cn}", f"{direction_en} {comparison_en}"
+            label_cn, label_en = f"环比{direction_cn}", f"{direction_en} vs prior month"
         else:
             change_pct = abs(change / previous_value)
-            label_cn = f"{comparison_cn}{direction_cn} {change_pct:.1%}"
-            label_en = f"{direction_en} {change_pct:.1%} {comparison_en}"
+            label_cn = f"环比{direction_cn} {change_pct:.1%}"
+            label_en = f"{direction_en} {change_pct:.1%} vs prior month"
     return {
         "trend_direction": direction,
         "trend_tone": tone,
         "trend_label": t(label_cn, label_en),
-        "note": f"{current_period.strftime('%Y-%m')} {formatter(current_value)} / {previous_period.strftime('%Y-%m')} {formatter(previous_value)}",
+        "note": t(
+            f"本月 {formatter(current_value)} / 上月 {formatter(previous_value)}",
+            f"Current month {formatter(current_value)} / Previous month {formatter(previous_value)}",
+        ),
     }
 
 
@@ -15339,19 +15326,12 @@ def _build_bme_reporting_cards(
     cmw_iqc = view[view["supplier"].eq("CMW") & view["stage"].eq("IQC")]
     cmw_iqc_history = history[history["supplier"].eq("CMW") & history["stage"].eq("IQC")]
     return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
-    open_rework = view[view["stage"].eq("REWORK") & ~view["status"].eq("Closed")]
-
     trends = {
         "fsd_ppm": _quality_reporting_trend(fsd_ppm_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
         "fsd_nc": _quality_reporting_trend(fsd_nc_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
         "tektro_nc": _quality_reporting_trend(tektro_nc_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
         "fsd_rate": _quality_reporting_trend(monthly_ratio(fsd_attr_history), start_date, end_date, lambda value: f"{value:.2%}"),
         "cmw_ppm": _quality_reporting_trend(monthly_ratio(cmw_iqc_history, 1_000_000), start_date, end_date, lambda value: f"{value:,.0f}"),
-        "rework": {
-            "trend_direction": "flat", "trend_tone": "flat",
-            "trend_label": t("暂无历史快照", "No historical snapshot"),
-            "note": t("当前未结案数量", "Current open count"),
-        },
     }
 
     def card(label_cn: str, label_en: str, value: str, trend_key: str, level: str) -> dict[str, str]:
@@ -15372,10 +15352,7 @@ def _build_bme_reporting_cards(
     if "TEKTRO" in suppliers:
         cards.append(card("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty", f"{tektro_nc_qty:,.0f}", "tektro_nc", "medium"))
     if "CMW" in suppliers:
-        cards.extend([
-            card("CMW 来料退货 PPM", "CMW Incoming Return PPM", f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "cmw_ppm", "medium"),
-            card("未结案返工", "Open Rework", f"{len(open_rework):,}", "rework", "high" if len(open_rework) else "low"),
-        ])
+        cards.append(card("CMW 来料退货 PPM", "CMW Incoming Return PPM", f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "cmw_ppm", "medium"))
     return cards
 
 
