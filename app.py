@@ -15003,6 +15003,11 @@ def render_bme_bike_quality_dashboard_v3(
         )
 
     st.subheader(t("补充分析：来料与返工", "Supplementary Analysis: Incoming and Rework"))
+    supplementary_panels: list[dict[str, object]] = []
+    supplementary_sources: list[pd.DataFrame] = []
+    supplementary_conclusion_cn: list[str] = []
+    supplementary_conclusion_en: list[str] = []
+
     if not cmw_iqc.empty:
         incoming = cmw_iqc.groupby("material_supplier", as_index=False).agg(
             receipts=("source_row", "count"),
@@ -15014,11 +15019,8 @@ def render_bme_bike_quality_dashboard_v3(
             incoming["material_supplier"].ne("Unrecorded")
             & incoming["incoming_qty"].gt(0)
             & incoming["return_qty"].gt(0)
-        ].copy()
-        incoming_chart = incoming_chart.sort_values(["return_ppm", "return_qty"], ascending=False).head(20)
+        ].sort_values(["return_ppm", "return_qty"], ascending=False).head(20).sort_values("return_ppm").copy()
         if not incoming_chart.empty:
-            incoming_chart = incoming_chart.sort_values("return_ppm")
-            incoming_chart["ppm_label"] = incoming_chart["return_ppm"].map(lambda value: f"{value:,.0f}")
             zero_return_suppliers = incoming[
                 incoming["material_supplier"].ne("Unrecorded")
                 & incoming["incoming_qty"].gt(0)
@@ -15027,56 +15029,13 @@ def render_bme_bike_quality_dashboard_v3(
             overall_incoming_qty = float(incoming["incoming_qty"].sum())
             overall_return_qty = float(incoming["return_qty"].sum())
             overall_return_ppm = overall_return_qty / overall_incoming_qty * 1_000_000 if overall_incoming_qty > 0 else np.nan
-            render_chart_heading(
-                "CMW 来料供应商退货 PPM",
-                "CMW Incoming-Supplier Return PPM",
-                "比较各来料供应商的退货情况，优先找出需要改善的供应商。",
-                "Directly compare incoming suppliers with recorded return quantities.",
-                "用退货数量÷来料数量×1,000,000 计算 PPM，并按 PPM 排序。",
-                "Calculate PPM as return quantity divided by incoming quantity times 1,000,000 and rank by PPM.",
-                "仅显示供应商名称、来料数量和退货数量都可用的记录；Unrecorded 不参与比较。来料量和退货量保留在悬停信息中。",
-                "Show only records with usable supplier, incoming quantity, and return quantity. Unrecorded is excluded; incoming and return volumes remain available on hover.",
-                bme_chart_source(cmw_iqc),
-                "bme_v4_incoming_supplier_info",
-            )
-            fig = px.bar(
-                incoming_chart,
-                x="return_ppm",
-                y="material_supplier",
-                orientation="h",
-                text="ppm_label",
-                hover_data={"receipts": True, "incoming_qty": ":,.0f", "return_qty": ":,.0f", "return_ppm": ":,.0f", "ppm_label": False},
-                labels={
-                    "return_ppm": t("退货 PPM", "Return PPM"),
-                    "material_supplier": t("来料供应商", "Incoming Supplier"),
-                    "receipts": t("检验记录数", "Inspection Records"),
-                    "incoming_qty": t("来料数量", "Incoming Quantity"),
-                    "return_qty": t("退货数量", "Return Quantity"),
-                },
-            )
-            fig.update_traces(marker_color="#3341c4", textposition="inside", insidetextanchor="end", textfont_color="white")
-            if pd.notna(overall_return_ppm):
-                fig.add_vline(
-                    x=overall_return_ppm,
-                    line_color="#168a5b",
-                    line_dash="dash",
-                    annotation_text=t(f"工厂总体 {overall_return_ppm:,.0f}", f"Factory overall {overall_return_ppm:,.0f}"),
-                )
-            fig.update_layout(height=max(420, 34 * len(incoming_chart) + 150), margin=dict(l=20, r=35, t=25, b=35), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            supplementary_panels.append({"kind": "incoming", "title": t("来料供应商退货 PPM", "Incoming-Supplier Return PPM"), "data": incoming_chart, "overall": overall_return_ppm})
+            supplementary_sources.append(cmw_iqc)
             highest = incoming_chart.sort_values("return_ppm", ascending=False).iloc[0]
-            zero_supplier_text_cn = (
-                f"另有 {len(zero_return_suppliers):,} 家供应商本期没有退货，来料 {zero_return_suppliers['incoming_qty'].sum():,.0f}，因此工厂总体为 {overall_return_ppm:,.0f} PPM。"
-                if pd.notna(overall_return_ppm) and not zero_return_suppliers.empty else ""
-            )
-            zero_supplier_text_en = (
-                f" Another {len(zero_return_suppliers):,} suppliers had no returns across {zero_return_suppliers['incoming_qty'].sum():,.0f} incoming units, so the factory overall is {overall_return_ppm:,.0f} PPM."
-                if pd.notna(overall_return_ppm) and not zero_return_suppliers.empty else ""
-            )
-            render_bme_chart_conclusion(
-                f"本期退货 PPM 最高的是 {highest['material_supplier']}：{highest['return_ppm']:,.0f}（退货 {highest['return_qty']:,.0f} / 来料 {highest['incoming_qty']:,.0f}）。{zero_supplier_text_cn}",
-                f"The highest return PPM is {highest['material_supplier']} at {highest['return_ppm']:,.0f} ({highest['return_qty']:,.0f} returned / {highest['incoming_qty']:,.0f} incoming).{zero_supplier_text_en}",
-            )
+            zero_note_cn = f"；另有 {len(zero_return_suppliers):,} 家供应商没有退货" if not zero_return_suppliers.empty else ""
+            zero_note_en = f"; another {len(zero_return_suppliers):,} suppliers had no returns" if not zero_return_suppliers.empty else ""
+            supplementary_conclusion_cn.append(f"退货 PPM 最高：{highest['material_supplier']} {highest['return_ppm']:,.0f}{zero_note_cn}")
+            supplementary_conclusion_en.append(f"highest return PPM: {highest['material_supplier']} {highest['return_ppm']:,.0f}{zero_note_en}")
 
     rework = view[view["stage"].eq("REWORK")].copy()
     if not rework.empty:
@@ -15085,64 +15044,96 @@ def render_bme_bike_quality_dashboard_v3(
             rework_count=("source_row", "size"),
             first_date=("date", "min"),
             latest_date=("date", "max"),
-        ).sort_values(["rework_count", "latest_date"], ascending=False).head(12)
-        component_frequency = component_frequency.sort_values("rework_count")
-        render_chart_heading(
-            "CMW 零部件返工次数", "CMW Rework Count by Component",
-            "查看哪些零部件在本期重复进入返工。", "Show which components repeatedly entered rework in the selected period.",
-            "横轴是返工申请次数，纵轴是零部件；悬停可查看首次和最近申请日期。", "The x-axis is rework-application count and the y-axis is component; hover shows the first and latest application dates.",
-            "按返工申请记录数统计，不使用未结案持续天数，也不解释为实际返工工时。当前样本较少时，只用于定位重复对象，不解释为长期趋势。", "Counts use rework-application records, not open aging or labor hours. With a small sample, this identifies repeated components rather than a long-term trend.",
-            bme_chart_source(rework), "bme_v6_rework_frequency_info",
-        )
-        frequency_fig = px.bar(
-            component_frequency,
-            x="rework_count",
-            y="component",
-            orientation="h",
-            text="rework_count",
-            hover_data={"first_date": "|%Y-%m-%d", "latest_date": "|%Y-%m-%d"},
-            labels={
-                "rework_count": t("返工次数", "Rework Count"),
-                "component": t("零部件", "Component"),
-                "first_date": t("首次申请", "First Application"),
-                "latest_date": t("最近申请", "Latest Application"),
-            },
-        )
-        frequency_fig.update_traces(marker_color="#3341c4", textposition="outside", cliponaxis=False)
-        frequency_fig.update_xaxes(rangemode="tozero", dtick=1)
-        frequency_fig.update_layout(height=max(410, 34 * len(component_frequency) + 130), margin=dict(l=20, r=45, t=25, b=40), showlegend=False)
-        st.plotly_chart(frequency_fig, use_container_width=True, config={"displayModeBar": False})
-        top_component = component_frequency.sort_values("rework_count", ascending=False).iloc[0]
-        top_component_name = str(top_component["component"])
-        top_component_count = int(top_component["rework_count"])
-        sample_note_cn = "当前单个零部件最高仅 3 次，样本较少，不能判断为稳定趋势。" if top_component_count <= 3 else ""
-        sample_note_en = "The highest component count is only three, so the sample is too small to infer a stable trend." if top_component_count <= 3 else ""
-        render_bme_chart_conclusion(
-            f"本期返工次数最多的是 {top_component_name}，共 {top_component_count:,} 次。{sample_note_cn}",
-            f"{top_component_name} has the most rework applications this period at {top_component_count:,}. {sample_note_en}",
-        )
+        ).sort_values(["rework_count", "latest_date"], ascending=False).head(12).sort_values("rework_count")
+        if not component_frequency.empty:
+            supplementary_panels.append({"kind": "component", "title": t("零部件返工次数", "Rework Count by Component"), "data": component_frequency})
+            supplementary_sources.append(rework)
+            top_component = component_frequency.sort_values("rework_count", ascending=False).iloc[0]
+            supplementary_conclusion_cn.append(f"返工最多的零部件：{top_component['component']} {int(top_component['rework_count']):,} 次")
+            supplementary_conclusion_en.append(f"most reworked component: {top_component['component']} ({int(top_component['rework_count']):,})")
 
         rework_comments = rework["issue_driver"].fillna("").astype(str).str.strip()
         rework_comments = rework_comments[rework_comments.ne("") & ~rework_comments.str.fullmatch(r"返工|Rework|Not recorded|未记录", case=False, na=False)]
         top_comments = rework_comments.value_counts().head(5).sort_values().rename_axis("comment").reset_index(name="rework_count")
         if not top_comments.empty:
             top_comments["comment_label"] = top_comments["comment"].map(lambda value: value if len(value) <= 46 else value[:45] + "…")
-            render_chart_heading(
-                "CMW 返工原因前 5 名", "CMW Top 5 Rework Reasons",
-                "找出返工申请中重复出现最多的五个原因。", "Identify the five most frequently repeated rework reasons.",
-                "柱长表示包含该原因的返工申请次数。", "Bar length shows the number of rework applications carrying that reason.",
-                "原因来自源文件的不合格内容 / 返工作业原因字段，不做自动归类。", "Reasons come directly from the source nonconformity / rework-reason field without automatic classification.",
-                bme_chart_source(rework), "bme_v6_rework_comments_info",
-            )
-            comments_fig = px.bar(top_comments, x="rework_count", y="comment_label", orientation="h", text="rework_count", hover_data={"comment": True, "comment_label": False}, labels={"rework_count": t("返工次数", "Rework Count"), "comment_label": t("返工原因", "Rework Reason"), "comment": t("完整原因", "Full Reason")})
-            comments_fig.update_traces(marker_color="#3341c4", textposition="outside", cliponaxis=False)
-            comments_fig.update_layout(height=360, margin=dict(l=160, r=45, t=25, b=35), showlegend=False)
-            st.plotly_chart(comments_fig, use_container_width=True, config={"displayModeBar": False})
+            supplementary_panels.append({"kind": "reason", "title": t("返工原因前 5 名", "Top 5 Rework Reasons"), "data": top_comments})
             top_reason = top_comments.sort_values("rework_count", ascending=False).iloc[0]
-            render_bme_chart_conclusion(
-                f"本期出现最多的返工原因是“{top_reason['comment']}”，共 {int(top_reason['rework_count']):,} 次。当前原因样本较少，只用于回查，不判断为长期主要原因。",
-                f"The most frequent rework reason is “{top_reason['comment']}” with {int(top_reason['rework_count']):,} applications. The reason sample is small, so use it for follow-up rather than as a long-term conclusion.",
-            )
+            supplementary_conclusion_cn.append(f"最常见返工原因：“{top_reason['comment']}” {int(top_reason['rework_count']):,} 次")
+            supplementary_conclusion_en.append(f"most common reason: “{top_reason['comment']}” ({int(top_reason['rework_count']):,})")
+
+    if supplementary_panels:
+        combined_source = pd.concat(supplementary_sources, ignore_index=True).drop_duplicates(subset=["source_file", "source_sheet", "source_row"])
+        render_chart_heading(
+            "CMW 来料退货与返工重点",
+            "CMW Incoming Returns and Rework Focus",
+            "在一个组合图中查看来料供应商退货、返工零部件和返工原因。",
+            "Review incoming-supplier returns, reworked components, and rework reasons in one figure.",
+            "三个分区使用各自单位，不相加：来料用 PPM，返工用申请次数。",
+            "The three panels keep separate units and are not added together: incoming uses PPM and rework uses application count.",
+            "来料 PPM=退货数量÷来料数量×1,000,000；返工按申请记录数统计，不解释为返工工时或长期趋势；返工原因保留源文件原文，不自动归类。",
+            "Incoming PPM equals return quantity divided by incoming quantity times 1,000,000. Rework uses application records rather than labor hours or a long-term trend, and source reason text is not automatically classified.",
+            bme_chart_source(combined_source),
+            "bme_v9_incoming_rework_info",
+        )
+        supplementary_fig = make_subplots(
+            rows=len(supplementary_panels),
+            cols=1,
+            subplot_titles=[str(panel["title"]) for panel in supplementary_panels],
+            vertical_spacing=min(0.09, 0.18 / max(len(supplementary_panels) - 1, 1)),
+        )
+        supplementary_height = 80
+        for row_index, panel in enumerate(supplementary_panels, start=1):
+            panel_kind = str(panel["kind"])
+            panel_data = panel["data"]
+            if panel_kind == "incoming":
+                supplementary_fig.add_trace(go.Bar(
+                    x=panel_data["return_ppm"], y=panel_data["material_supplier"], orientation="h",
+                    text=panel_data["return_ppm"], texttemplate="%{text:,.0f}", textposition="inside",
+                    marker_color="#3341c4",
+                    customdata=np.column_stack([panel_data["receipts"], panel_data["incoming_qty"], panel_data["return_qty"]]),
+                    hovertemplate=(f"{t('检验记录数', 'Inspection Records')}  %{{customdata[0]:,.0f}}<br>"
+                                   f"{t('来料数量', 'Incoming Quantity')}  %{{customdata[1]:,.0f}}<br>"
+                                   f"{t('退货数量', 'Return Quantity')}  %{{customdata[2]:,.0f}}<br>"
+                                   f"{t('退货 PPM', 'Return PPM')}  %{{x:,.0f}}<extra></extra>"),
+                    showlegend=False,
+                ), row=row_index, col=1)
+                overall_ppm = panel.get("overall")
+                if pd.notna(overall_ppm):
+                    supplementary_fig.add_vline(x=float(overall_ppm), line_color="#168a5b", line_dash="dash", annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"), row=row_index, col=1)
+                supplementary_fig.update_xaxes(title_text=t("退货 PPM", "Return PPM"), rangemode="tozero", row=row_index, col=1)
+                supplementary_fig.update_yaxes(title_text=t("来料供应商", "Incoming Supplier"), row=row_index, col=1)
+                supplementary_height += max(420, 32 * len(panel_data) + 130)
+            elif panel_kind == "component":
+                supplementary_fig.add_trace(go.Bar(
+                    x=panel_data["rework_count"], y=panel_data["component"], orientation="h",
+                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#3341c4",
+                    customdata=np.column_stack([panel_data["first_date"].astype(str), panel_data["latest_date"].astype(str)]),
+                    hovertemplate=(f"{t('首次申请', 'First Application')}  %{{customdata[0]}}<br>"
+                                   f"{t('最近申请', 'Latest Application')}  %{{customdata[1]}}<br>"
+                                   f"{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>"),
+                    showlegend=False,
+                ), row=row_index, col=1)
+                supplementary_fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1, row=row_index, col=1)
+                supplementary_fig.update_yaxes(title_text=t("零部件", "Component"), row=row_index, col=1)
+                supplementary_height += max(390, 32 * len(panel_data) + 120)
+            else:
+                supplementary_fig.add_trace(go.Bar(
+                    x=panel_data["rework_count"], y=panel_data["comment_label"], orientation="h",
+                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#d99a00",
+                    customdata=np.column_stack([panel_data["comment"]]),
+                    hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>",
+                    showlegend=False,
+                ), row=row_index, col=1)
+                supplementary_fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1, row=row_index, col=1)
+                supplementary_fig.update_yaxes(title_text=t("返工原因", "Rework Reason"), row=row_index, col=1)
+                supplementary_height += max(330, 42 * len(panel_data) + 110)
+        supplementary_fig.update_layout(height=supplementary_height, margin=dict(l=210, r=80, t=45, b=40), showlegend=False)
+        st.plotly_chart(supplementary_fig, use_container_width=True, config={"displayModeBar": False})
+        render_bme_chart_conclusion(
+            f"本期重点：{'；'.join(supplementary_conclusion_cn)}。返工样本较少，只用于定位和回查。",
+            f"This period's focus: {'; '.join(supplementary_conclusion_en)}. The rework sample is small and is used only for targeting and follow-up.",
+        )
 
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),
