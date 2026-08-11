@@ -5,6 +5,7 @@
 - Conclusion-card reference: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-5308f154-2c68-4071-9f4a-92fc7a0d02fd.png` (`2178 × 1452`).
 - ZX data-map reference: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-5c0d7b2e-c359-4317-93de-824e3e656c15.png` (`2272 × 1192`).
 - Local implementation route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh`.
+- Verified production route: `https://quality-decathlon-nea.streamlit.app/?scope=BME_CMW&lang=zh&v=4047027`.
 - Browser viewport and implementation captures: `1280 × 720`, device density unchanged from the in-app browser.
 - Same-input comparison: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/15-reference-implementation-comparison.png`.
 - Implementation evidence:
@@ -15,6 +16,7 @@
   - Rework lead-time conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/12-local-rework-lead-conclusion.png`.
   - Rework volume conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/13-local-rework-volume-conclusion.png`.
   - Open-rework conclusion: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/14-local-open-rework-conclusion.png`.
+  - Production data map: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-conclusion-audit/16-production-data-map.png`.
 - State: BME Chinese page, default suppliers and quality gates, `2025-08-11` to `2026-08-11`.
 
 ## Full-view and focused comparison
@@ -52,6 +54,7 @@ The SPC selector's I-MR, stability-only I-MR, p-chart, and X-bar/R branches each
 - The table retains semantic table/row/header structure; status meaning is communicated by text as well as color.
 - Conclusion cards use semantic text and sufficient contrast; visual inspection does not establish full keyboard or screen-reader compliance.
 - Browser console errors: none.
+- Production DOM contains the ZX-style load matrix and seven `本期结论` sections; the deployed page has no Streamlit error state or console error.
 - `PYTHONPYCACHEPREFIX=/tmp/quality-pycache PYTHONPATH=.vendor python3 -m py_compile app.py`: passed.
 - `git diff --check`: passed.
 - `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
