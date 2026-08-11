@@ -14292,11 +14292,6 @@ def render_bme_bike_quality_dashboard_v3(
         "bme_v6_kpi_info",
     )
     kpi_cards: list[dict[str, str]] = []
-    if "CMW" in selected_suppliers:
-        kpi_cards.extend([
-            with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
-            with_trend({"label": t("CMW 验货问题率", "CMW Final Inspection Issue Rate"), "value": pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "—", "level": "medium"}, cmw_fqc_rate_trend),
-        ])
     if "FSD" in selected_suppliers:
         kpi_cards.extend([
             with_trend({"label": t("FSD 客诉 PPM", "FSD Complaint PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) else "—", "level": "medium"}, fsd_ppm_trend),
@@ -14308,6 +14303,11 @@ def render_bme_bike_quality_dashboard_v3(
             {"label": t("TEKTRO 客诉 PPM", "TEKTRO Complaint PPM"), "value": "—", "note": t(f"客诉 NC {tektro_customer_nc:,.0f}；缺少订单量，暂不能计算 PPM", f"Complaint NC {tektro_customer_nc:,.0f}; order quantity is unavailable"), "level": "medium"},
             {"label": t("TEKTRO 过程检验 NC 率", "TEKTRO Process Inspection NC Rate"), "value": "—", "note": t("缺少规格和合格判定，暂不能计算 NC 率", "Specifications and pass/fail decisions are unavailable"), "level": "medium"},
         ])
+    if "CMW" in selected_suppliers:
+        kpi_cards.extend([
+            with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
+            with_trend({"label": t("CMW 验货问题率", "CMW Final Inspection Issue Rate"), "value": pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "—", "level": "medium"}, cmw_fqc_rate_trend),
+        ])
     render_kpi_cards(kpi_cards, variant="bme-overall")
     if "FSD" in selected_suppliers and pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
@@ -14316,11 +14316,16 @@ def render_bme_bike_quality_dashboard_v3(
     selected_product_key = ""
     selected_product_label = ""
     selected_product_supplier = ""
-    product_master = build_bme_product_master(view)
-    product_master = product_master[
+    all_product_master = build_bme_product_master(view)
+    all_product_master["defect_qty"] = pd.to_numeric(all_product_master.get("defect_qty"), errors="coerce").fillna(0)
+    all_product_issues = all_product_master[
+        all_product_master.get("is_alert", pd.Series(False, index=all_product_master.index)).fillna(False)
+        & all_product_master["defect_qty"].gt(0)
+    ].copy()
+    product_master = all_product_master[
         ~(
-            product_master["supplier"].eq("CMW")
-            & product_master["product_link_method"].isin(
+            all_product_master["supplier"].eq("CMW")
+            & all_product_master["product_link_method"].isin(
                 [
                     "CMW component code; no BOM link to bike model",
                     "CMW PQC model; no exact whole-bike item-code link",
@@ -14328,7 +14333,6 @@ def render_bme_bike_quality_dashboard_v3(
             )
         )
     ].copy()
-    product_master["defect_qty"] = pd.to_numeric(product_master.get("defect_qty"), errors="coerce").fillna(0)
     product_issues = product_master[
         product_master.get("is_alert", pd.Series(False, index=product_master.index)).fillna(False)
         & product_master["defect_qty"].gt(0)
@@ -14347,88 +14351,109 @@ def render_bme_bike_quality_dashboard_v3(
             issue_records=("issue_records", "sum"),
         ).sort_values(["affected_gates", "defect_qty", "issue_records"], ascending=False)
         product_summary["supplier"] = product_summary["product_key"].str.split("|", n=1).str[0]
+        chart_product_gate = all_product_issues.groupby(
+            ["supplier", "product_key", "product_label", "product_group", "quality_gate"], as_index=False
+        ).agg(defect_qty=("defect_qty", "sum"), issue_records=("source_row", "size"))
         gate_meta = {
             "IQC": (
-                "IQC 来料问题最多的产品",
-                "Products with the Most IQC Incoming Issues",
+                "IQC 来料问题",
+                "IQC Incoming Issues",
                 "看哪些产品在来料检验阶段出现的问题最多。",
                 "Identify products with the most incoming-inspection issues.",
                 "#6aa8ff",
             ),
             "PQC": (
-                "PQC 制程问题最多的产品",
-                "Products with the Most PQC Process Issues",
+                "PQC 制程问题",
+                "PQC Process Issues",
                 "看哪些产品在生产过程检验阶段出现的问题最多。",
                 "Identify products with the most in-process inspection issues.",
                 "#3341c4",
             ),
             "FQC": (
-                "FQC 成品检验问题最多的产品",
-                "Products with the Most FQC Final-Inspection Issues",
+                "FQC 成品检验问题",
+                "FQC Final-Inspection Issues",
                 "看哪些产品款式在成品检验阶段出现的问题最多；CMW 按整车料号统计。",
                 "Identify product styles with the most final-inspection issues; CMW uses the whole-bike item code.",
                 "#d99a00",
             ),
         }
         gate_top_frames: list[pd.DataFrame] = []
-        for gate_name in ["IQC", "PQC", "FQC"]:
-            chart_title_cn, chart_title_en, chart_intro_cn, chart_intro_en, chart_color = gate_meta[gate_name]
-            gate_rows = product_gate[product_gate["quality_gate"].eq(gate_name)].copy()
-            render_chart_heading(
-                chart_title_cn,
-                chart_title_en,
-                chart_intro_cn,
-                chart_intro_en,
-                "柱长是不良数量，产品在该环节内单独排序，不与其他检验环节相加。",
-                "Bar length is defect quantity. Products are ranked within this gate and are not added to other gates.",
-                "CMW 款式只使用 FQC 源表的整车料号。CMW PQC 只有车型名称、IQC 只有零部件料号，无法一对一对应整车料号，因此不分摊到具体款式。FSD 使用车系 / 型号别名，TEKTRO 保留源型号；AQL 与 DKL 统一归为 FQC。",
-                "CMW styles use only the whole-bike item code from the FQC source. CMW PQC model names and IQC component codes are not assigned to a bike style without a one-to-one link. FSD uses family/model aliases, TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
-                bme_chart_source(product_issues[product_issues["quality_gate"].eq(gate_name)]),
-                f"bme_v7_product_{gate_name.lower()}_info",
-            )
-            if gate_rows.empty:
-                st.info(t(f"本期没有可用于 {gate_name} 产品分析的不良记录。", f"No defect record is available for {gate_name} product analysis in this period."))
+        for supplier_name in ["CMW", "FSD", "TEKTRO"]:
+            if supplier_name not in selected_suppliers:
                 continue
-            gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(10).copy()
-            gate_top_frames.append(gate_top)
-            gate_top["product_display"] = gate_top["product_label"].map(
-                lambda value: value if len(str(value)) <= 40 else str(value)[:39] + "…"
-            )
-            gate_order = gate_top.sort_values(["defect_qty", "issue_records"], ascending=True)["product_display"].tolist()
-            gate_fig = px.bar(
-                gate_top,
-                x="defect_qty",
-                y="product_display",
-                orientation="h",
-                text="defect_qty",
-                category_orders={"product_display": gate_order},
-                hover_data={
-                    "product_label": True,
-                    "product_group": True,
-                    "issue_records": True,
-                    "product_display": False,
-                },
-                labels={
-                    "defect_qty": t("不良数量", "Defect Quantity"),
-                    "product_display": t("产品 / 款式", "Product / Style"),
-                    "product_label": t("产品 / 款式", "Product / Style"),
-                    "product_group": t("产品类型", "Product Type"),
-                    "issue_records": t("问题记录数", "Issue Records"),
-                },
-                color_discrete_sequence=[chart_color],
-            )
-            gate_fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False)
-            gate_fig.update_layout(
-                height=max(360, 42 * len(gate_top) + 120),
-                margin=dict(l=230, r=90, t=20, b=40),
-                showlegend=False,
-            )
-            st.plotly_chart(gate_fig, use_container_width=True, config={"displayModeBar": False})
-            gate_leader = gate_top.iloc[0]
-            render_bme_chart_conclusion(
-                f"本期 {gate_name} 有 {len(gate_rows):,} 个产品出现不良，数量最多的是 {gate_leader['product_label']}，共 {gate_leader['defect_qty']:,.0f} 个。",
-                f"This period has {len(gate_rows):,} products with {gate_name} defects. {gate_leader['product_label']} ranks first with {gate_leader['defect_qty']:,.0f} defects.",
-            )
+            st.subheader(t(f"{supplier_name} 板块", f"{supplier_name} Section"))
+            rendered_supplier_chart = False
+            for gate_name in ["IQC", "PQC", "FQC"]:
+                chart_title_cn, chart_title_en, chart_intro_cn, chart_intro_en, chart_color = gate_meta[gate_name]
+                gate_rows = chart_product_gate[
+                    chart_product_gate["supplier"].eq(supplier_name)
+                    & chart_product_gate["quality_gate"].eq(gate_name)
+                ].copy()
+                if gate_rows.empty:
+                    continue
+                rendered_supplier_chart = True
+                render_chart_heading(
+                    f"{supplier_name} · {chart_title_cn}",
+                    f"{supplier_name} · {chart_title_en}",
+                    chart_intro_cn,
+                    chart_intro_en,
+                    "柱长是不良数量，只使用当前供应商、当前检验环节的数据。",
+                    "Bar length is defect quantity using only the current supplier and quality gate.",
+                    "CMW 的 IQC 按来料零部件、PQC 按源车型记录、FQC 按整车料号展示，三者没有可靠的一对一关系时不强行合并。FSD 使用车系 / 型号别名，TEKTRO 保留源型号；AQL 与 DKL 统一归为 FQC。",
+                    "CMW IQC uses incoming components, PQC uses source model records, and FQC uses whole-bike item codes; they are not force-merged without a reliable one-to-one link. FSD uses family/model aliases, TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
+                    bme_chart_source(
+                        all_product_issues[
+                            all_product_issues["supplier"].eq(supplier_name)
+                            & all_product_issues["quality_gate"].eq(gate_name)
+                        ]
+                    ),
+                    f"bme_v8_product_{supplier_name.lower()}_{gate_name.lower()}_info",
+                )
+                gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(10).copy()
+                gate_top_frames.append(gate_top)
+                gate_top["product_display"] = gate_top["product_label"].map(
+                    lambda value: value if len(str(value)) <= 40 else str(value)[:39] + "…"
+                )
+                gate_order = gate_top.sort_values(["defect_qty", "issue_records"], ascending=True)["product_display"].tolist()
+                gate_fig = px.bar(
+                    gate_top,
+                    x="defect_qty",
+                    y="product_display",
+                    orientation="h",
+                    text="defect_qty",
+                    category_orders={"product_display": gate_order},
+                    hover_data={
+                        "product_label": True,
+                        "product_group": True,
+                        "issue_records": True,
+                        "product_display": False,
+                    },
+                    labels={
+                        "defect_qty": t("不良数量", "Defect Quantity"),
+                        "product_display": t("产品 / 款式", "Product / Style"),
+                        "product_label": t("产品 / 款式", "Product / Style"),
+                        "product_group": t("产品类型", "Product Type"),
+                        "issue_records": t("问题记录数", "Issue Records"),
+                    },
+                    color_discrete_sequence=[chart_color],
+                )
+                gate_fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False)
+                gate_fig.update_layout(
+                    height=max(360, 42 * len(gate_top) + 120),
+                    margin=dict(l=230, r=90, t=20, b=40),
+                    showlegend=False,
+                )
+                st.plotly_chart(gate_fig, use_container_width=True, config={"displayModeBar": False})
+                gate_leader = gate_top.iloc[0]
+                render_bme_chart_conclusion(
+                    f"本期 {supplier_name} 的 {gate_name} 有 {len(gate_rows):,} 个产品出现不良，数量最多的是 {gate_leader['product_label']}，共 {gate_leader['defect_qty']:,.0f} 个。",
+                    f"This period has {len(gate_rows):,} {supplier_name} products with {gate_name} defects. {gate_leader['product_label']} ranks first with {gate_leader['defect_qty']:,.0f} defects.",
+                )
+            if not rendered_supplier_chart:
+                st.info(t(
+                    f"本期 {supplier_name} 没有可用于 IQC、PQC 或 FQC 产品排名的不良数据。",
+                    f"No {supplier_name} defect data is available for IQC, PQC, or FQC product ranking in this period.",
+                ))
 
         visible_product_keys = pd.concat(gate_top_frames, ignore_index=True)["product_key"].drop_duplicates() if gate_top_frames else pd.Series(dtype=object)
         top_products = (
@@ -14438,6 +14463,7 @@ def render_bme_bike_quality_dashboard_v3(
         )
         top_product = top_products.iloc[0]
 
+        st.subheader(t("查看具体产品问题", "Review a Specific Product"))
         with st.container(key="bme_product_defect_filter"):
             product_filter_cols = st.columns([0.8, 2.2], gap="small")
             product_groups = top_products["product_group"].drop_duplicates().tolist()
