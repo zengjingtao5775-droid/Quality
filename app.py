@@ -14371,6 +14371,7 @@ def render_bme_bike_quality_dashboard_v3(
             issue_records=("source_row", "size"),
             item_code=("model_item_code", most_common_nonblank),
             item_names=("item_name", joined_nonblank),
+            families=("family", joined_nonblank),
             material_suppliers=("material_supplier", joined_nonblank),
             supplier_count=("material_supplier", lambda values: values.fillna("").astype(str).str.strip().replace("Unrecorded", "").loc[lambda series: series.ne("")].nunique()),
             main_pos=("order_po", joined_nonblank),
@@ -14404,7 +14405,6 @@ def render_bme_bike_quality_dashboard_v3(
         for supplier_name in ["CMW", "FSD", "TEKTRO"]:
             if supplier_name not in selected_suppliers:
                 continue
-            st.subheader(t(f"{supplier_name} 板块", f"{supplier_name} Section"))
             supplier_gate_charts: list[tuple[str, pd.DataFrame, str]] = []
             for gate_name in ["IQC", "PQC", "FQC"]:
                 _, _, _, _, chart_color = gate_meta[gate_name]
@@ -14416,7 +14416,7 @@ def render_bme_bike_quality_dashboard_v3(
                     continue
                 gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(10).copy()
                 gate_top_frames.append(gate_top)
-                if supplier_name == "CMW":
+                if supplier_name == "CMW" or (supplier_name == "FSD" and gate_name == "IQC"):
                     gate_top["product_display"] = gate_top["item_code"]
                 else:
                     gate_top["product_display"] = gate_top["product_label"].map(
@@ -14424,6 +14424,7 @@ def render_bme_bike_quality_dashboard_v3(
                     )
                 supplier_gate_charts.append((gate_name, gate_top, chart_color))
             if not supplier_gate_charts:
+                st.subheader(t(f"{supplier_name} 产品质量问题", f"{supplier_name} Product Quality Issues"))
                 st.info(t(
                     f"本期 {supplier_name} 没有可用于 IQC、PQC 或 FQC 产品排名的不良数据。",
                     f"No {supplier_name} defect data is available for IQC, PQC, or FQC product ranking in this period.",
@@ -14437,8 +14438,8 @@ def render_bme_bike_quality_dashboard_v3(
                 "Review incoming, process, and final-inspection product issues in one figure.",
                 "每个分区只使用对应检验环节的数据，柱长是不良数量。",
                 "Each panel uses only its own quality-gate data; bar length is defect quantity.",
-                "三个检验环节只合并到同一个图表容器，数据口径仍然分开。CMW 的 IQC 按来料零部件、PQC 按源车型记录、FQC 按整车料号展示；没有可靠的一对一关系时不强行串款。FSD 使用车系 / 型号别名，TEKTRO 保留源型号；AQL 与 DKL 归入 FQC。",
-                "The three gates share one figure but retain separate data grains. CMW IQC uses incoming components, PQC uses source model records, and FQC uses whole-bike item codes; records are not force-linked without a reliable one-to-one match. FSD uses family/model aliases, TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
+                "三个检验环节只合并到同一个图表容器，数据口径仍然分开。CMW 的 IQC 按来料零部件、PQC 按源车型记录、FQC 按整车料号展示；FSD 的 IQC 只按源表料号统计，PQC 与 FQC 才使用车系 / 型号。没有可靠的一对一关系时不强行串款；TEKTRO 保留源型号，AQL 与 DKL 归入 FQC。",
+                "The three gates share one figure but retain separate data grains. CMW IQC uses incoming components, PQC uses source model records, and FQC uses whole-bike item codes. FSD IQC uses only the source item code, while PQC and FQC use family/model aliases. Records are not force-linked without a reliable one-to-one match; TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
                 bme_chart_source(all_product_issues[all_product_issues["supplier"].eq(supplier_name)]),
                 f"bme_v9_product_{supplier_name.lower()}_info",
             )
@@ -14448,7 +14449,7 @@ def render_bme_bike_quality_dashboard_v3(
                 subplot_titles=[
                     (
                         f"IQC · {t('料号', 'Item Code')}"
-                        if supplier_name == "CMW" and gate_name == "IQC"
+                        if supplier_name in {"CMW", "FSD"} and gate_name == "IQC"
                         else f"PQC · {t('Model / 车型', 'Model')}"
                         if supplier_name == "CMW" and gate_name == "PQC"
                         else f"FQC · {t('整车料号', 'Whole-bike Item Code')}"
@@ -14488,6 +14489,27 @@ def render_bme_bike_quality_dashboard_v3(
                         f"{t('退货数量', 'Return Quantity')}  %{{customdata[6]:,.0f}}<br>"
                         f"{t('不良记录数', 'Defect Records')}  %{{customdata[7]:,.0f}}<br>"
                         f"{t('最近检验日期', 'Latest Inspection Date')}  %{{customdata[8]}}<extra></extra>"
+                    )
+                elif supplier_name == "FSD" and gate_name == "IQC":
+                    gate_customdata = np.column_stack([
+                        gate_top["item_code"],
+                        gate_top["item_names"],
+                        gate_top["families"],
+                        gate_top["main_pos"],
+                        gate_top["inspected_qty"],
+                        gate_top["defect_qty"],
+                        gate_top["issue_records"],
+                        gate_top["latest_date_label"],
+                    ])
+                    gate_hovertemplate = (
+                        f"{t('料号', 'Item Code')}  %{{customdata[0]}}<br>"
+                        f"{t('物料名称', 'Material Name')}  %{{customdata[1]}}<br>"
+                        f"{t('车种', 'Bike Type')}  %{{customdata[2]}}<br>"
+                        f"{t('工单 / PO', 'Order / PO')}  %{{customdata[3]}}<br>"
+                        f"{t('涉及数量', 'Related Quantity')}  %{{customdata[4]:,.0f}}<br>"
+                        f"{t('不良数量', 'Defect Quantity')}  %{{customdata[5]:,.0f}}<br>"
+                        f"{t('问题记录数', 'Issue Records')}  %{{customdata[6]:,.0f}}<br>"
+                        f"{t('最近检验日期', 'Latest Inspection Date')}  %{{customdata[7]}}<extra></extra>"
                     )
                 elif supplier_name == "CMW" and gate_name == "PQC":
                     gate_customdata = np.column_stack([
@@ -14555,7 +14577,7 @@ def render_bme_bike_quality_dashboard_v3(
                 combined_gate_fig.update_yaxes(
                     categoryorder="array",
                     categoryarray=gate_order,
-                    type="category" if supplier_name == "CMW" else None,
+                    type="category" if supplier_name == "CMW" or (supplier_name == "FSD" and gate_name == "IQC") else None,
                     title_text=None,
                     tickangle=0,
                     row=row_index,
@@ -14570,13 +14592,13 @@ def render_bme_bike_quality_dashboard_v3(
                 )
                 gate_leader = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).iloc[0]
                 leader_label_cn = (
-                    f"料号 {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "IQC"
+                    f"料号 {gate_leader['item_code']}" if supplier_name in {"CMW", "FSD"} and gate_name == "IQC"
                     else f"Model / 车型 {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "PQC"
                     else f"整车料号 {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "FQC"
                     else str(gate_leader["product_label"])
                 )
                 leader_label_en = (
-                    f"item code {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "IQC"
+                    f"item code {gate_leader['item_code']}" if supplier_name in {"CMW", "FSD"} and gate_name == "IQC"
                     else f"model {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "PQC"
                     else f"whole-bike item code {gate_leader['item_code']}" if supplier_name == "CMW" and gate_name == "FQC"
                     else str(gate_leader["product_label"])

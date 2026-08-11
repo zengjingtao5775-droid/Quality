@@ -102,7 +102,12 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         master = build_bme_product_master(self.events)
         self.assertEqual(set(master["quality_gate"]), {"IQC", "PQC", "FQC"})
         mpa25 = master[master["product_key"].eq("FSD|MPA25")]
-        self.assertEqual(set(mpa25["quality_gate"]), {"IQC", "PQC", "FQC"})
+        self.assertEqual(set(mpa25["quality_gate"]), {"PQC", "FQC"})
+        fsd_iqc = master[master["supplier"].eq("FSD") & master["quality_gate"].eq("IQC")]
+        self.assertTrue(fsd_iqc["product_key"].str.match(r"FSD\|IQC_ITEM\|[A-Z0-9]+$").all())
+        self.assertTrue(fsd_iqc["product_label"].str.match(r"料号 .+").all())
+        self.assertTrue(fsd_iqc["product_group"].eq("IQC 来料料号").all())
+        self.assertTrue(fsd_iqc["product_link_method"].eq("FSD IQC source item code; no BOM link to bike model").all())
         expl100_grey = master[master["product_key"].eq("CMW|5535130")]
         self.assertEqual(set(expl100_grey["quality_gate"]), {"FQC"})
         self.assertTrue(expl100_grey["product_label"].str.startswith("整车料号 5535130 ·").all())

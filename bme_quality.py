@@ -650,10 +650,11 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
 
     The source files do not share one universal product code. This function
     therefore uses only source-native identifiers and explicit supplier rules:
-    FSD family/model aliases, CMW FQC whole-bike item codes, and TEKTRO source
-    model codes. CMW PQC rows only contain a model name and CMW IQC rows only
-    contain component codes, so neither is assigned to a whole-bike style
-    without an auditable one-to-one relationship.
+    FSD IQC item codes, FSD PQC/FQC family-model aliases, CMW FQC whole-bike
+    item codes, and TEKTRO source model codes. CMW PQC rows only contain a
+    model name, while CMW and FSD IQC rows only contain incoming-component
+    codes, so none is assigned to a whole-bike style without an auditable
+    one-to-one relationship.
     """
     if events.empty:
         return events.assign(
@@ -700,6 +701,13 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
             # relationship, labelling it as a finished-bike style would create
             # a false product link in the management view.
             group = "来料零部件"
+        if supplier == "FSD" and str(row.get("stage", "")) == "IQC" and code:
+            source_code = str(row.get("model_item_code", "")).strip()
+            return (
+                f"FSD|IQC_ITEM|{code}",
+                f"料号 {source_code}",
+                "FSD IQC source item code; no BOM link to bike model",
+            )
         if supplier == "FSD":
             matched = next((alias for alias in fsd_aliases if alias in haystack), "")
             if matched:
@@ -745,6 +753,10 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
         source["supplier"].eq("CMW") & source["stage"].eq("PQC"),
         "product_group",
     ] = "PQC 车型（未对应整车料号）"
+    source.loc[
+        source["supplier"].eq("FSD") & source["stage"].eq("IQC"),
+        "product_group",
+    ] = "IQC 来料料号"
     return source.reset_index(drop=True)
 
 
