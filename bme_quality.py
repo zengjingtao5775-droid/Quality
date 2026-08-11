@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-11-v3"
+BME_QUALITY_LOGIC_VERSION = "2026-08-11-v4"
 
 
 EVENT_COLUMNS = [
@@ -18,6 +18,7 @@ EVENT_COLUMNS = [
     "date",
     "event_timestamp",
     "order_po",
+    "trace_number",
     "model_item_code",
     "item_name",
     "material_supplier",
@@ -38,6 +39,7 @@ EVENT_COLUMNS = [
     "status_available",
     "workflow_end_date",
     "data_quality_flag",
+    "comments",
     "metric_scope",
     "source_file",
     "source_sheet",
@@ -492,6 +494,7 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
         frames.append(_frame(
             community="BME", supplier="CMW", supplier_code="CMW", stage="MACHINE",
             date=_date(_col(raw, "生产日期")), event_timestamp=_date(_col(raw, "日期")), order_po=_text(_col(raw, "工单")),
+            trace_number=_text(_col(raw, "整车追溯号")),
             model_item_code=_text(_col(raw, "车型model")), item_name=_text(_col(raw, "扭力车型描述")),
             family="", process=component, issue_driver=component, inspected_qty=1,
             defect_qty=_negative(result).astype(int), defect_rate=np.nan, result=result,
@@ -500,6 +503,7 @@ def _load_cmw(root: Path) -> list[pd.DataFrame]:
             metric_scope="Torque checkpoint", source_file=str(torque_path.relative_to(root)), source_sheet="数据结果",
             source_row=raw.index + 2, is_alert=_negative(result), alert_reason="",
             data_quality_flag=np.where(high.notna() & measured.gt(high * 5), "Suspect value > 5x USL", ""),
+            comments=_text(_col(raw, "备注")),
         ))
 
     rework_path = base / "Rework" / "返工作业申请书.xlsx"
@@ -610,7 +614,7 @@ def bme_source_fingerprint(root: Path) -> tuple[tuple[str, int, int], ...]:
 
 
 def load_bme_customer_quality(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load customer NC declarations and the FSD PO denominator table."""
+    """Load factory-to-component-supplier NC declarations and FSD PO quantities."""
     nc_path = root / "BME Database" / "Customer" / "non_conforms_export_22062026.xlsx"
     order_path = root / "BME Database" / "FSD" / "FSD P2 data input.xlsx"
     if not nc_path.exists():
@@ -667,9 +671,9 @@ def build_bme_issue_pareto(
     customer_nc: pd.DataFrame,
     limit: int = 15,
 ) -> tuple[pd.DataFrame, int]:
-    """Combine clearly labeled process defects and customer NC defect codes.
+    """Combine clearly labeled process defects and component-supplier NC codes.
 
-    Process issues and customer NCs remain separate rows so quantities from
+    Process issues and component-supplier NCs remain separate rows so quantities from
     different quality stages are never silently merged under one label.
     """
     columns = ["supplier", "source_scope", "issue_driver", "defect_qty", "alert_records"]
@@ -722,7 +726,7 @@ def build_bme_issue_pareto(
                 .rename(columns={"defect_code": "issue_driver"})
             )
             customer["issue_driver"] = "Defect Code " + customer["issue_driver"]
-            customer["source_scope"] = "Customer"
+            customer["source_scope"] = "Component"
             customer = customer[columns]
 
     result = pd.concat([process, customer], ignore_index=True)

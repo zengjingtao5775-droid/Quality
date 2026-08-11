@@ -73,7 +73,7 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         self.assertTrue({"850", "950", "1000"}.issubset(set(pqc["family"])))
         self.assertEqual(int(pqc["measured_value"].notna().sum()), 1776)
 
-    def test_combined_issue_pareto_includes_tektro_customer_nc(self) -> None:
+    def test_combined_issue_pareto_includes_tektro_component_nc(self) -> None:
         start, end = pd.Timestamp("2025-08-11"), pd.Timestamp("2026-08-11")
         period_events = self.events[
             self.events["date"].notna() & self.events["date"].between(start, end)
@@ -84,13 +84,13 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
         pareto, _ = build_bme_issue_pareto(period_events, period_customer, limit=0)
         tektro_w = pareto[
             pareto["supplier"].eq("TEKTRO")
-            & pareto["source_scope"].eq("Customer")
+            & pareto["source_scope"].eq("Component")
             & pareto["issue_driver"].eq("Defect Code W")
         ]
         self.assertEqual(float(tektro_w["defect_qty"].iloc[0]), 2681.0)
         self.assertTrue({"CMW", "FSD", "TEKTRO"}.issubset(set(pareto["supplier"])))
 
-    def test_customer_source_and_fsd_po_coverage_are_usable(self) -> None:
+    def test_component_source_and_fsd_po_coverage_are_usable(self) -> None:
         self.assertEqual(set(self.customer["supplier"]), {"FSD", "TEKTRO"})
         result = calculate_fsd_customer_ppm(self.customer, self.orders, "2024-01-01", "2026-12-31")
         self.assertGreaterEqual(result["coverage"], 0.90)
@@ -123,6 +123,8 @@ class BmeAnalysisDataRegressionTest(unittest.TestCase):
     def test_torque_suspects_remain_visible_but_are_flagged(self) -> None:
         torque = self.events[(self.events["supplier"].eq("CMW")) & (self.events["stage"].eq("MACHINE"))]
         self.assertEqual(int(torque["data_quality_flag"].ne("").sum()), 2)
+        self.assertTrue(torque["trace_number"].astype(str).str.strip().ne("").any())
+        self.assertIn("comments", torque.columns)
 
 
 if __name__ == "__main__":

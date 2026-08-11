@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-11-v3"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-11-v4"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -14110,9 +14110,11 @@ def render_bme_bike_quality_dashboard_v3(
         & pd.to_datetime(customer_nc["date"], errors="coerce").dt.date.between(start_date, end_date)
     ].copy() if not customer_nc.empty else pd.DataFrame()
     ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
-    tektro_nc = scoped_nc[scoped_nc["supplier"].eq("TEKTRO")] if not scoped_nc.empty else pd.DataFrame()
     with st.expander(t("数据地图", "Data Map"), expanded=True):
-        _render_bme_data_map(view)
+        # Coverage must reflect connected source files even when a row has no
+        # usable date for the selected-period KPI analysis (for example,
+        # TEKTRO IQC). Period charts still exclude undated rows below.
+        _render_bme_data_map(scope_view)
 
     for optional_column, default_value in {
         "event_timestamp": pd.NaT,
@@ -14120,6 +14122,8 @@ def render_bme_bike_quality_dashboard_v3(
         "data_quality_flag": "",
         "material_supplier": "Unrecorded",
         "family": "",
+        "trace_number": "",
+        "comments": "",
     }.items():
         if optional_column not in view.columns:
             view[optional_column] = default_value
@@ -14134,7 +14138,20 @@ def render_bme_bike_quality_dashboard_v3(
     fsd_attr = view[(view["supplier"].eq("FSD")) & view["stage"].isin(["AQL", "DKL"]) & view["inspected_qty"].gt(0)]
     fsd_rate = fsd_attr["defect_qty"].sum() / fsd_attr["inspected_qty"].sum() if not fsd_attr.empty else np.nan
     cmw_iqc = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("IQC"))]
-    return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
+    cmw_return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
+    fsd_incoming = cmw_iqc[
+        cmw_iqc["material_supplier"].fillna("").astype(str).str.contains(r"FSD|富士达|FUJI", case=False, regex=True)
+    ].copy()
+    fsd_incoming_ppm = fsd_incoming["defect_qty"].sum() / fsd_incoming["inspected_qty"].sum() * 1_000_000 if fsd_incoming["inspected_qty"].sum() > 0 else np.nan
+    cmw_fqc = view[(view["supplier"].eq("CMW")) & (view["stage"].eq("AQL")) & view["inspected_qty"].gt(0)]
+    cmw_fqc_rate = cmw_fqc["defect_qty"].sum() / cmw_fqc["inspected_qty"].sum() if cmw_fqc["inspected_qty"].sum() > 0 else np.nan
+    tektro_inspection = view[
+        view["supplier"].eq("TEKTRO")
+        & view["stage"].eq("LAB")
+        & view["inspected_qty"].gt(0)
+        & view["spec_low"].notna()
+    ].copy()
+    tektro_inspection_rate = tektro_inspection["defect_qty"].sum() / tektro_inspection["inspected_qty"].sum() if tektro_inspection["inspected_qty"].sum() > 0 else np.nan
 
     # KPI headlines retain the selected-period totals. Trends use the latest
     # available month inside that period and compare only with the immediately
@@ -14229,10 +14246,8 @@ def render_bme_bike_quality_dashboard_v3(
             & trend_customer["date"].notna()
             & trend_customer["date"].dt.date.le(end_date)
         ].copy()
-    fsd_customer = trend_customer[trend_customer["supplier"].eq("FSD")].copy() if not trend_customer.empty else pd.DataFrame()
-    tektro_customer = trend_customer[trend_customer["supplier"].eq("TEKTRO")].copy() if not trend_customer.empty else pd.DataFrame()
-    fsd_nc_monthly = monthly_sum(fsd_customer, "nc_qty")
-    tektro_nc_monthly = monthly_sum(tektro_customer, "nc_qty")
+    fsd_component = trend_customer[trend_customer["supplier"].eq("FSD")].copy() if not trend_customer.empty else pd.DataFrame()
+    fsd_nc_monthly = monthly_sum(fsd_component, "nc_qty")
     fsd_ppm_monthly = pd.Series(dtype="float64")
     if not fsd_nc_monthly.empty:
         fsd_ppm_monthly = pd.Series({
@@ -14247,25 +14262,39 @@ def render_bme_bike_quality_dashboard_v3(
     cmw_iqc_trend = trend_events[
         trend_events["supplier"].eq("CMW") & trend_events["stage"].eq("IQC")
     ]
+    fsd_incoming_trend = cmw_iqc_trend[
+        cmw_iqc_trend["material_supplier"].fillna("").astype(str).str.contains(r"FSD|富士达|FUJI", case=False, regex=True)
+    ]
+    cmw_fqc_trend_source = trend_events[
+        trend_events["supplier"].eq("CMW") & trend_events["stage"].eq("AQL") & trend_events["inspected_qty"].gt(0)
+    ]
+    tektro_inspection_trend_source = trend_events[
+        trend_events["supplier"].eq("TEKTRO")
+        & trend_events["stage"].eq("LAB")
+        & trend_events["inspected_qty"].gt(0)
+        & trend_events["spec_low"].notna()
+    ]
     fsd_ppm_trend = kpi_trend(fsd_ppm_monthly, lambda value: f"{value:,.0f}")
-    fsd_nc_trend = kpi_trend(fsd_nc_monthly, lambda value: f"{value:,.0f}")
-    tektro_nc_trend = kpi_trend(tektro_nc_monthly, lambda value: f"{value:,.0f}")
+    fsd_incoming_ppm_trend = kpi_trend(monthly_ratio(fsd_incoming_trend, "defect_qty", "inspected_qty", 1_000_000), lambda value: f"{value:,.0f}")
     fsd_rate_trend = kpi_trend(monthly_ratio(fsd_attr_trend, "defect_qty", "inspected_qty"), lambda value: f"{value:.2%}")
     cmw_return_trend = kpi_trend(monthly_ratio(cmw_iqc_trend, "defect_qty", "inspected_qty", 1_000_000), lambda value: f"{value:,.0f}")
+    cmw_fqc_rate_trend = kpi_trend(monthly_ratio(cmw_fqc_trend_source, "defect_qty", "inspected_qty"), lambda value: f"{value:.2%}")
+    tektro_inspection_rate_trend = kpi_trend(monthly_ratio(tektro_inspection_trend_source, "defect_qty", "inspected_qty"), lambda value: f"{value:.2%}")
 
     def with_trend(card: dict[str, str], trend: dict[str, str]) -> dict[str, str]:
         return {**card, **{key: trend[key] for key in ("trend_direction", "trend_tone", "trend_label")}, "note": trend["trend_note"]}
 
     render_kpi_cards([
-        with_trend({"label": t("FSD 客诉 PPM", "FSD Customer PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "level": "high"}, fsd_ppm_trend),
-        with_trend({"label": t("FSD 客诉 NC数量", "FSD Customer NC Qty"), "value": f"{ppm['nc_qty']:,.0f}" if "FSD" in selected_suppliers else "N/A", "level": "high"}, fsd_nc_trend),
-        with_trend({"label": t("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty"), "value": f"{tektro_nc['nc_qty'].sum():,.0f}" if not tektro_nc.empty else "N/A", "level": "medium"}, tektro_nc_trend),
+        with_trend({"label": t("FSD 零部件问题 PPM", "FSD Component-Issue PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) and "FSD" in selected_suppliers else "N/A", "level": "high"}, fsd_ppm_trend),
+        with_trend({"label": t("FSD 来料退货 PPM", "FSD Incoming Return PPM"), "value": f"{fsd_incoming_ppm:,.0f}" if pd.notna(fsd_incoming_ppm) and "FSD" in selected_suppliers else "N/A", "level": "medium"}, fsd_incoming_ppm_trend),
         with_trend({"label": t("FSD 检验 NC率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "level": "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"}, fsd_rate_trend),
-        with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "level": "medium"}, cmw_return_trend),
+        {"label": t("TEKTRO 零部件问题 PPM", "TEKTRO Component-Issue PPM"), "value": "N/A", "note": t("Component Box 缺少订单量分母", "Component Box order denominator unavailable"), "trend_direction": "flat", "trend_tone": "flat", "trend_label": t("暂不计算", "Not calculated"), "level": "medium"},
+        with_trend({"label": t("TEKTRO LAB 检验 NC率", "TEKTRO LAB Inspection NC Rate"), "value": pct(tektro_inspection_rate) if pd.notna(tektro_inspection_rate) else "N/A", "level": "low" if pd.notna(tektro_inspection_rate) and tektro_inspection_rate == 0 else "medium"}, tektro_inspection_rate_trend),
+        with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "N/A", "level": "medium"}, cmw_return_trend),
+        with_trend({"label": t("CMW FQC NC率", "CMW FQC NC Rate"), "value": pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "N/A", "level": "medium"}, cmw_fqc_rate_trend),
     ], variant="bme-overall")
     if pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
-        st.warning(t("FSD 已关联PO的NC占比低于90%，因此暂不显示PPM。", "FSD PO-link coverage is below 90%; PPM is hidden."))
-
+        st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
     spc_heading_slot = st.empty()
     method_options: dict[str, tuple[str, pd.DataFrame]] = {}
     for keys, group in cmw_torque.groupby(["model_item_code", "process", "spec_low", "spec_high", "unit"], dropna=False):
@@ -14280,10 +14309,6 @@ def render_bme_bike_quality_dashboard_v3(
     tektro_lab = view[(view["supplier"].eq("TEKTRO")) & (view["stage"].eq("LAB")) & view["measured_value"].notna()]
     if len(tektro_lab) >= 5:
         method_options[t("TEKTRO · 拔脱力 · X̄-R（n=5）", "TEKTRO · Pull-out Force · X̄-R (n=5)")] = ("xbar", tektro_lab)
-    for keys, group in fsd_attr.groupby(["stage", "process"], dropna=False):
-        weekly = group.groupby("date", as_index=False).agg(inspected_qty=("inspected_qty", "sum"), defect_qty=("defect_qty", "sum"))
-        if len(weekly) >= 3:
-            method_options[f"FSD · p-chart · {keys[0]} · {keys[1]}"] = ("pchart", weekly)
     if not method_options:
         with spc_heading_slot.container():
             render_chart_heading(
@@ -14339,7 +14364,7 @@ def render_bme_bike_quality_dashboard_v3(
                 st.markdown(f'<div class="bme-spc-filter-label">{html.escape(t("查看过程", "Process"))}</div>', unsafe_allow_html=True)
             with filter_control:
                 selected_method = st.selectbox(
-                    t("选择要查看的过程 / 检验范围（高风险优先）", "Select homogeneous process / inspection scope (highest risk first)"),
+                    t("选择供应商 / Model / 参数（CMW + TEKTRO，高风险优先）", "Select supplier / model / parameter (CMW + TEKTRO, highest risk first)"),
                     ranked_methods,
                     key="bme_v4_spc",
                     label_visibility="collapsed",
@@ -14380,10 +14405,27 @@ def render_bme_bike_quality_dashboard_v3(
             )
         if method.startswith("imr"):
             chart, limits = build_imr_chart_data(data)
-            chart["sequence"] = np.arange(1, len(chart) + 1)
+            chart["spc_time"] = pd.to_datetime(chart["event_timestamp"], errors="coerce").fillna(pd.to_datetime(chart["date"], errors="coerce"))
+            chart["trace_number"] = chart.get("trace_number", pd.Series("", index=chart.index)).fillna("").astype(str).replace("", "-")
+            chart["comments"] = chart.get("comments", pd.Series("", index=chart.index)).fillna("").astype(str).replace("", "-")
+            chart["spc_signal_label"] = np.where(chart.get("signal", False), t("需要排查", "Investigate"), t("正常波动", "Common-cause variation"))
+            measured_label = t("扭力 / 实测值", "Torque / Measured Value") if method == "imr" else t("实测值", "Measured Value")
+            time_label = t("时间", "Time")
+            hover_template = (
+                f"{time_label}  %{{x|%Y-%m-%d %H:%M}}<br>"
+                f"{t('整车追溯号', 'Bike Trace No.')}  %{{customdata[0]}}<br>"
+                f"{measured_label}  %{{y:.2f}} %{{customdata[1]}}<br>"
+                f"{t('备注', 'Comments')}  %{{customdata[2]}}<br>"
+                f"SPC  %{{customdata[3]}}<extra></extra>"
+            )
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=.12, row_heights=[.68, .32])
-            fig.add_trace(go.Scatter(x=chart["sequence"], y=chart["value"], mode="lines+markers", name=t("实测值", "Measured"), marker=dict(color=np.where(chart.get("signal", False), "#c01048", "#3341c4"))), row=1, col=1)
-            fig.add_trace(go.Scatter(x=chart["sequence"], y=chart["moving_range"], mode="lines+markers", name=t("移动极差", "Moving Range"), line=dict(color="#d99a00")), row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=chart["spc_time"], y=chart["value"], mode="lines+markers", name=t("实测值", "Measured"),
+                marker=dict(color=np.where(chart.get("signal", False), "#c01048", "#3341c4")),
+                customdata=np.column_stack([chart["trace_number"], chart["unit"].fillna(""), chart["comments"], chart["spc_signal_label"]]),
+                hovertemplate=hover_template,
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(x=chart["spc_time"], y=chart["moving_range"], mode="lines+markers", name=t("移动极差", "Moving Range"), line=dict(color="#d99a00"), hovertemplate=f"{time_label}  %{{x|%Y-%m-%d %H:%M}}<br>{t('相邻两次变化', 'Consecutive Change')}  %{{y:.2f}}<extra></extra>"), row=2, col=1)
             if limits:
                 for value, name, color, dash in [(limits["center"], "CL", "#168a5b", "solid"), (limits["ucl"], "UCL", "#c01048", "dot"), (limits["lcl"], "LCL", "#c01048", "dot")]:
                     fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, row=1, col=1)
@@ -14391,6 +14433,9 @@ def render_bme_bike_quality_dashboard_v3(
             if method == "imr":
                 if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="LSL", row=1, col=1)
                 if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="USL", row=1, col=1)
+            fig.update_xaxes(title_text=time_label, row=2, col=1)
+            fig.update_yaxes(title_text=measured_label, row=1, col=1)
+            fig.update_yaxes(title_text=t("相邻两次变化", "Consecutive Change"), row=2, col=1)
             fig.update_layout(height=570, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
             if limits:
@@ -14461,71 +14506,126 @@ def render_bme_bike_quality_dashboard_v3(
                 f"There are {len(chart)} complete n=5 subgroups: {mean_signals} X̄ signals, {range_signals} R-limit breaches, and {below_lsl} individual results below the 200 kgf lower specification limit. {incomplete_groups} incomplete subgroups were excluded. Prioritize the related test batches and test conditions.",
             )
 
-    alerts = view[view["is_alert"]].copy()
-    pareto, missing_issue_alerts = build_bme_issue_pareto(view, scoped_nc, limit=15)
-    source_prefix = pareto["source_scope"].map({
-        "Process": t("制程", "Process"),
-        "Customer": t("客诉", "Customer"),
-    })
-    localized_issue = pareto["issue_driver"].str.replace(
-        r"^Defect Code ", t("缺陷代码 ", "Defect Code "), regex=True
-    )
-    pareto["issue_display"] = source_prefix + " · " + localized_issue
-    pareto["issue_label"] = pareto["issue_display"].map(
-        lambda value: value if len(value) <= 38 else value[:37] + "…"
-    )
-    if pareto.empty:
-        st.subheader(t("主要质量问题 Pareto", "Top Issue Pareto"))
-        st.info(t("当前没有问题 Pareto 数据。", "No issue Pareto data is available."))
-    else:
+    parameter_trend = view[
+        view["supplier"].isin(["CMW", "TEKTRO"])
+        & view["measured_value"].notna()
+    ].copy()
+    if not parameter_trend.empty:
+        parameter_trend["model_display"] = parameter_trend["model_item_code"].fillna("").astype(str).str.strip().replace("", t("未记录 Model", "Model unrecorded"))
+        parameter_trend["parameter_display"] = parameter_trend["stage"].astype(str) + " · " + parameter_trend["process"].fillna("").astype(str).str.strip().replace("", t("实测参数", "Measured parameter"))
+        available_parameter_suppliers = [supplier for supplier in ["CMW", "TEKTRO"] if supplier in set(parameter_trend["supplier"])]
+        with st.container(key="bme_parameter_trend_filter"):
+            trend_filter_cols = st.columns([0.8, 1.35, 1.8], gap="small")
+            parameter_supplier = trend_filter_cols[0].selectbox(
+                t("供应商", "Supplier"), available_parameter_suppliers, key="bme_parameter_supplier"
+            )
+            supplier_parameters = parameter_trend[parameter_trend["supplier"].eq(parameter_supplier)].copy()
+            available_models = sorted(supplier_parameters["model_display"].unique())
+            parameter_model = trend_filter_cols[1].selectbox(
+                "Model", available_models, key="bme_parameter_model"
+            )
+            model_parameters = supplier_parameters[supplier_parameters["model_display"].eq(parameter_model)].copy()
+            available_parameters = sorted(model_parameters["parameter_display"].unique())
+            selected_parameter = trend_filter_cols[2].selectbox(
+                t("参数 / 工序", "Parameter / Process"), available_parameters, key="bme_parameter_process"
+            )
+        parameter_view = model_parameters[model_parameters["parameter_display"].eq(selected_parameter)].copy()
+        parameter_view["time"] = pd.to_datetime(parameter_view["event_timestamp"], errors="coerce").fillna(pd.to_datetime(parameter_view["date"], errors="coerce"))
+        parameter_view = parameter_view.sort_values(["time", "source_row"], na_position="last")
         render_chart_heading(
-            "主要质量问题 Pareto（制程 + 客诉）",
-            "Top Issue Pareto",
-            "把制程发现的问题和客户 NC 放在一张图中，查看各供应商当前数量最大的质量问题。",
-            "Show the largest current quality problems by supplier across process findings and customer NCs.",
-            "制程问题按已触发 Alert 的不良数量汇总；客诉问题按源 Defect Code 的 NC 数量汇总，两类来源分开标注，不合并计算。",
-            "Process issues use alert defect quantity; customer issues use NC quantity by source Defect Code. The two sources remain separately labeled.",
-            "横轴为不良或 NC 数量，按供应商分色；TEKTRO 制程参数因缺少规格不判 NG，其真实客诉 NC 在这里按缺陷代码展示。",
-            "The axis shows defect or NC quantity by supplier. TEKTRO process parameters lack specifications and are not judged NG; its customer NCs are shown by defect code.",
-            bme_chart_source(alerts) + " + BME Database/Customer/non_conforms_export_22062026.xlsx",
-            "bme_v4_issue_pareto_info",
+            "实测值与规格上下限趋势",
+            "Measured Values and Specification-Limit Trend",
+            "按供应商、Model 和参数查看实测值随时间的变化，并与源规格上下限直接比较。",
+            "Track measured values over time by supplier, model, and parameter against source specification limits.",
+            "横轴是时间，纵轴是实测值；橙色虚线是源数据中的规格上下限。",
+            "The x-axis is time and the y-axis is the measured value; orange dashed lines are source specification limits.",
+            "本图只显示源数据已有的规格，不使用统计控制限，也不补造缺失规格。",
+            "This chart shows source specifications only; it does not use statistical control limits or infer missing limits.",
+            bme_chart_source(parameter_view),
+            "bme_v4_parameter_trend_info",
         )
-        fig = px.bar(pareto, x="defect_qty", y="issue_label", color="supplier", orientation="h", labels={"defect_qty": t("不良 / NC数量", "Defect / NC Quantity"), "issue_label": t("来源 · 问题", "Source · Issue")}, color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"], hover_data={"issue_display": True, "source_scope": True, "alert_records": True, "issue_label": False})
-        fig.update_layout(height=540, margin=dict(l=220, r=25, t=25, b=30), legend_title_text="")
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        top_issue = pareto.sort_values("defect_qty", ascending=False).iloc[0]
-        total_defects = float(pareto["defect_qty"].sum())
-        pareto_conclusion = t(
-            f"当前第一问题：{top_issue['issue_display']}，数量 {top_issue['defect_qty']:,.0f}，占图中主要问题 {top_issue['defect_qty'] / total_defects:.1%}；TEKTRO 客诉按源缺陷代码展示，另有 {missing_issue_alerts:,} 条制程异常没有填写具体问题，因此没有放进排名。",
-            f"Top issue: {top_issue['issue_display']} with {top_issue['defect_qty']:,.0f} ({top_issue['defect_qty'] / total_defects:.1%} of the issues shown). TEKTRO customer NCs retain source defect codes; {missing_issue_alerts:,} process alerts without a specific issue are excluded.",
+        unit_text = next((str(value) for value in parameter_view["unit"].dropna().astype(str) if value.strip()), "")
+        parameter_fig = px.line(
+            parameter_view,
+            x="time",
+            y="measured_value",
+            markers=True,
+            hover_data={"model_display": True, "parameter_display": True, "unit": True, "time": "|%Y-%m-%d %H:%M", "measured_value": ":.2f"},
+            labels={"time": t("时间", "Time"), "measured_value": t(f"实测值（{unit_text}）" if unit_text else "实测值", f"Measured Value ({unit_text})" if unit_text else "Measured Value")},
+            color_discrete_sequence=["#3341c4"],
         )
-        render_bme_chart_conclusion(pareto_conclusion, pareto_conclusion)
-
-    st.subheader(t("客诉问题 Pareto", "Customer Quality Pareto"))
-    if not scoped_nc.empty:
-        customer_pareto = scoped_nc.groupby(["supplier", "model", "defect_code"], as_index=False)["nc_qty"].sum().sort_values("nc_qty", ascending=False).head(15).sort_values("nc_qty")
-        customer_pareto["problem"] = customer_pareto["model"].replace("", t("未记录Model", "Model unrecorded")) + " · " + customer_pareto["defect_code"]
-        render_chart_heading(
-            "客户 NC Model / Defect Code Pareto",
-            "Customer NC Model / Defect Code Pareto",
-            "找出 FSD 与 TEKTRO 客户端 NC 数量最大的产品和源缺陷编码组合。",
-            "Find the FSD and TEKTRO product/source-defect-code combinations with the most customer NC quantity.",
-            "按供应商、Model 和源 Defect Code 汇总 NC 数量并显示 Top 15。",
-            "Aggregate NC quantity by supplier, model, and source Defect Code, then show the Top 15.",
-            "Defect Code 保留 W、V、M、D 等源编码，不推断其业务含义；TEKTRO 因缺少订单量分母不计算 PPM。",
-            "Defect Codes retain source values such as W, V, M, and D without inferred meanings; TEKTRO PPM is not calculated because the order-quantity denominator is unavailable.",
-            "BME Database/Customer/non_conforms_export_22062026.xlsx",
-            "bme_v4_customer_pareto_info",
-        )
-        fig = px.bar(customer_pareto, x="nc_qty", y="problem", color="supplier", orientation="h", labels={"nc_qty": t("客户 NC 数量", "Customer NC Qty"), "problem": "Model · Defect Code"}, color_discrete_sequence=["#3341c4", "#d99a00"])
-        fig.update_layout(height=480, margin=dict(l=20, r=20, t=25, b=30), legend_title_text="")
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        top_customer_problem = customer_pareto.sort_values("nc_qty", ascending=False).iloc[0]
-        customer_nc_shown = float(customer_pareto["nc_qty"].sum())
-        customer_share = top_customer_problem["nc_qty"] / customer_nc_shown if customer_nc_shown else 0
+        if parameter_view["spec_low"].notna().any():
+            parameter_fig.add_hline(y=float(parameter_view["spec_low"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="LSL")
+        if parameter_view["spec_high"].notna().any():
+            parameter_fig.add_hline(y=float(parameter_view["spec_high"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="USL")
+        parameter_fig.update_layout(height=410, margin=dict(l=20, r=25, t=25, b=40), showlegend=False)
+        st.plotly_chart(parameter_fig, use_container_width=True, config={"displayModeBar": False})
+        measured_min = float(parameter_view["measured_value"].min())
+        measured_max = float(parameter_view["measured_value"].max())
+        limits_available = parameter_view["spec_low"].notna().any() or parameter_view["spec_high"].notna().any()
         render_bme_chart_conclusion(
-            f"当前客诉 NC 数量最高的是 {top_customer_problem['supplier']} · {top_customer_problem['model']} · {top_customer_problem['defect_code']}，NC 数量 {top_customer_problem['nc_qty']:,.0f}，占图中 Top 15 客诉问题 {customer_share:.1%}。Defect Code 保留源编码，不能在没有定义表的情况下推断 W / V / M / D 的含义。",
-            f"The largest customer NC combination is {top_customer_problem['supplier']} · {top_customer_problem['model']} · {top_customer_problem['defect_code']} with {top_customer_problem['nc_qty']:,.0f} NC quantity, representing {customer_share:.1%} of the Top 15 shown. Defect Codes remain source codes; W / V / M / D meanings are not inferred without a definition table.",
+            f"当前选择 {parameter_supplier} · {parameter_model} · {selected_parameter}，共 {len(parameter_view):,} 个实测点，范围 {measured_min:,.2f}–{measured_max:,.2f}{'；已与源规格线对比' if limits_available else '；源数据没有规格线，因此只显示实际趋势'}。",
+            f"The selected scope is {parameter_supplier} · {parameter_model} · {selected_parameter}, with {len(parameter_view):,} measurements ranging from {measured_min:,.2f} to {measured_max:,.2f}{'; source specification limits are shown' if limits_available else '; source limits are unavailable, so only the measured trend is shown'}.",
+        )
+
+    def process_pareto(stages_for_chart: list[str], limit: int = 12) -> pd.DataFrame:
+        source = view[
+            view["stage"].isin(stages_for_chart)
+            & view["is_alert"]
+            & view["defect_qty"].fillna(0).gt(0)
+        ].copy()
+        source["issue_driver"] = source["issue_driver"].fillna("").astype(str).str.split(r"\s*/\s*")
+        source = source.explode("issue_driver")
+        source["issue_driver"] = source["issue_driver"].fillna("").astype(str).str.strip()
+        source = source[source["issue_driver"].ne("") & ~source["issue_driver"].str.fullmatch(r"Inspection result|Not recorded|未记录", case=False, na=False)]
+        if source.empty:
+            return pd.DataFrame(columns=["supplier", "issue_driver", "defect_qty", "records"])
+        result = source.groupby(["supplier", "issue_driver"], as_index=False).agg(
+            defect_qty=("defect_qty", "sum"), records=("source_row", "count")
+        ).sort_values(["defect_qty", "records"], ascending=False).head(limit)
+        return result.sort_values("defect_qty")
+
+    st.subheader(t("主要质量问题 Pareto", "Top Quality Problems Pareto"))
+    if not scoped_nc.empty:
+        component_pareto = scoped_nc.groupby(["supplier", "model", "defect_code"], as_index=False)["nc_qty"].sum().sort_values("nc_qty", ascending=False).head(15).sort_values("nc_qty")
+        component_pareto["problem"] = component_pareto["model"].replace("", t("未记录 Model", "Model unrecorded")) + " · " + component_pareto["defect_code"]
+        render_chart_heading(
+            "成车厂对零部件供应商问题 Pareto", "Factory-to-Component-Supplier Issue Pareto",
+            "查看成车厂向 FSD、TEKTRO 零部件供应商申报的问题集中在哪些 Model 和缺陷代码。", "Show which models and defect codes drive factory-to-component-supplier issues for FSD and TEKTRO.",
+            "按供应商、Model 和源 Defect Code 汇总 Component Box 的 NC 数量。", "Aggregate Component Box NC quantity by supplier, model, and source Defect Code.",
+            "这不是终端客户投诉；真正的自行车客诉只能来自尚未提供的 RPM / IV。Defect Code 保留源编码，不推断 W、V、M、D 的含义。", "This is not end-customer complaint data; bike customer complaints require RPM / IV, which have not been provided. Source defect codes are retained without inferred meanings.",
+            "BME Database/Customer/non_conforms_export_22062026.xlsx", "bme_v4_component_pareto_info",
+        )
+        component_fig = px.bar(component_pareto, x="nc_qty", y="problem", color="supplier", orientation="h", labels={"nc_qty": t("零部件问题 NC数量", "Component-Issue NC Qty"), "problem": "Model · Defect Code"}, color_discrete_sequence=["#3341c4", "#d99a00"])
+        component_fig.update_layout(height=480, margin=dict(l=20, r=20, t=25, b=30), legend_title_text="")
+        st.plotly_chart(component_fig, use_container_width=True, config={"displayModeBar": False})
+        top_component = component_pareto.sort_values("nc_qty", ascending=False).iloc[0]
+        render_bme_chart_conclusion(
+            f"当前零部件供应商问题最多的是 {top_component['supplier']} · {top_component['model']} · {top_component['defect_code']}，NC 数量 {top_component['nc_qty']:,.0f}。该结论只代表成车厂对零部件供应商的问题，不代表终端客户投诉。",
+            f"The largest component-supplier issue is {top_component['supplier']} · {top_component['model']} · {top_component['defect_code']} with {top_component['nc_qty']:,.0f} NC quantity. This is a factory-to-component-supplier signal, not an end-customer complaint.",
+        )
+
+    for chart_key, stages_for_chart, title_cn, title_en, purpose_cn, purpose_en in [
+        ("pqc", ["PQC"], "PQC 制程问题 Pareto", "PQC Process-Issue Pareto", "查看生产过程中数量最大的具体问题。", "Show the largest specific issues found during production."),
+        ("fqc", ["AQL", "DKL"], "FQC / 验货问题 Pareto", "FQC / Inspection-Issue Pareto", "查看成品检验和验货环节数量最大的具体问题。", "Show the largest specific issues found during final inspection."),
+    ]:
+        stage_pareto = process_pareto(stages_for_chart)
+        if stage_pareto.empty:
+            continue
+        stage_pareto["issue_label"] = stage_pareto["issue_driver"].map(lambda value: value if len(value) <= 38 else value[:37] + "…")
+        render_chart_heading(
+            title_cn, title_en, purpose_cn, purpose_en,
+            "柱长表示源数据中的不良数量，按供应商分色。", "Bar length shows source defect quantity and colors distinguish suppliers.",
+            "只统计有具体问题描述且不良数量大于 0 的记录；没有检验分母时只比较数量，不计算 NC率。", "Only records with a specific issue and positive defect quantity are included; rates are not calculated when an inspection denominator is unavailable.",
+            bme_chart_source(view[view["stage"].isin(stages_for_chart)]), f"bme_v4_{chart_key}_pareto_info",
+        )
+        stage_fig = px.bar(stage_pareto, x="defect_qty", y="issue_label", color="supplier", orientation="h", labels={"defect_qty": t("不良数量", "Defect Quantity"), "issue_label": t("具体问题", "Specific Issue")}, color_discrete_sequence=["#3341c4", "#d99a00", "#168a5b"], hover_data={"issue_driver": True, "records": True, "issue_label": False})
+        stage_fig.update_layout(height=max(380, 34 * len(stage_pareto) + 140), margin=dict(l=180, r=25, t=25, b=35), legend_title_text="")
+        st.plotly_chart(stage_fig, use_container_width=True, config={"displayModeBar": False})
+        top_stage_issue = stage_pareto.sort_values("defect_qty", ascending=False).iloc[0]
+        render_bme_chart_conclusion(
+            f"当前第一问题是 {top_stage_issue['supplier']} · {top_stage_issue['issue_driver']}，不良数量 {top_stage_issue['defect_qty']:,.0f}；应先回查对应 Model、工序和源记录。",
+            f"The top issue is {top_stage_issue['supplier']} · {top_stage_issue['issue_driver']} with {top_stage_issue['defect_qty']:,.0f} defects; review the related model, process, and source records first.",
         )
     st.subheader(t("生产过程与返工分析", "Process & Rework Analysis"))
     if not cmw_iqc.empty:
@@ -14576,121 +14676,54 @@ def render_bme_bike_quality_dashboard_v3(
 
     rework = view[view["stage"].eq("REWORK")].copy()
     if not rework.empty:
-        rework["workflow_days"] = (rework["workflow_end_date"] - rework["event_timestamp"]).dt.total_seconds() / 86400
-        closed_rework = rework[
-            rework["status"].eq("Closed")
-            & rework["workflow_days"].ge(0)
-            & rework["date"].notna()
-        ].copy()
-        if not closed_rework.empty:
-            closed_rework["month"] = closed_rework["date"].dt.to_period("M").dt.to_timestamp()
-            monthly_rework = closed_rework.groupby("month", as_index=False).agg(
-                closed_records=("source_row", "count"),
-                median_days=("workflow_days", "median"),
-                p90_days=("workflow_days", lambda values: values.quantile(.90) if len(values) >= 5 else np.nan),
-            ).sort_values("month")
-            low_sample_months = int(monthly_rework["closed_records"].lt(5).sum())
+        rework["month"] = rework["date"].dt.to_period("M").dt.to_timestamp()
+        rework["component"] = rework["item_name"].fillna("").astype(str).str.strip().replace("", t("未记录零部件", "Component unrecorded"))
+        component_totals = rework.groupby("component").size().sort_values(ascending=False)
+        top_components = component_totals.head(8).index
+        component_frequency = rework[rework["component"].isin(top_components)].groupby(["month", "component"], as_index=False).size().rename(columns={"size": "rework_count"})
+        render_chart_heading(
+            "CMW 不同零部件返工频率趋势", "CMW Rework Frequency by Component",
+            "查看哪些零部件反复进入返工，以及返工频率随月份如何变化。", "Show which components repeatedly enter rework and how their frequency changes by month.",
+            "横轴是申请月份，纵轴是返工申请次数；每条线代表一个零部件。", "The x-axis is application month and the y-axis is rework-application count; each line represents one component.",
+            "按返工申请记录数统计频率，不使用未结案持续天数，也不解释为实际返工工时。", "Frequency uses rework-application record count; open aging and physical rework labor hours are not used.",
+            bme_chart_source(rework), "bme_v4_rework_frequency_info",
+        )
+        frequency_fig = px.line(
+            component_frequency, x="month", y="rework_count", color="component", markers=True,
+            labels={"month": t("申请月份", "Application Month"), "rework_count": t("返工次数", "Rework Count"), "component": t("零部件", "Component")},
+            color_discrete_sequence=px.colors.qualitative.Safe,
+        )
+        frequency_fig.update_yaxes(rangemode="tozero", dtick=1)
+        frequency_fig.update_layout(height=440, margin=dict(l=20, r=20, t=25, b=40), legend_title_text="")
+        st.plotly_chart(frequency_fig, use_container_width=True, config={"displayModeBar": False})
+        top_component_name = str(component_totals.index[0])
+        top_component_count = int(component_totals.iloc[0])
+        render_bme_chart_conclusion(
+            f"当前周期返工频率最高的零部件是 {top_component_name}，共 {top_component_count:,} 次返工申请；优先结合下方 Top 5 原因确认是否存在重复问题。",
+            f"The component with the highest current-period rework frequency is {top_component_name} with {top_component_count:,} applications; use the Top 5 reasons below to check for recurring problems.",
+        )
+
+        rework_comments = rework["issue_driver"].fillna("").astype(str).str.strip()
+        rework_comments = rework_comments[rework_comments.ne("") & ~rework_comments.str.fullmatch(r"返工|Rework|Not recorded|未记录", case=False, na=False)]
+        top_comments = rework_comments.value_counts().head(5).sort_values().rename_axis("comment").reset_index(name="rework_count")
+        if not top_comments.empty:
+            top_comments["comment_label"] = top_comments["comment"].map(lambda value: value if len(value) <= 46 else value[:45] + "…")
             render_chart_heading(
-                "CMW 返工流程周期趋势",
-                "CMW Rework Workflow Lead-Time Trend",
-                "看每个月结案的返工申请用了多久，以及当月处理了多少单。",
-                "Track whether closed rework-application workflow lead time is improving while retaining monthly throughput.",
-                "按申请月份计算已关闭记录的中位数；仅当月样本不少于 5 条时显示 P90。处理量在下方独立成图。",
-                "Calculate the median for closed records by application month; show P90 only for months with at least five records. Throughput is charted separately below.",
-                "流程天数为申请时间到源更新时间，不解释为现场实际返工工时；未关闭记录不进入周期统计，小样本月份不输出虚假的精确 P90。",
-                "Workflow days run from application time to the source update timestamp and are not physical rework labor hours; open records are excluded and small-sample months do not receive falsely precise P90 values.",
-                bme_chart_source(rework),
-                "bme_v4_rework_lead_info",
+                "CMW 返工原因 Top 5", "CMW Top 5 Rework Reasons",
+                "找出返工申请中重复出现最多的五个原因。", "Identify the five most frequently repeated rework reasons.",
+                "柱长表示包含该原因的返工申请次数。", "Bar length shows the number of rework applications carrying that reason.",
+                "原因来自源文件的不合格内容 / 返工作业原因字段，不做自动归类。", "Reasons come directly from the source nonconformity / rework-reason field without automatic classification.",
+                bme_chart_source(rework), "bme_v4_rework_comments_info",
             )
-            lead_fig = go.Figure()
-            lead_fig.add_trace(go.Scatter(x=monthly_rework["month"], y=monthly_rework["median_days"], mode="lines+markers", name=t("中位周期", "Median Lead Time"), line=dict(color="#3341c4", width=3)))
-            lead_fig.add_trace(go.Scatter(x=monthly_rework["month"], y=monthly_rework["p90_days"], mode="lines+markers", name="P90 (n≥5)", line=dict(color="#c01048", width=2, dash="dot"), connectgaps=False))
-            lead_fig.update_yaxes(title_text=t("流程天数", "Workflow Days"), rangemode="tozero")
-            lead_fig.update_layout(height=360, margin=dict(l=20, r=20, t=25, b=35), legend=dict(orientation="h", y=1.08))
-            st.plotly_chart(lead_fig, use_container_width=True, config={"displayModeBar": False})
-            latest_rework = monthly_rework.iloc[-1]
-            latest_month = pd.Timestamp(latest_rework["month"]).strftime("%Y-%m")
-            if len(monthly_rework) >= 2:
-                previous_median = float(monthly_rework.iloc[-2]["median_days"])
-                median_change = float(latest_rework["median_days"]) - previous_median
-                if median_change > 0:
-                    change_cn = f"，较上一个有数据月份增加 {median_change:.1f} 天"
-                    change_en = f", up {median_change:.1f} days versus the previous month with data"
-                elif median_change < 0:
-                    change_cn = f"，较上一个有数据月份减少 {abs(median_change):.1f} 天"
-                    change_en = f", down {abs(median_change):.1f} days versus the previous month with data"
-                else:
-                    change_cn = "，与上一个有数据月份持平"
-                    change_en = ", unchanged from the previous month with data"
-            else:
-                change_cn = ""
-                change_en = ""
-            p90_cn = f"，P90 为 {latest_rework['p90_days']:.1f} 天" if pd.notna(latest_rework["p90_days"]) else "；该月样本少于 5 条，因此不显示 P90"
-            p90_en = f", with P90 at {latest_rework['p90_days']:.1f} days" if pd.notna(latest_rework["p90_days"]) else "; P90 is hidden because the month has fewer than five records"
+            comments_fig = px.bar(top_comments, x="rework_count", y="comment_label", orientation="h", text="rework_count", hover_data={"comment": True, "comment_label": False}, labels={"rework_count": t("返工次数", "Rework Count"), "comment_label": t("返工原因", "Rework Reason")})
+            comments_fig.update_traces(marker_color="#3341c4", textposition="outside", cliponaxis=False)
+            comments_fig.update_layout(height=360, margin=dict(l=160, r=45, t=25, b=35), showlegend=False)
+            st.plotly_chart(comments_fig, use_container_width=True, config={"displayModeBar": False})
+            top_reason = top_comments.sort_values("rework_count", ascending=False).iloc[0]
             render_bme_chart_conclusion(
-                f"最新有数据月份为 {latest_month}，已结案返工流程中位周期 {latest_rework['median_days']:.1f} 天{change_cn}{p90_cn}。流程天数是申请到源更新时间，不是现场实际返工工时。",
-                f"The latest month with data is {latest_month}, with a median closed-rework workflow lead time of {latest_rework['median_days']:.1f} days{change_en}{p90_en}. Workflow days run from application to source update time and are not physical rework labor hours.",
+                f"当前出现最多的返工原因是“{top_reason['comment']}”，共 {int(top_reason['rework_count']):,} 次；建议先核对该原因对应的零部件、Model 和工序是否集中。",
+                f"The most frequent rework reason is “{top_reason['comment']}” with {int(top_reason['rework_count']):,} applications; check whether it concentrates in specific components, models, or processes.",
             )
-
-            volume_fig = px.bar(
-                monthly_rework,
-                x="month",
-                y="closed_records",
-                text="closed_records",
-                labels={"month": t("申请月份", "Application Month"), "closed_records": t("关闭记录数", "Closed Records")},
-            )
-            volume_fig.update_traces(marker_color="#8aa4e8", textposition="outside", cliponaxis=False)
-            volume_fig.update_layout(height=260, margin=dict(l=20, r=20, t=15, b=35), showlegend=False)
-            st.plotly_chart(volume_fig, use_container_width=True, config={"displayModeBar": False})
-            peak_volume = monthly_rework.loc[monthly_rework["closed_records"].idxmax()]
-            peak_month = pd.Timestamp(peak_volume["month"]).strftime("%Y-%m")
-            render_bme_chart_conclusion(
-                f"当前周期共结案 {int(monthly_rework['closed_records'].sum()):,} 条返工申请；结案量最高的是 {peak_month}，共 {int(peak_volume['closed_records']):,} 条。{low_sample_months} 个月样本少于 5 条，解读周期趋势时不要把小样本波动当成稳定改善或恶化。",
-                f"The current period contains {int(monthly_rework['closed_records'].sum()):,} closed rework applications. Peak throughput was {int(peak_volume['closed_records']):,} records in {peak_month}. {low_sample_months} months have fewer than five records, so small-sample variation should not be treated as stable improvement or deterioration.",
-            )
-
-        open_rework_chart = rework[~rework["status"].eq("Closed") & rework["event_timestamp"].notna()].copy()
-        if not open_rework_chart.empty:
-            open_rework_chart["open_days"] = (
-                pd.Timestamp(dt.datetime.now()) - open_rework_chart["event_timestamp"]
-            ).dt.total_seconds().div(86400).clip(lower=0)
-            open_rework_chart["item"] = open_rework_chart["model_item_code"].replace("", t("未记录型号", "Model unrecorded"))
-            open_rework_chart = open_rework_chart.sort_values("open_days")
-            render_chart_heading(
-                "CMW 未结案返工持续天数",
-                "CMW Open-Rework Aging",
-                "查看哪些返工申请还没有结案，以及已经持续了多少天。",
-                "Directly show rework applications that remain open and their elapsed time.",
-                "未关闭天数为当前时间减申请时间，按型号逐条展示。",
-                "Open days equal current time minus application time and are shown by model for each record.",
-                "状态来自源流程字段；图表不推断现场是否已经完成返工。",
-                "Status comes from the source workflow field; the chart does not infer whether physical rework has finished.",
-                bme_chart_source(rework),
-                "bme_v4_open_rework_info",
-            )
-            fig = px.bar(
-                open_rework_chart,
-                x="open_days",
-                y="item",
-                color="status",
-                orientation="h",
-                text="open_days",
-                hover_data={"date": True, "order_po": True, "issue_driver": True},
-                labels={"open_days": t("未关闭天数", "Open Days"), "item": "Model", "status": t("流程状态", "Workflow Status")},
-                color_discrete_sequence=["#c01048", "#d99a00"],
-            )
-            fig.update_traces(texttemplate="%{text:.1f}", textposition="outside", cliponaxis=False)
-            fig.update_layout(height=max(320, 54 * len(open_rework_chart) + 150), margin=dict(l=20, r=55, t=25, b=35), legend_title_text="")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            longest_open = open_rework_chart.sort_values("open_days", ascending=False).iloc[0]
-            longest_status = str(longest_open.get("status", "") or "").strip()
-            if not longest_status or longest_status.lower() in {"nan", "none"}:
-                longest_status = t("未记录", "Unrecorded")
-            render_bme_chart_conclusion(
-                f"当前有 {len(open_rework_chart):,} 条返工申请尚未结案；持续时间最长的是型号 {longest_open['item']}，已持续 {longest_open['open_days']:.1f} 天，流程状态为 {longest_status}。应优先确认该申请是否仍在处理，以及源流程状态是否及时更新。",
-                f"There are {len(open_rework_chart):,} rework applications still open. The longest is model {longest_open['item']} at {longest_open['open_days']:.1f} days with status {longest_status}. Prioritize confirming whether it is still in process and whether the source workflow status is current.",
-            )
-
 
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),
@@ -15285,11 +15318,8 @@ def _build_bme_reporting_cards(
             & nc_history["date"].notna()
             & nc_history["date"].dt.date.le(end_date)
         ].copy()
-    nc_view = nc_history[nc_history["date"].dt.date.ge(start_date)].copy() if not nc_history.empty else pd.DataFrame()
     fsd_nc_history = nc_history[nc_history["supplier"].eq("FSD")].copy() if not nc_history.empty else pd.DataFrame()
-    tektro_nc_history = nc_history[nc_history["supplier"].eq("TEKTRO")].copy() if not nc_history.empty else pd.DataFrame()
     fsd_nc_monthly = monthly_sum(fsd_nc_history, "nc_qty")
-    tektro_nc_monthly = monthly_sum(tektro_nc_history, "nc_qty")
     fsd_ppm_monthly = pd.Series(dtype="float64")
     if not fsd_nc_monthly.empty:
         fsd_ppm_monthly = pd.Series({
@@ -15302,7 +15332,6 @@ def _build_bme_reporting_cards(
         if "FSD" in suppliers and not customer_nc.empty
         else {"ppm": np.nan, "nc_qty": 0.0, "ordered_qty": 0.0, "coverage": np.nan}
     )
-    tektro_nc_qty = float(nc_view.loc[nc_view["supplier"].eq("TEKTRO"), "nc_qty"].sum()) if not nc_view.empty else 0.0
     fsd_attr = view[
         view["supplier"].eq("FSD") & view["stage"].isin(["AQL", "DKL"]) & view["inspected_qty"].gt(0)
     ]
@@ -15313,12 +15342,18 @@ def _build_bme_reporting_cards(
     cmw_iqc = view[view["supplier"].eq("CMW") & view["stage"].eq("IQC")]
     cmw_iqc_history = history[history["supplier"].eq("CMW") & history["stage"].eq("IQC")]
     return_ppm = cmw_iqc["defect_qty"].sum() / cmw_iqc["inspected_qty"].sum() * 1_000_000 if cmw_iqc["inspected_qty"].sum() > 0 else np.nan
+    cmw_fqc = view[view["supplier"].eq("CMW") & view["stage"].eq("AQL") & view["inspected_qty"].gt(0)]
+    cmw_fqc_history = history[history["supplier"].eq("CMW") & history["stage"].eq("AQL") & history["inspected_qty"].gt(0)]
+    cmw_fqc_rate = cmw_fqc["defect_qty"].sum() / cmw_fqc["inspected_qty"].sum() if cmw_fqc["inspected_qty"].sum() > 0 else np.nan
+    tektro_inspection = view[view["supplier"].eq("TEKTRO") & view["stage"].eq("LAB") & view["inspected_qty"].gt(0) & view["spec_low"].notna()]
+    tektro_inspection_history = history[history["supplier"].eq("TEKTRO") & history["stage"].eq("LAB") & history["inspected_qty"].gt(0) & history["spec_low"].notna()]
+    tektro_inspection_rate = tektro_inspection["defect_qty"].sum() / tektro_inspection["inspected_qty"].sum() if tektro_inspection["inspected_qty"].sum() > 0 else np.nan
     trends = {
         "fsd_ppm": _quality_reporting_trend(fsd_ppm_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
-        "fsd_nc": _quality_reporting_trend(fsd_nc_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
-        "tektro_nc": _quality_reporting_trend(tektro_nc_monthly, start_date, end_date, lambda value: f"{value:,.0f}"),
         "fsd_rate": _quality_reporting_trend(monthly_ratio(fsd_attr_history), start_date, end_date, lambda value: f"{value:.2%}"),
         "cmw_ppm": _quality_reporting_trend(monthly_ratio(cmw_iqc_history, 1_000_000), start_date, end_date, lambda value: f"{value:,.0f}"),
+        "cmw_fqc": _quality_reporting_trend(monthly_ratio(cmw_fqc_history), start_date, end_date, lambda value: f"{value:.2%}"),
+        "tektro_rate": _quality_reporting_trend(monthly_ratio(tektro_inspection_history), start_date, end_date, lambda value: f"{value:.2%}"),
     }
 
     def card(label_cn: str, label_en: str, value: str, trend_key: str, level: str) -> dict[str, str]:
@@ -15332,14 +15367,19 @@ def _build_bme_reporting_cards(
     cards: list[dict[str, str]] = []
     if "FSD" in suppliers:
         cards.extend([
-            card("FSD 客诉 PPM", "FSD Customer PPM", f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) else "N/A", "fsd_ppm", "high"),
-            card("FSD 客诉 NC数量", "FSD Customer NC Qty", f"{ppm['nc_qty']:,.0f}", "fsd_nc", "high"),
+            card("FSD 零部件问题 PPM", "FSD Component-Issue PPM", f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) else "N/A", "fsd_ppm", "high"),
             card("FSD 检验 NC率", "FSD Inspection NC Rate", pct(fsd_rate) if pd.notna(fsd_rate) else "N/A", "fsd_rate", "high" if pd.notna(fsd_rate) and fsd_rate > .04 else "medium"),
         ])
     if "TEKTRO" in suppliers:
-        cards.append(card("TEKTRO 客诉 NC数量", "TEKTRO Customer NC Qty", f"{tektro_nc_qty:,.0f}", "tektro_nc", "medium"))
+        cards.extend([
+            {"label": t("BME · TEKTRO 零部件问题 PPM", "BME · TEKTRO Component-Issue PPM"), "value": "N/A", "note": t("缺少订单量分母", "Order denominator unavailable"), "trend_direction": "flat", "trend_tone": "flat", "trend_label": t("暂不计算", "Not calculated"), "level": "medium"},
+            card("TEKTRO LAB 检验 NC率", "TEKTRO LAB Inspection NC Rate", pct(tektro_inspection_rate) if pd.notna(tektro_inspection_rate) else "N/A", "tektro_rate", "low" if pd.notna(tektro_inspection_rate) and tektro_inspection_rate == 0 else "medium"),
+        ])
     if "CMW" in suppliers:
-        cards.append(card("CMW 来料退货 PPM", "CMW Incoming Return PPM", f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "cmw_ppm", "medium"))
+        cards.extend([
+            card("CMW 来料退货 PPM", "CMW Incoming Return PPM", f"{return_ppm:,.0f}" if pd.notna(return_ppm) else "N/A", "cmw_ppm", "medium"),
+            card("CMW FQC NC率", "CMW FQC NC Rate", pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "N/A", "cmw_fqc", "medium"),
+        ])
     return cards
 
 
@@ -15632,7 +15672,7 @@ def _render_quality_reporting_content(
                 pareto, _ = build_bme_issue_pareto(bme_view, reporting_customer_nc, limit=12)
                 source_prefix = pareto["source_scope"].map({
                     "Process": t("制程", "Process"),
-                    "Customer": t("客诉", "Customer"),
+                    "Component": t("零部件供应商", "Component Supplier"),
                 })
                 localized_issue = pareto["issue_driver"].str.replace(
                     r"^Defect Code ", t("缺陷代码 ", "Defect Code "), regex=True
@@ -15640,10 +15680,10 @@ def _render_quality_reporting_content(
                 pareto["issue_display"] = source_prefix + " · " + localized_issue
                 pareto["issue_label"] = pareto["issue_display"].map(lambda value: value if len(value) <= 30 else value[:29] + "…")
                 render_chart_heading(
-                    "BME 主要质量问题 Pareto（制程 + 客诉）", "BME Top Quality Problems Pareto",
-                    "同时查看制程问题和客户 NC，确保 FSD、CMW、TEKTRO 的主要问题都能进入总览。", "Review both process issues and customer NCs so all selected BME suppliers can appear in the overview.",
-                    "先处理最长的柱；标签会明确区分制程和客诉来源。", "Start with the longest bars; labels distinguish process and customer sources.",
-                    "制程按 Alert 不良数量汇总，客诉按源 Defect Code 的 NC 数量汇总，两类来源不合并。", "Process uses alert defect quantity; customer uses NC quantity by source Defect Code. Sources remain separate.",
+                    "BME 主要质量问题 Pareto（制程 + 零部件供应商）", "BME Top Quality Problems Pareto",
+                    "同时查看制程问题和成车厂对零部件供应商申报的问题。", "Review both process issues and factory-to-component-supplier issues.",
+                    "先处理最长的柱；标签会明确区分制程和零部件供应商来源。", "Start with the longest bars; labels distinguish process and component-supplier sources.",
+                    "制程按 Alert 不良数量汇总，零部件供应商问题按源 Defect Code 的 NC 数量汇总；RPM / IV 尚未提供，不包含终端客户投诉。", "Process uses alert defect quantity and component-supplier issues use NC quantity by source Defect Code. RPM / IV are not available, so end-customer complaints are excluded.",
                     reporting_source(bme_view, "BME Database") + " + BME Database/Customer/non_conforms_export_22062026.xlsx", "quality_reporting_bme_pareto_info",
                     compact=True,
                 )
