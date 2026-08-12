@@ -14313,6 +14313,15 @@ def render_bme_bike_quality_dashboard_v3(
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
 
     st.subheader(t("重点产品", "Priority Products"))
+    with st.container(key="bme_bar_density_control"):
+        comparison_bar_count = st.slider(
+            t("柱状图显示数量（左侧更稀疏，右侧更密集）", "Bars shown (fewer on the left, denser on the right)"),
+            min_value=5,
+            max_value=30,
+            value=10,
+            step=1,
+            key="bme_v10_comparison_bar_count",
+        )
     selected_product_key = ""
     selected_product_label = ""
     selected_product_supplier = ""
@@ -14432,13 +14441,13 @@ def render_bme_bike_quality_dashboard_v3(
                 ].copy()
                 if gate_rows.empty:
                     continue
-                gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(10).copy()
+                gate_top = gate_rows.sort_values(["defect_qty", "issue_records"], ascending=False).head(comparison_bar_count).copy()
                 gate_top_frames.append(gate_top)
                 if supplier_name == "CMW" or (supplier_name == "FSD" and gate_name == "IQC"):
                     gate_top["product_display"] = gate_top["item_code"]
                 else:
                     gate_top["product_display"] = gate_top["product_label"].map(
-                        lambda value: value if len(str(value)) <= 40 else str(value)[:39] + "…"
+                        lambda value: value if len(str(value)) <= 22 else str(value)[:21] + "…"
                     )
                 supplier_gate_charts.append((gate_name, gate_top, chart_color))
             if not supplier_gate_charts:
@@ -14454,16 +14463,30 @@ def render_bme_bike_quality_dashboard_v3(
                 f"{supplier_name} Product Quality Issues",
                 "CMW 以不良率比较产品；其他供应商按不良数量定位问题产品。" if supplier_name == "CMW" else "在一张图中分别查看来料、制程和成品检验的问题产品。",
                 "CMW compares products by defect rate; other suppliers use defect quantity." if supplier_name == "CMW" else "Review incoming, process, and final-inspection product issues in one figure.",
-                "CMW 竖柱高度是不良率，柱顶数字是不良数量。" if supplier_name == "CMW" else "每个分区只使用对应检验环节的数据，柱长是不良数量。",
-                "For CMW, vertical bar height is defect rate and the number above each bar is defect quantity." if supplier_name == "CMW" else "Each panel uses only its own quality-gate data; bar length is defect quantity.",
-                "CMW IQC 不良率 = 退货数量 ÷ 来料数量；FQC 不良率 = 问题点数量 ÷ 检验数量，同一辆车可能记录多个问题点，因此 FQC 不良率可能超过 100%。PQC 源表只有各车型不良数量，没有各车型生产量或检验量，因此不计算不良率，也不使用全月总产量代替车型分母。图中产品仍按不良数量筛选前十，避免 1/1 这类极小样本主导排名。" if supplier_name == "CMW" else "三个检验环节只合并到同一个图表容器，数据口径仍然分开。FSD 的 IQC 只按源表料号统计，PQC 与 FQC 才使用车系 / 型号。没有可靠的一对一关系时不强行串款；TEKTRO 保留源型号，AQL 与 DKL 归入 FQC。",
-                "CMW IQC defect rate equals return quantity divided by incoming quantity. FQC defect rate equals defect points divided by inspected quantity; one bike can contain multiple defect points, so the rate can exceed 100%. The PQC source contains model-level defect quantities but no model-level production or inspection denominator, so no rate is calculated and the monthly total production is not substituted. Products remain the top ten by defect quantity to prevent tiny samples such as 1/1 from dominating the ranking." if supplier_name == "CMW" else "The three gates share one figure but retain separate data grains. FSD IQC uses only the source item code, while PQC and FQC use family/model aliases. Records are not force-linked without a reliable one-to-one match; TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
+                "CMW 竖柱高度是不良率，柱顶数字是不良数量。" if supplier_name == "CMW" else "每个分区只使用对应检验环节的数据，柱高是不良数量。",
+                "For CMW, vertical bar height is defect rate and the number above each bar is defect quantity." if supplier_name == "CMW" else "Each panel uses only its own quality-gate data; bar height is defect quantity.",
+                "CMW IQC 不良率 = 退货数量 ÷ 来料数量；FQC 不良率 = 问题点数量 ÷ 检验数量，同一辆车可能记录多个问题点，因此 FQC 不良率可能超过 100%。PQC 源表只有各车型不良数量，没有各车型生产量或检验量，因此不计算不良率，也不使用全月总产量代替车型分母。产品按不良数量优先显示，显示数量由上方滑杆控制，避免 1/1 这类极小样本主导排名。" if supplier_name == "CMW" else "三个检验环节只合并到同一个图表容器，数据口径仍然分开。FSD 的 IQC 只按源表料号统计，PQC 与 FQC 才使用车系 / 型号。没有可靠的一对一关系时不强行串款；TEKTRO 保留源型号，AQL 与 DKL 归入 FQC。",
+                "CMW IQC defect rate equals return quantity divided by incoming quantity. FQC defect rate equals defect points divided by inspected quantity; one bike can contain multiple defect points, so the rate can exceed 100%. The PQC source contains model-level defect quantities but no model-level production or inspection denominator, so no rate is calculated and the monthly total production is not substituted. Products are prioritized by defect quantity, and the slider controls how many are displayed, preventing tiny samples such as 1/1 from dominating the ranking." if supplier_name == "CMW" else "The three gates share one figure but retain separate data grains. FSD IQC uses only the source item code, while PQC and FQC use family/model aliases. Records are not force-linked without a reliable one-to-one match; TEKTRO retains source models, and AQL/DKL are grouped as FQC.",
                 bme_chart_source(all_product_issues[all_product_issues["supplier"].eq(supplier_name)]),
                 f"bme_v9_product_{supplier_name.lower()}_info",
             )
+            gate_chart_count = len(supplier_gate_charts)
+            if gate_chart_count >= 3:
+                gate_specs = [[{}, {}], [{"colspan": 2}, None]]
+                gate_positions = [(1, 1), (1, 2), (2, 1)]
+                gate_rows_count = 2
+            elif gate_chart_count == 2:
+                gate_specs = [[{}, {}]]
+                gate_positions = [(1, 1), (1, 2)]
+                gate_rows_count = 1
+            else:
+                gate_specs = [[{}]]
+                gate_positions = [(1, 1)]
+                gate_rows_count = 1
             combined_gate_fig = make_subplots(
-                rows=len(supplier_gate_charts),
-                cols=1,
+                rows=gate_rows_count,
+                cols=2 if gate_chart_count > 1 else 1,
+                specs=gate_specs,
                 subplot_titles=[
                     (
                         f"IQC · {t('料号', 'Item Code')}{t(' · Y轴：不良率', ' · Y-axis: Defect Rate') if supplier_name == 'CMW' else ''}"
@@ -14476,12 +14499,13 @@ def render_bme_bike_quality_dashboard_v3(
                     )
                     for gate_name, _, _ in supplier_gate_charts
                 ],
-                vertical_spacing=min(0.09, 0.18 / max(len(supplier_gate_charts) - 1, 1)),
+                vertical_spacing=0.16 if gate_rows_count > 1 else 0.0,
+                horizontal_spacing=0.10 if gate_chart_count > 1 else 0.0,
             )
             conclusion_cn: list[str] = []
             conclusion_en: list[str] = []
-            combined_height = 80
-            for row_index, (gate_name, gate_top, chart_color) in enumerate(supplier_gate_charts, start=1):
+            for chart_index, (gate_name, gate_top, chart_color) in enumerate(supplier_gate_charts):
+                plot_row, plot_col = gate_positions[chart_index]
                 if supplier_name == "CMW":
                     gate_top = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).copy()
                 else:
@@ -14585,7 +14609,7 @@ def render_bme_bike_quality_dashboard_v3(
                     gate_hovertemplate = (
                         f"{t('产品 / 款式', 'Product / Style')}  %{{customdata[0]}}<br>"
                         f"{t('产品类型', 'Product Type')}  %{{customdata[1]}}<br>"
-                        f"{t('不良数量', 'Defect Quantity')}  %{{x:,.0f}}<br>"
+                        f"{t('不良数量', 'Defect Quantity')}  %{{y:,.0f}}<br>"
                         f"{t('问题记录数', 'Issue Records')}  %{{customdata[2]:,.0f}}<extra></extra>"
                     )
                 if supplier_name == "CMW":
@@ -14597,8 +14621,8 @@ def render_bme_bike_quality_dashboard_v3(
                             y=0.5,
                             showarrow=False,
                             font=dict(size=15, color="#667085"),
-                            row=row_index,
-                            col=1,
+                            row=plot_row,
+                            col=plot_col,
                         )
                     else:
                         combined_gate_fig.add_trace(
@@ -14615,16 +14639,16 @@ def render_bme_bike_quality_dashboard_v3(
                                 hovertemplate=gate_hovertemplate,
                                 showlegend=False,
                             ),
-                            row=row_index,
-                            col=1,
+                            row=plot_row,
+                            col=plot_col,
                         )
                     combined_gate_fig.update_yaxes(
                         title_text=None,
                         tickformat=".1%",
                         rangemode="tozero",
                         tickangle=0,
-                        row=row_index,
-                        col=1,
+                        row=plot_row,
+                        col=plot_col,
                     )
                     combined_gate_fig.update_xaxes(
                         categoryorder="array",
@@ -14632,30 +14656,30 @@ def render_bme_bike_quality_dashboard_v3(
                         type="category",
                         title_text=None,
                         tickangle=0,
-                        row=row_index,
-                        col=1,
+                        row=plot_row,
+                        col=plot_col,
                     )
                     if rate_rows.empty:
                         combined_gate_fig.update_yaxes(
                             showticklabels=False,
                             showgrid=False,
                             zeroline=False,
-                            row=row_index,
-                            col=1,
+                            row=plot_row,
+                            col=plot_col,
                         )
                         combined_gate_fig.update_xaxes(
                             showticklabels=False,
                             showgrid=False,
                             zeroline=False,
-                            row=row_index,
-                            col=1,
+                            row=plot_row,
+                            col=plot_col,
                         )
                 else:
                     combined_gate_fig.add_trace(
                         go.Bar(
-                            x=gate_top["defect_qty"],
-                            y=gate_top["product_display"],
-                            orientation="h",
+                            x=gate_top["product_display"],
+                            y=gate_top["defect_qty"],
+                            orientation="v",
                             text=gate_top["defect_qty"],
                             texttemplate="%{text:,.0f}",
                             textposition="outside",
@@ -14665,24 +14689,25 @@ def render_bme_bike_quality_dashboard_v3(
                             hovertemplate=gate_hovertemplate,
                             showlegend=False,
                         ),
-                        row=row_index,
-                        col=1,
+                        row=plot_row,
+                        col=plot_col,
                     )
-                    combined_gate_fig.update_yaxes(
+                    combined_gate_fig.update_xaxes(
                         categoryorder="array",
                         categoryarray=gate_order,
                         type="category" if supplier_name == "CMW" or (supplier_name == "FSD" and gate_name == "IQC") else None,
                         title_text=None,
                         tickangle=0,
-                        row=row_index,
-                        col=1,
+                        automargin=True,
+                        row=plot_row,
+                        col=plot_col,
                     )
-                    combined_gate_fig.update_xaxes(
-                        title_text=t("不良数量", "Defect Quantity"),
+                    combined_gate_fig.update_yaxes(
+                        title_text=None,
                         rangemode="tozero",
                         tickangle=0,
-                        row=row_index,
-                        col=1,
+                        row=plot_row,
+                        col=plot_col,
                     )
                 gate_leader = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).iloc[0]
                 leader_label_cn = (
@@ -14702,15 +14727,16 @@ def render_bme_bike_quality_dashboard_v3(
                     conclusion_en.append(f"{gate_name}: {leader_label_en}, defect rate {gate_leader['defect_rate']:.2%}, defect quantity {gate_leader['defect_qty']:,.0f}")
                 elif supplier_name == "CMW":
                     gate_total = gate_top["defect_qty"].sum()
-                    conclusion_cn.append(f"{gate_name}：缺少各车型分母，暂不能计算不良率；图中前十项共 {gate_total:,.0f} 个不良")
-                    conclusion_en.append(f"{gate_name}: model-level denominator unavailable; the displayed top ten contain {gate_total:,.0f} defects")
+                    conclusion_cn.append(f"{gate_name}：缺少各车型分母，暂不能计算不良率；图中 {len(gate_top)} 项共 {gate_total:,.0f} 个不良")
+                    conclusion_en.append(f"{gate_name}: model-level denominator unavailable; the {len(gate_top)} displayed items contain {gate_total:,.0f} defects")
                 else:
                     conclusion_cn.append(f"{gate_name}：{leader_label_cn}，{gate_leader['defect_qty']:,.0f} 个")
                     conclusion_en.append(f"{gate_name}: {leader_label_en} ({gate_leader['defect_qty']:,.0f})")
-                combined_height += 410 if supplier_name == "CMW" else max(290, 34 * len(gate_top) + 90)
+                # Subplot titles carry the axis meaning horizontally so no
+                # chart needs a vertical axis title.
             combined_gate_fig.update_layout(
-                height=combined_height,
-                margin=dict(l=75 if supplier_name == "CMW" else 230, r=55 if supplier_name == "CMW" else 95, t=45, b=40),
+                height=880 if gate_rows_count > 1 else 500,
+                margin=dict(l=55, r=45, t=55, b=70),
                 showlegend=False,
                 hoverlabel=dict(align="left"),
             )
@@ -14772,7 +14798,7 @@ def render_bme_bike_quality_dashboard_v3(
         issue_summary = defect_gate.groupby("issue_driver", as_index=False).agg(
             defect_qty=("defect_qty", "sum"), issue_records=("issue_records", "sum")
         ).sort_values(["defect_qty", "issue_records"], ascending=False)
-        top_issue_names = issue_summary.head(15)["issue_driver"]
+        top_issue_names = issue_summary.head(comparison_bar_count)["issue_driver"]
         defect_pareto = defect_gate[defect_gate["issue_driver"].isin(top_issue_names)].copy()
         defect_pareto = defect_pareto.merge(
             issue_summary[["issue_driver", "defect_qty"]].rename(columns={"defect_qty": "issue_total"}),
@@ -14783,12 +14809,12 @@ def render_bme_bike_quality_dashboard_v3(
             st.info(t("这个产品有不良数量，但源记录没有填写可用于排名的具体疵点。", "This product has defect quantity, but its source records do not contain a specific defect that can be ranked."))
         else:
             defect_pareto["issue_display"] = defect_pareto["issue_driver"].map(
-                lambda value: value if len(str(value)) <= 42 else str(value)[:41] + "…"
+                lambda value: value if len(str(value)) <= 20 else str(value)[:19] + "…"
             )
             issue_order = (
                 issue_summary[issue_summary["issue_driver"].isin(top_issue_names)]
-                .sort_values("defect_qty", ascending=True)["issue_driver"]
-                .map(lambda value: value if len(str(value)) <= 42 else str(value)[:41] + "…")
+                .sort_values("defect_qty", ascending=False)["issue_driver"]
+                .map(lambda value: value if len(str(value)) <= 20 else str(value)[:19] + "…")
                 .tolist()
             )
             render_chart_heading(
@@ -14796,8 +14822,8 @@ def render_bme_bike_quality_dashboard_v3(
                 "Main Problems for the Selected Product",
                 "选中一个产品后，查看它在 IQC、PQC、FQC 中最集中的具体疵点。",
                 "After selecting a product, review its most concentrated defects across IQC, PQC, and FQC.",
-                "柱长为源不良数量，颜色表示疵点出现在哪个质量环节。",
-                "Bar length uses source defect quantity and color identifies the quality gate.",
+                "柱高为源不良数量，颜色表示疵点出现在哪个质量环节。",
+                "Bar height uses source defect quantity and color identifies the quality gate.",
                 "同一条记录含多个问题词时保留源问题组合，不拆分并重复计算数量。同一问题先按 IQC、PQC、FQC 分段，再按跨环节总量排名；未填写具体问题的数量不进入 Pareto。",
                 "When one source row contains several issue terms, the original combination remains intact so its quantity is not duplicated. Issues are ranked by cross-gate totals; quantities without a specific description are excluded.",
                 bme_chart_source(defect_detail),
@@ -14805,10 +14831,9 @@ def render_bme_bike_quality_dashboard_v3(
             )
             defect_fig = px.bar(
                 defect_pareto,
-                x="defect_qty",
-                y="issue_display",
+                x="issue_display",
+                y="defect_qty",
                 color="quality_gate",
-                orientation="h",
                 text="defect_qty",
                 barmode="stack",
                 category_orders={"issue_display": issue_order, "quality_gate": ["IQC", "PQC", "FQC"]},
@@ -14834,13 +14859,13 @@ def render_bme_bike_quality_dashboard_v3(
             )
             defect_fig.update_traces(textposition="inside", insidetextanchor="middle")
             defect_fig.update_layout(
-                height=max(420, 38 * len(issue_order) + 150),
-                margin=dict(l=190, r=45, t=25, b=40),
+                height=520,
+                margin=dict(l=55, r=45, t=25, b=75),
                 legend_title_text="",
                 hoverlabel=dict(align="left"),
             )
-            defect_fig.update_xaxes(tickangle=0)
-            defect_fig.update_yaxes(title_text=None, tickangle=0)
+            defect_fig.update_xaxes(title_text=None, tickangle=0, automargin=True)
+            defect_fig.update_yaxes(title_text=None, tickangle=0, rangemode="tozero")
             st.plotly_chart(defect_fig, use_container_width=True, config={"displayModeBar": False})
             top_defect = issue_summary.iloc[0]
             top_gate = defect_pareto[defect_pareto["issue_driver"].eq(top_defect["issue_driver"])].sort_values(
@@ -15275,7 +15300,7 @@ def render_bme_bike_quality_dashboard_v3(
             incoming["material_supplier"].ne("Unrecorded")
             & incoming["incoming_qty"].gt(0)
             & incoming["return_qty"].gt(0)
-        ].sort_values(["return_ppm", "return_qty"], ascending=False).head(20).sort_values("return_ppm").copy()
+        ].sort_values(["return_ppm", "return_qty"], ascending=False).head(comparison_bar_count).copy()
         if not incoming_chart.empty:
             zero_return_suppliers = incoming[
                 incoming["material_supplier"].ne("Unrecorded")
@@ -15300,7 +15325,7 @@ def render_bme_bike_quality_dashboard_v3(
             rework_count=("source_row", "size"),
             first_date=("date", "min"),
             latest_date=("date", "max"),
-        ).sort_values(["rework_count", "latest_date"], ascending=False).head(12).sort_values("rework_count")
+        ).sort_values(["rework_count", "latest_date"], ascending=False).head(comparison_bar_count)
         if not component_frequency.empty:
             supplementary_panels.append({"kind": "component", "title": t("零部件返工次数", "Rework Count by Component"), "data": component_frequency})
             supplementary_sources.append(rework)
@@ -15310,10 +15335,10 @@ def render_bme_bike_quality_dashboard_v3(
 
         rework_comments = rework["issue_driver"].fillna("").astype(str).str.strip()
         rework_comments = rework_comments[rework_comments.ne("") & ~rework_comments.str.fullmatch(r"返工|Rework|Not recorded|未记录", case=False, na=False)]
-        top_comments = rework_comments.value_counts().head(5).sort_values().rename_axis("comment").reset_index(name="rework_count")
+        top_comments = rework_comments.value_counts().head(comparison_bar_count).rename_axis("comment").reset_index(name="rework_count")
         if not top_comments.empty:
-            top_comments["comment_label"] = top_comments["comment"].map(lambda value: value if len(value) <= 46 else value[:45] + "…")
-            supplementary_panels.append({"kind": "reason", "title": t("返工原因前 5 名", "Top 5 Rework Reasons"), "data": top_comments})
+            top_comments["comment_label"] = top_comments["comment"].map(lambda value: value if len(value) <= 20 else value[:19] + "…")
+            supplementary_panels.append({"kind": "reason", "title": t("返工原因", "Rework Reasons"), "data": top_comments})
             top_reason = top_comments.sort_values("rework_count", ascending=False).iloc[0]
             supplementary_conclusion_cn.append(f"最常见返工原因：“{top_reason['comment']}” {int(top_reason['rework_count']):,} 次")
             supplementary_conclusion_en.append(f"most common reason: “{top_reason['comment']}” ({int(top_reason['rework_count']):,})")
@@ -15332,59 +15357,71 @@ def render_bme_bike_quality_dashboard_v3(
             bme_chart_source(combined_source),
             "bme_v9_incoming_rework_info",
         )
+        supplementary_count = len(supplementary_panels)
+        if supplementary_count >= 3:
+            supplementary_specs = [[{}, {}], [{"colspan": 2}, None]]
+            supplementary_positions = [(1, 1), (1, 2), (2, 1)]
+            supplementary_rows = 2
+        elif supplementary_count == 2:
+            supplementary_specs = [[{}, {}]]
+            supplementary_positions = [(1, 1), (1, 2)]
+            supplementary_rows = 1
+        else:
+            supplementary_specs = [[{}]]
+            supplementary_positions = [(1, 1)]
+            supplementary_rows = 1
         supplementary_fig = make_subplots(
-            rows=len(supplementary_panels),
-            cols=1,
+            rows=supplementary_rows,
+            cols=2 if supplementary_count > 1 else 1,
+            specs=supplementary_specs,
             subplot_titles=[str(panel["title"]) for panel in supplementary_panels],
-            vertical_spacing=min(0.09, 0.18 / max(len(supplementary_panels) - 1, 1)),
+            vertical_spacing=0.16 if supplementary_rows > 1 else 0.0,
+            horizontal_spacing=0.10 if supplementary_count > 1 else 0.0,
         )
-        supplementary_height = 80
-        for row_index, panel in enumerate(supplementary_panels, start=1):
+        for panel_index, panel in enumerate(supplementary_panels):
+            plot_row, plot_col = supplementary_positions[panel_index]
             panel_kind = str(panel["kind"])
             panel_data = panel["data"]
             if panel_kind == "incoming":
                 supplementary_fig.add_trace(go.Bar(
-                    x=panel_data["return_ppm"], y=panel_data["material_supplier"], orientation="h",
-                    text=panel_data["return_ppm"], texttemplate="%{text:,.0f}", textposition="inside",
+                    x=panel_data["material_supplier"], y=panel_data["return_ppm"], orientation="v",
+                    text=panel_data["return_ppm"], texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False,
                     marker_color="#3341c4",
                     customdata=np.column_stack([panel_data["receipts"], panel_data["incoming_qty"], panel_data["return_qty"]]),
                     hovertemplate=(f"{t('检验记录数', 'Inspection Records')}  %{{customdata[0]:,.0f}}<br>"
                                    f"{t('来料数量', 'Incoming Quantity')}  %{{customdata[1]:,.0f}}<br>"
                                    f"{t('退货数量', 'Return Quantity')}  %{{customdata[2]:,.0f}}<br>"
-                                   f"{t('退货 PPM', 'Return PPM')}  %{{x:,.0f}}<extra></extra>"),
+                                   f"{t('退货 PPM', 'Return PPM')}  %{{y:,.0f}}<extra></extra>"),
                     showlegend=False,
-                ), row=row_index, col=1)
+                ), row=plot_row, col=plot_col)
                 overall_ppm = panel.get("overall")
                 if pd.notna(overall_ppm):
-                    supplementary_fig.add_vline(x=float(overall_ppm), line_color="#168a5b", line_dash="dash", annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"), row=row_index, col=1)
-                supplementary_fig.update_xaxes(title_text=t("退货 PPM", "Return PPM"), rangemode="tozero", tickangle=0, row=row_index, col=1)
-                supplementary_fig.update_yaxes(title_text=None, tickangle=0, row=row_index, col=1)
-                supplementary_height += max(420, 32 * len(panel_data) + 130)
+                    supplementary_fig.add_hline(y=float(overall_ppm), line_color="#168a5b", line_dash="dash", annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"), row=plot_row, col=plot_col)
+                supplementary_fig.update_xaxes(title_text=None, tickangle=0, automargin=True, row=plot_row, col=plot_col)
+                supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", tickangle=0, row=plot_row, col=plot_col)
             elif panel_kind == "component":
                 supplementary_fig.add_trace(go.Bar(
-                    x=panel_data["rework_count"], y=panel_data["component"], orientation="h",
+                    x=panel_data["component"], y=panel_data["rework_count"], orientation="v",
                     text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#3341c4",
                     customdata=np.column_stack([panel_data["first_date"].astype(str), panel_data["latest_date"].astype(str)]),
                     hovertemplate=(f"{t('首次申请', 'First Application')}  %{{customdata[0]}}<br>"
                                    f"{t('最近申请', 'Latest Application')}  %{{customdata[1]}}<br>"
-                                   f"{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>"),
+                                   f"{t('返工次数', 'Rework Count')}  %{{y:,.0f}}<extra></extra>"),
                     showlegend=False,
-                ), row=row_index, col=1)
-                supplementary_fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1, tickangle=0, row=row_index, col=1)
-                supplementary_fig.update_yaxes(title_text=None, tickangle=0, row=row_index, col=1)
-                supplementary_height += max(390, 32 * len(panel_data) + 120)
+                ), row=plot_row, col=plot_col)
+                supplementary_fig.update_xaxes(title_text=None, tickangle=0, automargin=True, row=plot_row, col=plot_col)
+                supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
             else:
                 supplementary_fig.add_trace(go.Bar(
-                    x=panel_data["rework_count"], y=panel_data["comment_label"], orientation="h",
+                    x=panel_data["comment_label"], y=panel_data["rework_count"], orientation="v",
                     text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#d99a00",
                     customdata=np.column_stack([panel_data["comment"]]),
-                    hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>",
+                    hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{y:,.0f}}<extra></extra>",
                     showlegend=False,
-                ), row=row_index, col=1)
-                supplementary_fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1, tickangle=0, row=row_index, col=1)
-                supplementary_fig.update_yaxes(title_text=None, tickangle=0, row=row_index, col=1)
-                supplementary_height += max(330, 42 * len(panel_data) + 110)
-        supplementary_fig.update_layout(height=supplementary_height, margin=dict(l=210, r=80, t=45, b=40), showlegend=False, hoverlabel=dict(align="left"))
+                ), row=plot_row, col=plot_col)
+                supplementary_fig.update_xaxes(title_text=None, tickangle=0, automargin=True, row=plot_row, col=plot_col)
+                supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
+        supplementary_fig.update_layout(height=850 if supplementary_rows > 1 else 480, margin=dict(l=55, r=45, t=55, b=75), showlegend=False, hoverlabel=dict(align="left"))
         st.plotly_chart(supplementary_fig, use_container_width=True, config={"displayModeBar": False})
         render_bme_chart_conclusion(
             f"本期重点：{'；'.join(supplementary_conclusion_cn)}。返工样本较少，只用于定位和回查。",
