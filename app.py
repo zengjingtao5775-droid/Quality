@@ -14485,7 +14485,14 @@ def render_bme_bike_quality_dashboard_v3(
             conclusion_en: list[str] = []
             for chart_index, (gate_name, gate_top, chart_color) in enumerate(supplier_gate_charts):
                 plot_row, plot_col = gate_positions[chart_index]
-                gate_top = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).copy()
+                if supplier_name == "CMW":
+                    gate_top = gate_top.sort_values(
+                        ["defect_rate", "defect_qty", "issue_records"],
+                        ascending=False,
+                        na_position="last",
+                    ).copy()
+                else:
+                    gate_top = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).copy()
                 gate_top["latest_date_label"] = pd.to_datetime(gate_top["latest_date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
                 gate_order = gate_top["product_display"].tolist()
                 gate_initial_range = [-0.5, min(9.5, len(gate_order) - 0.5)]
@@ -14590,11 +14597,6 @@ def render_bme_bike_quality_dashboard_v3(
                         f"{t('问题记录数', 'Issue Records')}  %{{customdata[2]:,.0f}}<extra></extra>"
                     )
                 if supplier_name == "CMW":
-                    gate_top = gate_top.sort_values(
-                        ["defect_rate", "defect_qty", "issue_records"], ascending=False, na_position="last"
-                    ).copy()
-                    gate_order = gate_top["product_display"].tolist()
-                    gate_initial_range = [-0.5, min(9.5, len(gate_order) - 0.5)]
                     rate_rows = gate_top[gate_top["defect_rate"].notna()].copy()
                     if rate_rows.empty:
                         combined_gate_fig.add_annotation(
