@@ -19,12 +19,16 @@
 - Item codes remain complete and use a -45 degree label angle.
 - The in-chart two-ended range slider remains available beneath each chart.
 - The range slider's duplicate miniature bars are hidden, and the remaining horizontal track has been reduced to a thin 2.5%-height control with the selected window and drag handles preserved.
+- Panels with five or fewer categories no longer show a redundant slider. They retain a five-slot x-axis rhythm so one-category charts do not expand into a full-panel block.
+- The CMW supplementary figure uses wider inter-row spacing; its three sliders now appear only when additional categories exist and no longer cover neighboring charts.
+- English data-map states use the compact `Loaded` / `Missing` vocabulary and shorter headers (`Unit`, `Claim`, `Order Qty`) so status pills do not collide.
+- English chart measures use compact labels (`Return Qty`, `Defect Qty`) positioned outside their own panel, with extra outer margins to prevent clipping.
 
 ## Verification
 
 - Static checks passed: `git diff --check` and Python compilation.
 - Data regression suite passed: 22 tests.
-- Browser verification passed on the local Streamlit route. At the normal desktop viewport, CMW renders as two aligned charts on one row; FSD renders IQC and PQC on one row with FQC below. Panel titles, horizontal y-axis names, angled item codes, bar-top values, and thin draggable tracks remain readable without overlap.
+- Browser verification passed in Chinese and English on the local Streamlit route. CMW renders as two aligned charts on one row; FSD renders IQC and PQC on one row with FQC below. Single-category panels retain normal bar width, English axes stay within their own chart, the data-map pills do not overlap, and supplementary sliders no longer cover neighboring charts.
 
 ## Result
 

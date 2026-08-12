@@ -1,145 +1,51 @@
-# BME simplified data map and KPI layout — Design QA
+# BME Dashboard Display QA
 
-## Source truth and target
+## Evidence
 
-- Current BME before-state: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-d2dd2676-2598-4cc0-aae9-1e36124b3337.png`.
-- Textile simplicity reference: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-80f00af8-462a-4350-8846-d7d3f0a8df82.png` (`2380 × 2400`).
-- Requested outcome: use Textile's concise hierarchy for the BME data-map and KPI area without changing BME metrics or pretending BME has an API.
-- Local route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh`.
-- Browser viewport: `1280 × 720` CSS pixels, browser density unchanged.
-- Implementation captures:
-  - Top/data map: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-simple-layout-qa/01-local-top.png` (`1280 × 720`).
-  - KPI region: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-simple-layout-qa/02-local-kpis.png` (`1280 × 720`).
-- Same-input comparison: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/bme-simple-layout-qa/03-reference-implementation.png` (`2580 × 1500`).
-- Density normalization: the Textile source was proportionally padded into a `1280 × 1440` panel; the two BME implementation captures were stacked into an equal `1280 × 1440` panel.
-- State: Chinese BME page, all three suppliers, all available quality gates, `2025-08-11` to `2026-08-11`.
+- Source visual truth:
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-d85fe649-94a8-4bd3-850e-eea6b174b7c2.png`
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-93fa6b86-5dc4-48ed-acd6-840ea8866822.png`
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-3ffca93a-6149-4234-85ba-1d277848f9a8.png`
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-1d5bbade-a623-4beb-8de6-1c7c912adf16.png`
+- Implementation route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh` and `lang=en`
+- Implementation screenshots:
+  - `/tmp/bme-ui-audit-english/data-map-en.png`
+  - `/tmp/bme-ui-audit-english/cmw-charts-en.png`
+- Viewport: Codex in-app browser desktop viewport, 1280 × 720 CSS px, device scale factor 1.
+- State: default one-year period, all BME suppliers, Chinese and English views.
 
-## Findings
+## Full-view and focused comparison
 
-- No actionable P0, P1, or P2 mismatch remains for the requested scope.
-- The BME hero now flows directly into the expanded `数据地图`, matching Textile's hierarchy. The redundant numbered section title and explanatory paragraph are removed.
-- The data map keeps one necessary warning only: `172 条记录缺少日期，未计入本期 KPI 和图表。` The longer duplicate methodology caption is removed.
-- The KPI cards now follow the data map directly without another section title. Notes are shortened to denominators or decision boundaries only.
-- Desktop uses a stable `4 + 3` layout, preventing the previous dense `5 + 2` arrangement. At widths below `1100 px` it becomes two columns and below `720 px` one column.
-- KPI calculations and displayed values remain unchanged: `3,393`, `7,875`, `3,018`, `5.40%`, `488`, `3`, and `2`.
-
-## Intentional differences from Textile
-
-- BME retains more table columns because it has eight real quality gates across three suppliers; collapsing them would hide source coverage.
-- BME has no API, so the Textile refresh button and cache timestamp are not copied.
-- BME uses four columns rather than Textile's three because seven cards read cleanly as `4 + 3` and avoid an orphan third row.
-
-## Required fidelity surfaces
-
-- Fonts and typography: existing shared BME/Textile heading, table, status-pill, KPI-label, value, and note styles are reused. Shorter labels avoid unnecessary wrapping.
-- Spacing and layout rhythm: redundant headings and captions are removed; the hero, data map, KPI grid, and SPC section now form a tighter vertical sequence.
-- Colors and visual tokens: existing pale-blue canvas, white cards, blue top accents, and green/red/blue data-map pills remain unchanged.
-- Image quality and assets: no new asset is required; brand and chart assets are unchanged.
-- Copy and content: only redundant or formula-like small copy was shortened. Denominators, missing-data boundaries, and no-PPM conditions remain visible.
-
-## Interaction and runtime checks
-
-- Supplier, quality-gate, and date filters remain upstream of the same BME calculations.
-- DOM verification confirms the removed headings/captions no longer render, while all seven KPI labels and values remain.
-- Browser console errors: `0`.
-- Rendered page contains no Streamlit exception or error state.
-- `PYTHONPYCACHEPREFIX=/tmp/quality-pycache PYTHONPATH=.vendor python3 -m py_compile app.py`: passed.
-- `git diff --check`: passed.
-- `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
+The supplied screenshots showed three P1 display failures: English axis-label clipping and cross-panel overflow, long English status pills overlapping adjacent cells, and redundant range sliders covering neighboring charts. Focused browser checks were performed on the English data map, CMW paired product charts, FSD two-plus-one chart grid, and Chinese supplementary analysis.
 
 ## Comparison history
 
-### Pass 1 — passed
+1. Earlier finding: every product panel showed a slider and one-category PQC expanded into a full-width block. Fix: sliders are conditional above five categories; all panels reserve five visual slots and bars use a fixed relative width. Post-fix evidence: browser-rendered FSD PQC keeps one normal-width bar with no slider.
+2. Earlier finding: three supplementary sliders obscured chart content. Fix: 2.5%-height conditional sliders, 24% vertical subplot spacing, and increased figure height. Post-fix evidence: browser-rendered supplementary panels and conclusion no longer overlap.
+3. Earlier finding: `Return Quantity` was clipped and the right-panel `Defect Rate` crossed chart boundaries. Fix: compact English measure labels, panel-specific outside positioning, and English-only outer margins. Post-fix evidence: `Return Qty` and `Defect Rate` are fully visible beside their own panels.
+4. Earlier finding: `Not connected` pills and long data-map headers collided. Fix: `Missing` status and shorter English headers. Post-fix evidence: every pill stays within its table cell.
 
-- The combined comparison confirms that BME now follows Textile's concise information hierarchy while preserving BME-specific data coverage and metric boundaries.
-- Focused KPI capture confirms readable labels, consistent card heights, a balanced `4 + 3` grid, and no unnecessary second section heading.
-- No visual fix was required after this comparison.
+## Required fidelity surfaces
 
-final result: passed
-
----
-
-# Quality Reporting compact chart cards — Design QA
-
-## Source and implementation
-
-- User-reported source screenshot: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-ac41a661-16b1-4d31-ac7c-099a628ee7ff.png`.
-- Updated Textile cards: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-format-fix/02-reporting-cards-after.jpg`.
-- Updated BME cards: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-format-fix/03-bme-cards-after.jpg`.
-- Verified viewport: `1280 × 720` CSS pixels.
-
-## Findings and fixes
-
-- Reporting previously reused the full-width chart-heading ratio inside a half-width card, leaving only `35.6 px` for the `说明` control. The label wrapped vertically and the button grew to `61.2 px` high.
-- Reporting now uses a compact heading ratio. Every explanation control renders on one line at `78 × 40 px` without changing the full-width Textile or BME chart headings.
-- Plot height is reduced from `360 px` to `300 px`; chart cards are reduced from about `603 px` to `460 px` and aligned to a consistent row height.
-- The conclusion remains visible but uses a compact inline title, tighter padding, and no decorative shadow. Data values and conclusion logic are unchanged.
-- White cards now have the same subtle border, radius, and spacing, improving separation from the gray page background without adding dashboard noise.
-- The duplicated avatars/floating buttons visible along the right edge of the user screenshot are long-screenshot stitching artifacts from fixed overlay controls; they are not chart elements. The accepted local viewport captures contain no such overlap.
-- Browser console errors: `0`.
-- Rendered page contains no Streamlit exception or error state.
-- `PYTHONPYCACHEPREFIX=/tmp/quality-pycache python3 -m py_compile app.py`: passed.
-- `git diff --check`: passed.
-- `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
-
-final result: passed
-
----
-
-# Quality Reporting integration — Design QA
-
-## Source and target
-
-- DPCP-style source screen: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/01-quality-alert-before.png`.
-- Current Textile screen: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/02-textile-current.png`.
-- Current BME screen: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/03-bme-current.png`.
-- Implemented Reporting top: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/04-local-reporting-top.png`.
-- Implemented Textile charts: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/05-local-reporting-charts.png`.
-- Implemented BME charts: `/Users/eric/.codex/visualizations/2026/08/10/019fe981-a62d-7820-91b0-27fce1d0b990/quality-reporting-audit/06-local-reporting-bme-charts.png`.
-- Viewport: `1280 × 720` CSS pixels.
+- Fonts and typography: existing Inter / PingFang SC / Microsoft YaHei stack retained; compact English labels use 12 px and remain readable.
+- Spacing and layout rhythm: paired chart structure retained, with conditional controls and larger supplementary row separation.
+- Colors and visual tokens: existing blue, amber, green, and red semantic tokens retained without introducing new colors.
+- Image quality and assets: no image assets are present in the affected dashboard regions; no placeholders or raster substitutions were introduced.
+- Copy and content: English status and measure wording was shortened without changing business meaning.
 
 ## Findings
 
-- The page keeps the DPCP visual hierarchy: compact header, filter toolbar, reporting-scope row, `6 × 2` KPI grid, and two-column chart rows.
-- The former alert-count cards are replaced by the current dashboard metrics: six Textile KPIs and six BME KPIs. Metrics retain their original units and trend periods; RFT, PPM, NC rate, NC quantity, NQC, and IV are not summed across communities.
-- Textile and BME have separate chart sections and direct links to their full dashboards. This keeps the integrated page useful for management without hiding the different factory processes.
-- Textile RFT comparison uses three valid release gates on the latest available month. The BME NC-rate chart keeps suppliers as separate lines, and BME Pareto excludes generic `Inspection result` and missing issue labels, matching the detailed BME dashboard logic.
-- Every chart has a top-right explanation and a visible `本期结论`.
-- Sidebar names now read `Textile Alert 看板` and `质量 Reporting`; the Reporting code changes from `AL` to `RP`.
-- Community filter verification: selecting only BME removes all Textile KPI cards and Textile charts while retaining BME content.
-- Reset verification: restores both communities and all twelve KPI cards.
-- Browser console errors: `0`.
-- No Streamlit exception remains.
-- `PYTHONPYCACHEPREFIX=/tmp/quality-pycache python3 -m py_compile app.py`: passed.
-- `git diff --check`: passed.
-- `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
+No actionable P0, P1, or P2 display mismatch remains in the four reported regions.
 
-final result: passed
+## Primary interactions tested
 
----
+- Chinese and English route loading.
+- Data-map rendering in English.
+- CMW paired chart rendering.
+- FSD two-plus-one chart layout.
+- Conditional range-slider presence.
+- Supplementary chart scrolling and layout.
 
-# BME KPI trends and compact SPC — Design QA
-
-## Requested changes
-
-- Remove the yellow `172 条记录缺少日期` warning from the expanded data map.
-- Give every BME KPI a visible comparison state, using month-over-month first and year-over-year only when the prior month is unavailable.
-- Keep the selected-period KPI headline unchanged; label the comparison months below it so a monthly trend is not mistaken for the period total.
-- Simplify the SPC section to one heading, one compact process selector, and the chart. Move the explanatory paragraph and calculation method into the top-right `说明` popover.
-
-## Verification state
-
-- Local route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh`.
-- State: Chinese BME page, all three suppliers, all available quality gates, `2025-08-11` to `2026-08-11`.
-- The data-map warning is absent from the rendered DOM.
-- All seven KPI cards have a trend state. Six use monthly source history; `未结案返工` says `暂无历史快照` because the source contains current workflow status rather than historical inventory snapshots.
-- Default-period comparisons render as: FSD PPM `环比下降 68.8%`, FSD NC `环比下降 84.6%`, TEKTRO NC `环比下降 97.4%`, FSD inspection NC rate `环比下降 24.9%`, CMW incoming return PPM `环比下降 100.0%`, and suspected entry errors `环比持平`.
-- The SPC explanation is no longer visible above the selector. The top-right `说明` popover contains the purpose, chart-reading guidance, calculation logic, and source workbook.
-- The selector renders as one white bordered control row with a short `查看过程` label; the selected process title is no longer repeated as a second heading.
-- Browser console errors: `0`.
-- Rendered page contains no Streamlit exception or error state.
-- `PYTHONPYCACHEPREFIX=/tmp/quality-pycache python3 -m py_compile app.py`: passed.
-- `git diff --check`: passed.
-- `PYTHONPATH=.vendor python3 -m unittest discover -s tests`: 18 tests passed.
+No browser console error was visible during the tested interactions.
 
 final result: passed

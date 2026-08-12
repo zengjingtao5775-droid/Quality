@@ -811,6 +811,8 @@ st.markdown(
         padding: 4px 6px;
         font-size: 0.7rem;
         white-space: nowrap;
+        max-width: 100%;
+        box-sizing: border-box;
     }
     .bme-data-map-matrix .gap-method {
         padding: 4px 5px;
@@ -14545,11 +14547,11 @@ def render_bme_bike_quality_dashboard_v3(
                     else t("产品", "Product")
                 )
                 y_axis_name = (
-                    t("退货数量", "Return Quantity")
+                    t("退货数量", "Return Qty")
                     if supplier_name == "CMW" and gate_name == "IQC"
                     else t("不良率", "Defect Rate")
                     if supplier_name == "CMW"
-                    else t("不良数量", "Defect Quantity")
+                    else t("不良数量", "Defect Qty")
                 )
                 top_label_name = (
                     t("不良率", "Defect Rate")
@@ -14579,10 +14581,10 @@ def render_bme_bike_quality_dashboard_v3(
                         showarrow=False,
                         font=dict(size=15, color="#667085"),
                     )
-                # Keep horizontal measure labels close to their own panel.
-                # Left-column panels have the page margin available; right-
-                # column panels use the inter-chart gutter.
-                y_axis_annotation_x = -0.09 if plot_col == 1 else -0.19
+                # English labels are longer than the Chinese equivalents.
+                # Use compact wording and keep them just outside their panel.
+                english_chart = st.session_state.lang == "English"
+                y_axis_annotation_x = -0.13 if english_chart and plot_col == 1 else -0.18 if english_chart else (-0.09 if plot_col == 1 else -0.19)
                 combined_gate_fig.add_annotation(
                     text=y_axis_name,
                     x=y_axis_annotation_x,
@@ -14593,7 +14595,7 @@ def render_bme_bike_quality_dashboard_v3(
                     yanchor="middle",
                     showarrow=False,
                     textangle=0,
-                    font=dict(size=14, color="#667085"),
+                    font=dict(size=12 if english_chart else 14, color="#667085"),
                 )
                 combined_gate_fig.add_annotation(
                     text=x_axis_name,
@@ -14622,7 +14624,12 @@ def render_bme_bike_quality_dashboard_v3(
                     gate_top = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).copy()
                 gate_top["latest_date_label"] = pd.to_datetime(gate_top["latest_date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
                 gate_order = gate_top["product_display"].tolist()
-                gate_initial_range = [-0.5, min(4.5, len(gate_order) - 0.5)]
+                gate_visible_slots = 5
+                # Preserve a five-slot visual rhythm even when a panel has
+                # only one or two products. This avoids a single category
+                # expanding into an oversized full-panel bar.
+                gate_initial_range = [-0.5, gate_visible_slots - 0.5]
+                gate_show_slider = len(gate_order) > gate_visible_slots
                 if supplier_name == "CMW" and gate_name == "IQC":
                     gate_customdata = np.column_stack([
                         gate_top["item_code"],
@@ -14746,6 +14753,7 @@ def render_bme_bike_quality_dashboard_v3(
                                 texttemplate="%{text:.2%}" if cmw_iqc_chart else "%{text:,.0f}",
                                 textposition="outside",
                                 cliponaxis=False,
+                                width=0.68,
                                 marker_color=chart_color,
                                 customdata=gate_customdata[gate_top["defect_rate"].notna().to_numpy()],
                                 hovertemplate=gate_hovertemplate,
@@ -14770,7 +14778,7 @@ def render_bme_bike_quality_dashboard_v3(
                         tickangle=-45,
                         automargin=True,
                         range=gate_initial_range,
-                        rangeslider=dict(visible=True, thickness=0.025),
+                        rangeslider=dict(visible=gate_show_slider, thickness=0.025),
                         row=plot_row,
                         col=plot_col,
                     )
@@ -14799,6 +14807,7 @@ def render_bme_bike_quality_dashboard_v3(
                             texttemplate="%{text:,.0f}",
                             textposition="outside",
                             cliponaxis=False,
+                            width=0.68,
                             marker_color=chart_color,
                             customdata=gate_customdata,
                             hovertemplate=gate_hovertemplate,
@@ -14815,7 +14824,7 @@ def render_bme_bike_quality_dashboard_v3(
                         tickangle=-45,
                         automargin=True,
                         range=gate_initial_range,
-                        rangeslider=dict(visible=True, thickness=0.025),
+                        rangeslider=dict(visible=gate_show_slider, thickness=0.025),
                         row=plot_row,
                         col=plot_col,
                     )
@@ -14861,7 +14870,7 @@ def render_bme_bike_quality_dashboard_v3(
                 conclusion_en.append(f"{note_gate}: {note_total:,.0f} defects are recorded, but the model-level denominator is unavailable, so no defect-rate chart is shown")
             combined_gate_fig.update_layout(
                 height=520 if gate_rows_count == 1 else 570 * gate_rows_count,
-                margin=dict(l=104, r=34, t=58, b=82),
+                margin=dict(l=112 if st.session_state.lang == "English" else 104, r=48 if st.session_state.lang == "English" else 34, t=58, b=82),
                 showlegend=False,
                 hoverlabel=dict(align="left"),
                 paper_bgcolor="rgba(0,0,0,0)",
@@ -15509,17 +15518,21 @@ def render_bme_bike_quality_dashboard_v3(
             cols=2 if supplementary_count > 1 else 1,
             specs=supplementary_specs,
             subplot_titles=[str(panel["title"]) for panel in supplementary_panels],
-            vertical_spacing=0.16 if supplementary_rows > 1 else 0.0,
-            horizontal_spacing=0.10 if supplementary_count > 1 else 0.0,
+            vertical_spacing=0.24 if supplementary_rows > 1 else 0.0,
+            horizontal_spacing=0.12 if supplementary_count > 1 else 0.0,
         )
         for panel_index, panel in enumerate(supplementary_panels):
             plot_row, plot_col = supplementary_positions[panel_index]
             panel_kind = str(panel["kind"])
             panel_data = panel["data"]
+            panel_visible_slots = 5
+            panel_show_slider = len(panel_data) > panel_visible_slots
+            panel_range = [-0.5, panel_visible_slots - 0.5]
             if panel_kind == "incoming":
                 supplementary_fig.add_trace(go.Bar(
                     x=panel_data["material_supplier"], y=panel_data["return_ppm"], orientation="v",
                     text=panel_data["return_ppm"], texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False,
+                    width=0.68,
                     marker_color="#3341c4",
                     customdata=np.column_stack([panel_data["receipts"], panel_data["incoming_qty"], panel_data["return_qty"]]),
                     hovertemplate=(f"{t('检验记录数', 'Inspection Records')}  %{{customdata[0]:,.0f}}<br>"
@@ -15533,14 +15546,15 @@ def render_bme_bike_quality_dashboard_v3(
                     supplementary_fig.add_hline(y=float(overall_ppm), line_color="#168a5b", line_dash="dash", annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"), row=plot_row, col=plot_col)
                 supplementary_fig.update_xaxes(
                     title_text=None, tickangle=-45, automargin=True,
-                    range=[-0.5, min(9.5, len(panel_data) - 0.5)],
-                    rangeslider=dict(visible=True, thickness=0.08), row=plot_row, col=plot_col,
+                    range=panel_range,
+                    rangeslider=dict(visible=panel_show_slider, thickness=0.025), row=plot_row, col=plot_col,
                 )
                 supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", tickangle=0, row=plot_row, col=plot_col)
             elif panel_kind == "component":
                 supplementary_fig.add_trace(go.Bar(
                     x=panel_data["component"], y=panel_data["rework_count"], orientation="v",
                     text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#3341c4",
+                    width=0.68,
                     customdata=np.column_stack([panel_data["first_date"].astype(str), panel_data["latest_date"].astype(str)]),
                     hovertemplate=(f"{t('首次申请', 'First Application')}  %{{customdata[0]}}<br>"
                                    f"{t('最近申请', 'Latest Application')}  %{{customdata[1]}}<br>"
@@ -15549,25 +15563,34 @@ def render_bme_bike_quality_dashboard_v3(
                 ), row=plot_row, col=plot_col)
                 supplementary_fig.update_xaxes(
                     title_text=None, tickangle=-45, automargin=True,
-                    range=[-0.5, min(9.5, len(panel_data) - 0.5)],
-                    rangeslider=dict(visible=True, thickness=0.08), row=plot_row, col=plot_col,
+                    range=panel_range,
+                    rangeslider=dict(visible=panel_show_slider, thickness=0.025), row=plot_row, col=plot_col,
                 )
                 supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
             else:
                 supplementary_fig.add_trace(go.Bar(
                     x=panel_data["comment_label"], y=panel_data["rework_count"], orientation="v",
                     text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#d99a00",
+                    width=0.68,
                     customdata=np.column_stack([panel_data["comment"]]),
                     hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{y:,.0f}}<extra></extra>",
                     showlegend=False,
                 ), row=plot_row, col=plot_col)
                 supplementary_fig.update_xaxes(
                     title_text=None, tickangle=-45, automargin=True,
-                    range=[-0.5, min(9.5, len(panel_data) - 0.5)],
-                    rangeslider=dict(visible=True, thickness=0.08), row=plot_row, col=plot_col,
+                    range=panel_range,
+                    rangeslider=dict(visible=panel_show_slider, thickness=0.025), row=plot_row, col=plot_col,
                 )
                 supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
-        supplementary_fig.update_layout(height=960 if supplementary_rows > 1 else 560, margin=dict(l=55, r=45, t=55, b=120), showlegend=False, hoverlabel=dict(align="left"))
+        supplementary_fig.update_layout(
+            height=1120 if supplementary_rows > 1 else 520,
+            margin=dict(l=62, r=34, t=58, b=92),
+            showlegend=False,
+            hoverlabel=dict(align="left"),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="#ffffff",
+            font=dict(family="Inter, PingFang SC, Microsoft YaHei, sans-serif", size=12, color="#667085"),
+        )
         st.plotly_chart(supplementary_fig, use_container_width=True, config={"displayModeBar": False})
         render_bme_chart_conclusion(
             f"本期重点：{'；'.join(supplementary_conclusion_cn)}。返工样本较少，只用于定位和回查。",
@@ -16016,10 +16039,10 @@ def _render_bme_data_map(
         supplier_values.add("FSD")
     suppliers = sorted(supplier_values)
     connected = set(events.get("stage", pd.Series(dtype=object)).dropna().astype(str))
-    community_col = t("板块", "Community")
+    community_col = t("板块", "Unit")
     supplier_col = t("供应商", "Supplier")
-    complaint_col = t("客诉", "Complaints")
-    order_col = t("订单量", "Order Quantity")
+    complaint_col = t("客诉", "Claim")
+    order_col = t("订单量", "Order Qty")
     api_col = "API"
     display_columns = (
         [community_col, supplier_col]
@@ -16032,19 +16055,19 @@ def _render_bme_data_map(
         row = {community_col: "BME", supplier_col: supplier}
         for stage in expected_stages:
             has_stage = supplier_events.get("stage", pd.Series("", index=supplier_events.index)).eq(stage).any()
-            row[stage_labels.get(stage, stage)] = t("已接入", "Loaded") if has_stage else t("未接入", "Not connected")
+            row[stage_labels.get(stage, stage)] = t("已接入", "Loaded") if has_stage else t("缺失", "Missing")
         has_complaint = (
             not customer_nc.empty
             and customer_nc.get("supplier", pd.Series("", index=customer_nc.index)).astype(str).eq(supplier).any()
         )
-        row[complaint_col] = t("已接入", "Loaded") if has_complaint else t("未接入", "Not connected")
+        row[complaint_col] = t("已接入", "Loaded") if has_complaint else t("缺失", "Missing")
         has_order = supplier == "FSD" and not fsd_orders.empty
-        row[order_col] = t("已接入", "Loaded") if has_order else t("未接入", "Not connected")
-        row[api_col] = t("未接入", "Not connected")
+        row[order_col] = t("已接入", "Loaded") if has_order else t("缺失", "Missing")
+        row[api_col] = t("缺失", "Missing")
         status_rows.append(row)
     access_row = {column: "—" for column in display_columns}
-    access_row[community_col] = t("数据更新方式", "Load Format")
-    access_row[supplier_col] = t("当前方式", "Current")
+    access_row[community_col] = t("数据更新方式", "Update")
+    access_row[supplier_col] = t("当前方式", "Method")
     for stage in expected_stages:
         label = stage_labels.get(stage, stage)
         if stage in connected:
