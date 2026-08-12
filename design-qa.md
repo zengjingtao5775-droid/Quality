@@ -1,3 +1,44 @@
+# BME Overflow Regression QA — 2026-08-12
+
+## Evidence
+
+- Source screenshots:
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-c9909ad0-d44d-4b39-805f-41a10c18de35.png` (`2240 × 2376`).
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-77911dbc-f0cb-4566-8c48-3b24871681e3.png` (`2284 × 2654`).
+- Browser-rendered implementation:
+  - `/tmp/bme-overflow-final/fsd-en.png` (`1280 × 720`).
+  - `/tmp/bme-overflow-final/supplementary-en.png` (`1280 × 720`).
+- Normalized same-input comparisons:
+  - `/tmp/bme-overflow-final/compare-fsd.png`.
+  - `/tmp/bme-overflow-final/compare-supp.png`.
+- State: English BME dashboard, default one-year period, all suppliers, desktop viewport `1280 × 720`, density 1.
+
+## Findings and comparison history
+
+1. Earlier P1: embedded Plotly range sliders created duplicate mini-plots, occupied chart space, and overlapped the next subplot. Fix: remove embedded sliders from all multi-panel product and supplementary charts.
+2. Earlier P1: dozens of categories were compressed into each panel, causing unreadable angled labels and cross-row overflow. Fix: use a management-focused Top 5 in every IQC/PQC/FQC and supplementary panel.
+3. Earlier P1: one-category PQC expanded visually while neighboring IQC and FQC were overcrowded. Fix: preserve a five-slot category range and fixed relative bar width.
+4. Post-fix evidence: FSD IQC/PQC/FQC and CMW incoming/rework panels have no slider, no duplicated miniature chart, no cross-panel label overlap, and consistent five-item density.
+
+## Required fidelity surfaces
+
+- Typography: English panel titles, horizontal measure labels, and angled category labels remain readable.
+- Spacing and layout: two-up first row and full-width second row remain; controls no longer consume subplot space.
+- Colors: existing gate colors and semantic conclusion styling are unchanged.
+- Image assets: none are used in these chart regions.
+- Copy: business labels and conclusions are unchanged; only the visible category count is reduced to Top 5.
+
+## Verification
+
+- Primary interactions tested: English route load and scrolling through FSD products and CMW supplementary analysis.
+- Browser console errors: 0.
+- BME regression suite: 22 tests passed.
+- Python compilation and `git diff --check`: passed.
+
+final result: passed
+
+---
+
 # BME Dashboard Display QA
 
 ## Evidence

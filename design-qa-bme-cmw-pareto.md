@@ -19,8 +19,8 @@
 - Item codes remain complete and use a -45 degree label angle.
 - The in-chart two-ended range slider remains available beneath each chart.
 - The range slider's duplicate miniature bars are hidden, and the remaining horizontal track has been reduced to a thin 2.5%-height control with the selected window and drag handles preserved.
-- Panels with five or fewer categories no longer show a redundant slider. They retain a five-slot x-axis rhythm so one-category charts do not expand into a full-panel block.
-- The CMW supplementary figure uses wider inter-row spacing; its three sliders now appear only when additional categories exist and no longer cover neighboring charts.
+- Every product panel now uses a management-focused Top 5 and no embedded Plotly range slider. The five-slot x-axis rhythm keeps one-category charts from expanding into a full-panel block.
+- The CMW supplementary figure also uses Top 5 per panel and no embedded slider, eliminating duplicated mini-plots and all inter-row control overlap.
 - English data-map states use the compact `Loaded` / `Missing` vocabulary and shorter headers (`Unit`, `Claim`, `Order Qty`) so status pills do not collide.
 - English chart measures use compact labels (`Return Qty`, `Defect Qty`) positioned outside their own panel, with extra outer margins to prevent clipping.
 

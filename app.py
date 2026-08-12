@@ -14622,6 +14622,11 @@ def render_bme_bike_quality_dashboard_v3(
                     ).copy()
                 else:
                     gate_top = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).copy()
+                # Management view: keep only the five highest-priority items
+                # in each quality gate. Plotly's embedded range slider creates
+                # a second chart layer and overflows multi-panel layouts, so
+                # the dashboard intentionally uses a clean Top 5 instead.
+                gate_top = gate_top.head(5).copy()
                 gate_top["latest_date_label"] = pd.to_datetime(gate_top["latest_date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
                 gate_order = gate_top["product_display"].tolist()
                 gate_visible_slots = 5
@@ -14629,7 +14634,6 @@ def render_bme_bike_quality_dashboard_v3(
                 # only one or two products. This avoids a single category
                 # expanding into an oversized full-panel bar.
                 gate_initial_range = [-0.5, gate_visible_slots - 0.5]
-                gate_show_slider = len(gate_order) > gate_visible_slots
                 if supplier_name == "CMW" and gate_name == "IQC":
                     gate_customdata = np.column_stack([
                         gate_top["item_code"],
@@ -14778,7 +14782,7 @@ def render_bme_bike_quality_dashboard_v3(
                         tickangle=-45,
                         automargin=True,
                         range=gate_initial_range,
-                        rangeslider=dict(visible=gate_show_slider, thickness=0.025),
+                        rangeslider=dict(visible=False),
                         row=plot_row,
                         col=plot_col,
                     )
@@ -14824,7 +14828,7 @@ def render_bme_bike_quality_dashboard_v3(
                         tickangle=-45,
                         automargin=True,
                         range=gate_initial_range,
-                        rangeslider=dict(visible=gate_show_slider, thickness=0.025),
+                        rangeslider=dict(visible=False),
                         row=plot_row,
                         col=plot_col,
                     )
@@ -15524,9 +15528,8 @@ def render_bme_bike_quality_dashboard_v3(
         for panel_index, panel in enumerate(supplementary_panels):
             plot_row, plot_col = supplementary_positions[panel_index]
             panel_kind = str(panel["kind"])
-            panel_data = panel["data"]
+            panel_data = panel["data"].head(5).copy()
             panel_visible_slots = 5
-            panel_show_slider = len(panel_data) > panel_visible_slots
             panel_range = [-0.5, panel_visible_slots - 0.5]
             if panel_kind == "incoming":
                 supplementary_fig.add_trace(go.Bar(
@@ -15543,11 +15546,19 @@ def render_bme_bike_quality_dashboard_v3(
                 ), row=plot_row, col=plot_col)
                 overall_ppm = panel.get("overall")
                 if pd.notna(overall_ppm):
-                    supplementary_fig.add_hline(y=float(overall_ppm), line_color="#168a5b", line_dash="dash", annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"), row=plot_row, col=plot_col)
+                    supplementary_fig.add_hline(
+                        y=float(overall_ppm),
+                        line_color="#168a5b",
+                        line_dash="dash",
+                        annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"),
+                        annotation_position="top right",
+                        row=plot_row,
+                        col=plot_col,
+                    )
                 supplementary_fig.update_xaxes(
                     title_text=None, tickangle=-45, automargin=True,
                     range=panel_range,
-                    rangeslider=dict(visible=panel_show_slider, thickness=0.025), row=plot_row, col=plot_col,
+                    rangeslider=dict(visible=False), row=plot_row, col=plot_col,
                 )
                 supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", tickangle=0, row=plot_row, col=plot_col)
             elif panel_kind == "component":
@@ -15564,7 +15575,7 @@ def render_bme_bike_quality_dashboard_v3(
                 supplementary_fig.update_xaxes(
                     title_text=None, tickangle=-45, automargin=True,
                     range=panel_range,
-                    rangeslider=dict(visible=panel_show_slider, thickness=0.025), row=plot_row, col=plot_col,
+                    rangeslider=dict(visible=False), row=plot_row, col=plot_col,
                 )
                 supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
             else:
@@ -15579,12 +15590,12 @@ def render_bme_bike_quality_dashboard_v3(
                 supplementary_fig.update_xaxes(
                     title_text=None, tickangle=-45, automargin=True,
                     range=panel_range,
-                    rangeslider=dict(visible=panel_show_slider, thickness=0.025), row=plot_row, col=plot_col,
+                    rangeslider=dict(visible=False), row=plot_row, col=plot_col,
                 )
                 supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
         supplementary_fig.update_layout(
-            height=1120 if supplementary_rows > 1 else 520,
-            margin=dict(l=62, r=34, t=58, b=92),
+            height=920 if supplementary_rows > 1 else 500,
+            margin=dict(l=62, r=34, t=58, b=72),
             showlegend=False,
             hoverlabel=dict(align="left"),
             paper_bgcolor="rgba(0,0,0,0)",
