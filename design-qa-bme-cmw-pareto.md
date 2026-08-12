@@ -12,7 +12,8 @@
 - Removed the two TEKTRO KPI cards whose values cannot be calculated.
 - CMW FQC sorts by defect rate descending, using defect quantity as its tie-breaker and bar-top label.
 - CMW IQC now follows the revised business rule: bar height and sorting use return quantity, while the bar-top label shows defect rate.
-- Each CMW chart occupies a full row; charts are no longer forced into half-width columns.
+- Charts now use a compact two-column rhythm: CMW IQC and FQC share one row; FSD IQC and PQC share the first row, while FQC uses the full-width second row.
+- Each chart initially shows the Top 5 products so the two-up layout stays legible; the range slider still exposes the remaining products.
 - The IQC panel uses `IQC` as a left-aligned panel subtitle. Its y-axis title is `退货数量`, its x-axis title is `料号` at the lower right, and each bar-top label is the defect rate.
 - The CMW panel also labels the bar-top measure at the chart top (`不良率` for IQC), and all CMW y-axis names are horizontal instead of vertical.
 - Item codes remain complete and use a -45 degree label angle.
@@ -23,10 +24,10 @@
 
 - Static checks passed: `git diff --check` and Python compilation.
 - Data regression suite passed: 22 tests.
-- Browser verification passed on the local Streamlit route. At the normal desktop viewport, CMW renders as one two-card row, FSD as one three-card row, IQC is left-aligned, the y-axis reads `退货数量`, the x-axis name `料号` sits at the lower right, and the slider is a thin draggable track.
+- Browser verification passed on the local Streamlit route. At the normal desktop viewport, CMW renders as two aligned charts on one row; FSD renders IQC and PQC on one row with FQC below. Panel titles, horizontal y-axis names, angled item codes, bar-top values, and thin draggable tracks remain readable without overlap.
 
 ## Result
 
-The requested KPI grouping, IQC labeling, and compact slider match the supplied reference direction without changing the chart's business calculations.
+The requested KPI grouping, two-up chart layout, IQC labeling, and compact slider match the supplied reference direction without changing the chart's business calculations.
 
 final result: passed

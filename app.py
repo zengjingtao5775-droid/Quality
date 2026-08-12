@@ -14510,17 +14510,23 @@ def render_bme_bike_quality_dashboard_v3(
             gate_positions: list[tuple[int, int]] = []
             chart_index = 0
             while chart_index < len(supplier_gate_charts):
-                gate_specs.append([{"colspan": 2}, None])
-                gate_positions.append((len(gate_specs), 1))
-                chart_index += 1
+                remaining_charts = len(supplier_gate_charts) - chart_index
+                if remaining_charts >= 2:
+                    gate_specs.append([{}, {}])
+                    gate_positions.extend([(len(gate_specs), 1), (len(gate_specs), 2)])
+                    chart_index += 2
+                else:
+                    gate_specs.append([{"colspan": 2}, None])
+                    gate_positions.append((len(gate_specs), 1))
+                    chart_index += 1
             gate_chart_count = len(supplier_gate_charts)
             gate_rows_count = len(gate_specs)
             combined_gate_fig = make_subplots(
                 rows=gate_rows_count,
                 cols=2,
                 specs=gate_specs,
-                vertical_spacing=0.20 if gate_rows_count > 1 else 0.0,
-                horizontal_spacing=0.10,
+                vertical_spacing=0.24 if gate_rows_count > 1 else 0.0,
+                horizontal_spacing=0.14,
             )
             conclusion_cn: list[str] = []
             conclusion_en: list[str] = []
@@ -14573,9 +14579,13 @@ def render_bme_bike_quality_dashboard_v3(
                         showarrow=False,
                         font=dict(size=15, color="#667085"),
                     )
+                # Keep horizontal measure labels close to their own panel.
+                # Left-column panels have the page margin available; right-
+                # column panels use the inter-chart gutter.
+                y_axis_annotation_x = -0.09 if plot_col == 1 else -0.19
                 combined_gate_fig.add_annotation(
                     text=y_axis_name,
-                    x=-0.07,
+                    x=y_axis_annotation_x,
                     y=0.5,
                     xref=x_domain_ref,
                     yref=y_domain_ref,
@@ -14612,7 +14622,7 @@ def render_bme_bike_quality_dashboard_v3(
                     gate_top = gate_top.sort_values(["defect_qty", "issue_records"], ascending=False).copy()
                 gate_top["latest_date_label"] = pd.to_datetime(gate_top["latest_date"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("-")
                 gate_order = gate_top["product_display"].tolist()
-                gate_initial_range = [-0.5, min(9.5, len(gate_order) - 0.5)]
+                gate_initial_range = [-0.5, min(4.5, len(gate_order) - 0.5)]
                 if supplier_name == "CMW" and gate_name == "IQC":
                     gate_customdata = np.column_stack([
                         gate_top["item_code"],
@@ -14850,10 +14860,13 @@ def render_bme_bike_quality_dashboard_v3(
                 conclusion_cn.append(f"{note_gate}：有 {note_total:,.0f} 个不良，但缺少各车型生产量或检验量，因此不显示不良率图")
                 conclusion_en.append(f"{note_gate}: {note_total:,.0f} defects are recorded, but the model-level denominator is unavailable, so no defect-rate chart is shown")
             combined_gate_fig.update_layout(
-                height=max(560, 560 * gate_rows_count),
-                margin=dict(l=115, r=45, t=55, b=90),
+                height=520 if gate_rows_count == 1 else 570 * gate_rows_count,
+                margin=dict(l=104, r=34, t=58, b=82),
                 showlegend=False,
                 hoverlabel=dict(align="left"),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="#ffffff",
+                font=dict(family="Inter, PingFang SC, Microsoft YaHei, sans-serif", size=12, color="#667085"),
             )
             st.plotly_chart(combined_gate_fig, use_container_width=True, config={"displayModeBar": False})
             render_bme_chart_conclusion(
