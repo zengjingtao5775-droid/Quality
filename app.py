@@ -14300,6 +14300,35 @@ def render_bme_bike_quality_dashboard_v3(
     if "FSD" in selected_suppliers and pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
 
+    st.markdown(
+        """
+        <style>
+        /* Keep Plotly's two-ended drag control, but remove the duplicate
+           miniature bars so the control reads as a simple horizontal track. */
+        [data-testid="stPlotlyChart"] g.rangeslider-rangeplot {
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
+        [data-testid="stPlotlyChart"] rect.rangeslider-bg {
+            fill: #eef1f5 !important;
+            stroke: #c9d0dc !important;
+            stroke-width: 1px !important;
+        }
+        [data-testid="stPlotlyChart"] rect.rangeslider-slidebox {
+            fill: #64748b !important;
+            fill-opacity: 0.14 !important;
+            stroke: #94a3b8 !important;
+            stroke-width: 1px !important;
+        }
+        [data-testid="stPlotlyChart"] rect.rangeslider-mask-min,
+        [data-testid="stPlotlyChart"] rect.rangeslider-mask-max {
+            fill: #eef1f5 !important;
+            fill-opacity: 0.82 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.subheader(t("重点产品", "Priority Products"))
     selected_product_key = ""
     selected_product_label = ""
@@ -14444,10 +14473,10 @@ def render_bme_bike_quality_dashboard_v3(
             render_chart_heading(
                 f"{supplier_name} 产品质量问题",
                 f"{supplier_name} Product Quality Issues",
-                "CMW 以不良率比较产品；其他供应商按不良数量定位问题产品。" if supplier_name == "CMW" else "在一张图中分别查看来料、制程和成品检验的问题产品。",
-                "CMW compares products by defect rate; other suppliers use defect quantity." if supplier_name == "CMW" else "Review incoming, process, and final-inspection product issues in one figure.",
-                "CMW 竖柱高度是不良率，柱顶数字是不良数量。" if supplier_name == "CMW" else "每个分区只使用对应检验环节的数据，柱高是不良数量。",
-                "For CMW, vertical bar height is defect rate and the number above each bar is defect quantity." if supplier_name == "CMW" else "Each panel uses only its own quality-gate data; bar height is defect quantity.",
+                "CMW IQC 按退货数量定位重点来料；FQC 按不良率比较整车料号。" if supplier_name == "CMW" else "在一张图中分别查看来料、制程和成品检验的问题产品。",
+                "CMW IQC prioritizes incoming items by return quantity; FQC compares whole-bike item codes by defect rate." if supplier_name == "CMW" else "Review incoming, process, and final-inspection product issues in one figure.",
+                "CMW IQC 柱高是退货数量、柱顶是不良率；FQC 柱高是不良率、柱顶是不良数量。" if supplier_name == "CMW" else "每个分区只使用对应检验环节的数据，柱高是不良数量。",
+                "For CMW IQC, bar height is return quantity and the label above is defect rate; for FQC, bar height is defect rate and the label above is defect quantity." if supplier_name == "CMW" else "Each panel uses only its own quality-gate data; bar height is defect quantity.",
                 "CMW IQC 不良率 = 退货数量 ÷ 来料数量；FQC 不良率 = 问题点数量 ÷ 检验数量，同一辆车可能记录多个问题点，因此 FQC 不良率可能超过 100%。PQC 缺少车型分母时不显示空图。每张图下方的双端滑杆控制横轴可见范围：范围越窄柱子越稀疏，范围越宽柱子越密集。" if supplier_name == "CMW" else "三个检验环节的数据口径仍然分开。FSD 的 IQC 只按源表料号统计，PQC 与 FQC 才使用车系 / 型号。每张图下方的双端滑杆控制横轴可见范围；没有可靠的一对一关系时不强行串款。",
                 "CMW IQC defect rate equals return quantity divided by incoming quantity. FQC defect rate equals defect points divided by inspected quantity; one bike can contain multiple defect points, so the rate can exceed 100%. An empty PQC chart is not shown when model-level denominators are unavailable. Drag the two-ended slider below each chart to change the visible x-axis range." if supplier_name == "CMW" else "The three gates retain separate data grains. FSD IQC uses only source item codes, while PQC and FQC use family/model aliases. Drag the two-ended slider below each chart to change the visible x-axis range; records are not force-linked without a reliable one-to-one match.",
                 bme_chart_source(all_product_issues[all_product_issues["supplier"].eq(supplier_name)]),
@@ -14485,7 +14514,13 @@ def render_bme_bike_quality_dashboard_v3(
             conclusion_en: list[str] = []
             for chart_index, (gate_name, gate_top, chart_color) in enumerate(supplier_gate_charts):
                 plot_row, plot_col = gate_positions[chart_index]
-                if supplier_name == "CMW":
+                if supplier_name == "CMW" and gate_name == "IQC":
+                    gate_top = gate_top.sort_values(
+                        ["defect_qty", "defect_rate", "issue_records"],
+                        ascending=False,
+                        na_position="last",
+                    ).copy()
+                elif supplier_name == "CMW":
                     gate_top = gate_top.sort_values(
                         ["defect_rate", "defect_qty", "issue_records"],
                         ascending=False,
@@ -14609,13 +14644,14 @@ def render_bme_bike_quality_dashboard_v3(
                             col=plot_col,
                         )
                     else:
+                        cmw_iqc_chart = gate_name == "IQC"
                         combined_gate_fig.add_trace(
                             go.Bar(
                                 x=rate_rows["product_display"],
-                                y=rate_rows["defect_rate"],
+                                y=rate_rows["defect_qty"] if cmw_iqc_chart else rate_rows["defect_rate"],
                                 orientation="v",
-                                text=rate_rows["defect_qty"],
-                                texttemplate="%{text:,.0f}",
+                                text=rate_rows["defect_rate"] if cmw_iqc_chart else rate_rows["defect_qty"],
+                                texttemplate="%{text:.2%}" if cmw_iqc_chart else "%{text:,.0f}",
                                 textposition="outside",
                                 cliponaxis=False,
                                 marker_color=chart_color,
@@ -14627,9 +14663,9 @@ def render_bme_bike_quality_dashboard_v3(
                             col=plot_col,
                         )
                     combined_gate_fig.update_yaxes(
-                        title_text=t("不良率", "Defect Rate"),
+                        title_text=t("退货数量", "Return Quantity") if gate_name == "IQC" else t("不良率", "Defect Rate"),
                         title_standoff=18,
-                        tickformat=".1%",
+                        tickformat=",.0f" if gate_name == "IQC" else ".1%",
                         rangemode="tozero",
                         tickangle=0,
                         row=plot_row,
@@ -14713,8 +14749,12 @@ def render_bme_bike_quality_dashboard_v3(
                     else str(gate_leader["product_label"])
                 )
                 if supplier_name == "CMW" and pd.notna(gate_leader["defect_rate"]):
-                    conclusion_cn.append(f"{gate_name}：{leader_label_cn}，不良率 {gate_leader['defect_rate']:.2%}，不良数量 {gate_leader['defect_qty']:,.0f}")
-                    conclusion_en.append(f"{gate_name}: {leader_label_en}, defect rate {gate_leader['defect_rate']:.2%}, defect quantity {gate_leader['defect_qty']:,.0f}")
+                    if gate_name == "IQC":
+                        conclusion_cn.append(f"{gate_name}：{leader_label_cn}，退货数量 {gate_leader['defect_qty']:,.0f}，不良率 {gate_leader['defect_rate']:.2%}")
+                        conclusion_en.append(f"{gate_name}: {leader_label_en}, return quantity {gate_leader['defect_qty']:,.0f}, defect rate {gate_leader['defect_rate']:.2%}")
+                    else:
+                        conclusion_cn.append(f"{gate_name}：{leader_label_cn}，不良率 {gate_leader['defect_rate']:.2%}，不良数量 {gate_leader['defect_qty']:,.0f}")
+                        conclusion_en.append(f"{gate_name}: {leader_label_en}, defect rate {gate_leader['defect_rate']:.2%}, defect quantity {gate_leader['defect_qty']:,.0f}")
                 elif supplier_name == "CMW":
                     gate_total = gate_top["defect_qty"].sum()
                     conclusion_cn.append(f"{gate_name}：缺少各车型分母，暂不能计算不良率；图中 {len(gate_top)} 项共 {gate_total:,.0f} 个不良")

@@ -9,11 +9,13 @@
 ## Implemented changes
 
 - Removed the two TEKTRO KPI cards whose values cannot be calculated.
-- CMW IQC and FQC now sort by defect rate descending, using defect quantity only as the tie-breaker and bar-top label.
+- CMW FQC sorts by defect rate descending, using defect quantity as its tie-breaker and bar-top label.
+- CMW IQC now follows the revised business rule: bar height and sorting use return quantity, while the bar-top label shows defect rate.
 - Each CMW chart occupies a full row; charts are no longer forced into half-width columns.
 - The y-axis title is `不良率` on the left side of the axis; `Y轴` was removed from subplot titles.
 - Item codes remain complete and use a -45 degree label angle.
 - The in-chart two-ended range slider remains available beneath each chart.
+- The range slider's duplicate miniature bars are hidden so only the horizontal track, selected window, and drag handles remain visible.
 
 ## Verification
 
