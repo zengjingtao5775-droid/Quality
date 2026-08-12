@@ -14,6 +14,7 @@
 - CMW IQC now follows the revised business rule: bar height and sorting use return quantity, while the bar-top label shows defect rate.
 - Each CMW chart occupies a full row; charts are no longer forced into half-width columns.
 - The IQC panel uses `IQC` as a left-aligned panel subtitle. Its y-axis title is `退货数量`, its x-axis title is `料号` at the lower right, and each bar-top label is the defect rate.
+- The CMW panel also labels the bar-top measure at the chart top (`不良率` for IQC), and all CMW y-axis names are horizontal instead of vertical.
 - Item codes remain complete and use a -45 degree label angle.
 - The in-chart two-ended range slider remains available beneath each chart.
 - The range slider's duplicate miniature bars are hidden, and the remaining horizontal track has been reduced to a thin 2.5%-height control with the selected window and drag handles preserved.

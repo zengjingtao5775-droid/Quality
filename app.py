@@ -14538,6 +14538,18 @@ def render_bme_bike_quality_dashboard_v3(
                     if gate_name == "PQC"
                     else t("产品", "Product")
                 )
+                y_axis_name = (
+                    t("退货数量", "Return Quantity")
+                    if supplier_name == "CMW" and gate_name == "IQC"
+                    else t("不良率", "Defect Rate")
+                    if supplier_name == "CMW"
+                    else t("不良数量", "Defect Quantity")
+                )
+                top_label_name = (
+                    t("不良率", "Defect Rate")
+                    if supplier_name == "CMW" and gate_name == "IQC"
+                    else t("不良数量", "Defect Quantity")
+                )
                 combined_gate_fig.add_annotation(
                     text=gate_name,
                     x=0,
@@ -14548,6 +14560,30 @@ def render_bme_bike_quality_dashboard_v3(
                     yanchor="bottom",
                     showarrow=False,
                     font=dict(size=17, color="#667085"),
+                )
+                if supplier_name == "CMW":
+                    combined_gate_fig.add_annotation(
+                        text=top_label_name,
+                        x=0.5,
+                        y=1.10,
+                        xref=x_domain_ref,
+                        yref=y_domain_ref,
+                        xanchor="center",
+                        yanchor="bottom",
+                        showarrow=False,
+                        font=dict(size=15, color="#667085"),
+                    )
+                combined_gate_fig.add_annotation(
+                    text=y_axis_name,
+                    x=-0.07,
+                    y=0.5,
+                    xref=x_domain_ref,
+                    yref=y_domain_ref,
+                    xanchor="right",
+                    yanchor="middle",
+                    showarrow=False,
+                    textangle=0,
+                    font=dict(size=14, color="#667085"),
                 )
                 combined_gate_fig.add_annotation(
                     text=x_axis_name,
@@ -14709,8 +14745,7 @@ def render_bme_bike_quality_dashboard_v3(
                             col=plot_col,
                         )
                     combined_gate_fig.update_yaxes(
-                        title_text=t("退货数量", "Return Quantity") if gate_name == "IQC" else t("不良率", "Defect Rate"),
-                        title_standoff=18,
+                        title_text=None,
                         tickformat=",.0f" if gate_name == "IQC" else ".1%",
                         rangemode="tozero",
                         tickangle=0,
@@ -14816,7 +14851,7 @@ def render_bme_bike_quality_dashboard_v3(
                 conclusion_en.append(f"{note_gate}: {note_total:,.0f} defects are recorded, but the model-level denominator is unavailable, so no defect-rate chart is shown")
             combined_gate_fig.update_layout(
                 height=max(560, 560 * gate_rows_count),
-                margin=dict(l=55, r=45, t=55, b=90),
+                margin=dict(l=115, r=45, t=55, b=90),
                 showlegend=False,
                 hoverlabel=dict(align="left"),
             )
