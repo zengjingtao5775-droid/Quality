@@ -938,7 +938,20 @@ st.markdown(
     }
     .kpi-grid.bme-overall {
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        margin-top: 22px;
+        margin: 8px 0 18px;
+    }
+    .kpi-grid.bme-overall.bme-cmw-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .kpi-grid.bme-overall.bme-fsd-row {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .bme-kpi-row-label {
+        margin: 18px 0 0;
+        color: #344054;
+        font-size: 1rem;
+        font-weight: 800;
+        line-height: 1.3;
     }
     .st-key-bme_spc_filter {
         background: rgba(255, 255, 255, 0.96);
@@ -1818,9 +1831,13 @@ st.markdown(
     }
     @media (max-width: 1100px) {
         .kpi-grid.bme-overall {grid-template-columns: repeat(2, minmax(0, 1fr));}
+        .kpi-grid.bme-overall.bme-cmw-row,
+        .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
     }
     @media (max-width: 720px) {
         .kpi-grid, .kpi-grid.coverage-grid, .kpi-grid.zx-top, .kpi-grid.bme-overall, .signal-grid {grid-template-columns: 1fr;}
+        .kpi-grid.bme-overall.bme-cmw-row,
+        .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: 1fr;}
         .hero-title {font-size: 1.8rem;}
         .hero {padding: 22px 20px; border-radius: 16px;}
     }
@@ -14284,19 +14301,26 @@ def render_bme_bike_quality_dashboard_v3(
         "BME Database + Component Box",
         "bme_v6_kpi_info",
     )
-    kpi_cards: list[dict[str, str]] = []
+    cmw_kpi_cards: list[dict[str, str]] = []
+    if "CMW" in selected_suppliers:
+        cmw_kpi_cards.extend([
+            with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
+            with_trend({"label": t("CMW 验货问题率", "CMW Final Inspection Issue Rate"), "value": pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "—", "level": "medium"}, cmw_fqc_rate_trend),
+        ])
+    if cmw_kpi_cards:
+        st.markdown(f'<div class="bme-kpi-row-label">{t("CMW", "CMW")}</div>', unsafe_allow_html=True)
+        render_kpi_cards(cmw_kpi_cards, variant="bme-overall bme-cmw-row")
+
+    fsd_kpi_cards: list[dict[str, str]] = []
     if "FSD" in selected_suppliers:
-        kpi_cards.extend([
+        fsd_kpi_cards.extend([
             with_trend({"label": t("FSD 客诉 PPM", "FSD Complaint PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) else "—", "level": "medium"}, fsd_ppm_trend),
             with_trend({"label": t("FSD 来料退货 PPM", "FSD Incoming Return PPM"), "value": f"{fsd_incoming_ppm:,.0f}" if pd.notna(fsd_incoming_ppm) else "—", "level": "medium"}, fsd_incoming_ppm_trend),
             with_trend({"label": t("FSD 检验 NC 率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "—", "level": "medium"}, fsd_rate_trend),
         ])
-    if "CMW" in selected_suppliers:
-        kpi_cards.extend([
-            with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
-            with_trend({"label": t("CMW 验货问题率", "CMW Final Inspection Issue Rate"), "value": pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "—", "level": "medium"}, cmw_fqc_rate_trend),
-        ])
-    render_kpi_cards(kpi_cards, variant="bme-overall")
+    if fsd_kpi_cards:
+        st.markdown(f'<div class="bme-kpi-row-label">{t("FSD", "FSD")}</div>', unsafe_allow_html=True)
+        render_kpi_cards(fsd_kpi_cards, variant="bme-overall bme-fsd-row")
     if "FSD" in selected_suppliers and pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
 
@@ -14495,18 +14519,6 @@ def render_bme_bike_quality_dashboard_v3(
                 rows=gate_rows_count,
                 cols=2,
                 specs=gate_specs,
-                subplot_titles=[
-                    (
-                        f"IQC · {t('料号', 'Item Code')}"
-                        if supplier_name in {"CMW", "FSD"} and gate_name == "IQC"
-                        else f"PQC · {t('Model / 车型', 'Model')}{t(' · 不良率暂无', ' · Rate unavailable') if supplier_name == 'CMW' else ''}"
-                        if supplier_name == "CMW" and gate_name == "PQC"
-                        else f"FQC · {t('整车料号', 'Whole-bike Item Code')}"
-                        if supplier_name == "CMW" and gate_name == "FQC"
-                        else gate_name
-                    )
-                    for gate_name, _, _ in supplier_gate_charts
-                ],
                 vertical_spacing=0.20 if gate_rows_count > 1 else 0.0,
                 horizontal_spacing=0.10,
             )
@@ -14514,6 +14526,40 @@ def render_bme_bike_quality_dashboard_v3(
             conclusion_en: list[str] = []
             for chart_index, (gate_name, gate_top, chart_color) in enumerate(supplier_gate_charts):
                 plot_row, plot_col = gate_positions[chart_index]
+                axis_number = chart_index + 1
+                x_domain_ref = "x domain" if axis_number == 1 else f"x{axis_number} domain"
+                y_domain_ref = "y domain" if axis_number == 1 else f"y{axis_number} domain"
+                x_axis_name = (
+                    t("料号", "Item Code")
+                    if gate_name == "IQC"
+                    else t("整车料号", "Whole-bike Item Code")
+                    if supplier_name == "CMW" and gate_name == "FQC"
+                    else t("车型", "Model")
+                    if gate_name == "PQC"
+                    else t("产品", "Product")
+                )
+                combined_gate_fig.add_annotation(
+                    text=gate_name,
+                    x=0,
+                    y=1.10,
+                    xref=x_domain_ref,
+                    yref=y_domain_ref,
+                    xanchor="left",
+                    yanchor="bottom",
+                    showarrow=False,
+                    font=dict(size=17, color="#667085"),
+                )
+                combined_gate_fig.add_annotation(
+                    text=x_axis_name,
+                    x=1,
+                    y=-0.17,
+                    xref=x_domain_ref,
+                    yref=y_domain_ref,
+                    xanchor="right",
+                    yanchor="top",
+                    showarrow=False,
+                    font=dict(size=14, color="#667085"),
+                )
                 if supplier_name == "CMW" and gate_name == "IQC":
                     gate_top = gate_top.sort_values(
                         ["defect_qty", "defect_rate", "issue_records"],
@@ -14679,7 +14725,7 @@ def render_bme_bike_quality_dashboard_v3(
                         tickangle=-45,
                         automargin=True,
                         range=gate_initial_range,
-                        rangeslider=dict(visible=True, thickness=0.08),
+                        rangeslider=dict(visible=True, thickness=0.025),
                         row=plot_row,
                         col=plot_col,
                     )
@@ -14724,7 +14770,7 @@ def render_bme_bike_quality_dashboard_v3(
                         tickangle=-45,
                         automargin=True,
                         range=gate_initial_range,
-                        rangeslider=dict(visible=True, thickness=0.08),
+                        rangeslider=dict(visible=True, thickness=0.025),
                         row=plot_row,
                         col=plot_col,
                     )
@@ -14770,7 +14816,7 @@ def render_bme_bike_quality_dashboard_v3(
                 conclusion_en.append(f"{note_gate}: {note_total:,.0f} defects are recorded, but the model-level denominator is unavailable, so no defect-rate chart is shown")
             combined_gate_fig.update_layout(
                 height=max(560, 560 * gate_rows_count),
-                margin=dict(l=55, r=45, t=55, b=110),
+                margin=dict(l=55, r=45, t=55, b=90),
                 showlegend=False,
                 hoverlabel=dict(align="left"),
             )

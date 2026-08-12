@@ -2,29 +2,30 @@
 
 ## Target and implementation
 
-- Reference: `codex-clipboard-f8479a56-3610-4dd3-896f-b25304a34f6f.png`
-- Target behavior: vertical Pareto bars, descending from left to right, angled item-code labels, and an in-chart range slider.
+- References: `codex-clipboard-c680548f-8e76-403e-99fc-1f1b61adfbd7.png`, `codex-clipboard-d5cb9dc9-6242-4915-b94d-e58d35cdee20.png`, and the earlier Pareto reference `codex-clipboard-f8479a56-3610-4dd3-896f-b25304a34f6f.png`.
+- Target behavior: supplier-specific KPI rows; vertical Pareto bars; left-aligned panel labels; correctly placed axis names; angled item-code labels; and a compact in-chart range slider.
 - Implementation route: `http://127.0.0.1:8502/?scope=BME_CMW&lang=zh`
 
 ## Implemented changes
 
+- Factory KPI cards are grouped into two supplier rows: CMW first, FSD second.
 - Removed the two TEKTRO KPI cards whose values cannot be calculated.
 - CMW FQC sorts by defect rate descending, using defect quantity as its tie-breaker and bar-top label.
 - CMW IQC now follows the revised business rule: bar height and sorting use return quantity, while the bar-top label shows defect rate.
 - Each CMW chart occupies a full row; charts are no longer forced into half-width columns.
-- The y-axis title is `不良率` on the left side of the axis; `Y轴` was removed from subplot titles.
+- The IQC panel uses `IQC` as a left-aligned panel subtitle. Its y-axis title is `退货数量`, its x-axis title is `料号` at the lower right, and each bar-top label is the defect rate.
 - Item codes remain complete and use a -45 degree label angle.
 - The in-chart two-ended range slider remains available beneath each chart.
-- The range slider's duplicate miniature bars are hidden so only the horizontal track, selected window, and drag handles remain visible.
+- The range slider's duplicate miniature bars are hidden, and the remaining horizontal track has been reduced to a thin 2.5%-height control with the selected window and drag handles preserved.
 
 ## Verification
 
 - Static checks passed: `git diff --check` and Python compilation.
 - Data regression suite passed: 22 tests.
-- Browser screenshot comparison is blocked: the in-app browser security policy rejected the local Streamlit URL. No browser workaround was attempted.
+- Browser verification passed on the local Streamlit route. At the normal desktop viewport, CMW renders as one two-card row, FSD as one three-card row, IQC is left-aligned, the y-axis reads `退货数量`, the x-axis name `料号` sits at the lower right, and the slider is a thin draggable track.
 
 ## Result
 
-The code and data checks pass, but the required same-viewport screenshot comparison could not be completed in this environment.
+The requested KPI grouping, IQC labeling, and compact slider match the supplied reference direction without changing the chart's business calculations.
 
-final result: blocked
+final result: passed
