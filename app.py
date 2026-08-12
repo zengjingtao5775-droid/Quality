@@ -14109,13 +14109,6 @@ def render_bme_bike_quality_dashboard_v3(
             customer_period["date"].notna()
             & customer_period["date"].dt.date.between(start_date, end_date)
         ].copy()
-    tektro_customer_nc = float(
-        pd.to_numeric(
-            customer_period.loc[customer_period["supplier"].eq("TEKTRO"), "nc_qty"],
-            errors="coerce",
-        ).fillna(0).sum()
-    ) if not customer_period.empty else 0.0
-
     for optional_column, default_value in {
         "event_timestamp": pd.NaT,
         "workflow_end_date": pd.NaT,
@@ -14298,11 +14291,6 @@ def render_bme_bike_quality_dashboard_v3(
             with_trend({"label": t("FSD 来料退货 PPM", "FSD Incoming Return PPM"), "value": f"{fsd_incoming_ppm:,.0f}" if pd.notna(fsd_incoming_ppm) else "—", "level": "medium"}, fsd_incoming_ppm_trend),
             with_trend({"label": t("FSD 检验 NC 率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "—", "level": "medium"}, fsd_rate_trend),
         ])
-    if "TEKTRO" in selected_suppliers:
-        kpi_cards.extend([
-            {"label": t("TEKTRO 客诉 PPM", "TEKTRO Complaint PPM"), "value": "—", "note": t(f"客诉 NC {tektro_customer_nc:,.0f}；缺少订单量，暂不能计算 PPM", f"Complaint NC {tektro_customer_nc:,.0f}; order quantity is unavailable"), "level": "medium"},
-            {"label": t("TEKTRO 过程检验 NC 率", "TEKTRO Process Inspection NC Rate"), "value": "—", "note": t("缺少规格和合格判定，暂不能计算 NC 率", "Specifications and pass/fail decisions are unavailable"), "level": "medium"},
-        ])
     if "CMW" in selected_suppliers:
         kpi_cards.extend([
             with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
@@ -14469,20 +14457,9 @@ def render_bme_bike_quality_dashboard_v3(
             gate_positions: list[tuple[int, int]] = []
             chart_index = 0
             while chart_index < len(supplier_gate_charts):
-                current_count = len(supplier_gate_charts[chart_index][1])
-                next_is_small = (
-                    chart_index + 1 < len(supplier_gate_charts)
-                    and len(supplier_gate_charts[chart_index + 1][1]) <= 5
-                )
-                if current_count <= 5 and next_is_small:
-                    gate_specs.append([{}, {}])
-                    row_number = len(gate_specs)
-                    gate_positions.extend([(row_number, 1), (row_number, 2)])
-                    chart_index += 2
-                else:
-                    gate_specs.append([{"colspan": 2}, None])
-                    gate_positions.append((len(gate_specs), 1))
-                    chart_index += 1
+                gate_specs.append([{"colspan": 2}, None])
+                gate_positions.append((len(gate_specs), 1))
+                chart_index += 1
             gate_chart_count = len(supplier_gate_charts)
             gate_rows_count = len(gate_specs)
             combined_gate_fig = make_subplots(
@@ -14491,11 +14468,11 @@ def render_bme_bike_quality_dashboard_v3(
                 specs=gate_specs,
                 subplot_titles=[
                     (
-                        f"IQC · {t('料号', 'Item Code')}{t(' · Y轴：不良率', ' · Y-axis: Defect Rate') if supplier_name == 'CMW' else ''}"
+                        f"IQC · {t('料号', 'Item Code')}"
                         if supplier_name in {"CMW", "FSD"} and gate_name == "IQC"
                         else f"PQC · {t('Model / 车型', 'Model')}{t(' · 不良率暂无', ' · Rate unavailable') if supplier_name == 'CMW' else ''}"
                         if supplier_name == "CMW" and gate_name == "PQC"
-                        else f"FQC · {t('整车料号', 'Whole-bike Item Code')}{t(' · Y轴：不良率', ' · Y-axis: Defect Rate') if supplier_name == 'CMW' else ''}"
+                        else f"FQC · {t('整车料号', 'Whole-bike Item Code')}"
                         if supplier_name == "CMW" and gate_name == "FQC"
                         else gate_name
                     )
@@ -14613,6 +14590,11 @@ def render_bme_bike_quality_dashboard_v3(
                         f"{t('问题记录数', 'Issue Records')}  %{{customdata[2]:,.0f}}<extra></extra>"
                     )
                 if supplier_name == "CMW":
+                    gate_top = gate_top.sort_values(
+                        ["defect_rate", "defect_qty", "issue_records"], ascending=False, na_position="last"
+                    ).copy()
+                    gate_order = gate_top["product_display"].tolist()
+                    gate_initial_range = [-0.5, min(9.5, len(gate_order) - 0.5)]
                     rate_rows = gate_top[gate_top["defect_rate"].notna()].copy()
                     if rate_rows.empty:
                         combined_gate_fig.add_annotation(
@@ -14643,7 +14625,8 @@ def render_bme_bike_quality_dashboard_v3(
                             col=plot_col,
                         )
                     combined_gate_fig.update_yaxes(
-                        title_text=None,
+                        title_text=t("不良率", "Defect Rate"),
+                        title_standoff=18,
                         tickformat=".1%",
                         rangemode="tozero",
                         tickangle=0,
