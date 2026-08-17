@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-11-v6"
+BME_QUALITY_LOGIC_VERSION = "2026-08-17-v8"
 
 
 EVENT_COLUMNS = [
@@ -758,6 +758,255 @@ def build_bme_product_master(events: pd.DataFrame) -> pd.DataFrame:
         "product_group",
     ] = "IQC 来料料号"
     return source.reset_index(drop=True)
+
+
+def _relative_percentile(values: pd.Series) -> pd.Series:
+    """Return a 0-100 peer percentile without making a single item 100."""
+    numeric = pd.to_numeric(values, errors="coerce")
+    valid = numeric.notna()
+    result = pd.Series(np.nan, index=values.index, dtype="float64")
+    count = int(valid.sum())
+    if count == 1:
+        result.loc[valid] = 50.0
+    elif count > 1:
+        ranks = numeric.loc[valid].rank(method="average")
+        result.loc[valid] = (ranks - 1) / (count - 1) * 100
+    return result
+
+
+def build_bme_relative_risk_scores(events: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build supplier and product priority scores from auditable BME gates.
+
+    Scores are relative rankings inside the currently selected data, not defect
+    probabilities or acceptance decisions. Product baselines are separated by
+    supplier, source product family and quality gate so unlike grains are never
+    compared directly. Missing gates are reported as coverage and are not scored
+    as zero. Rate receives 60% and defect volume 40% when a valid denominator is
+    available; otherwise the gate score uses volume only.
+    """
+    master = build_bme_product_master(events)
+    product_columns = [
+        "supplier", "product_key", "product_label", "product_group",
+        "risk_score", "affected_gates", "available_gates", "defect_qty",
+        "inspected_qty", "latest_date", "baseline",
+    ]
+    supplier_columns = [
+        "supplier", "risk_score", "available_gates", "defect_qty",
+        "inspected_qty", "product_count", "baseline",
+    ]
+    if master.empty:
+        return pd.DataFrame(columns=product_columns), pd.DataFrame(columns=supplier_columns)
+
+    master = master.copy()
+    master["inspected_qty"] = pd.to_numeric(master.get("inspected_qty"), errors="coerce")
+    master["defect_qty"] = pd.to_numeric(master.get("defect_qty"), errors="coerce").fillna(0)
+    alerts = master.get("is_alert", pd.Series(False, index=master.index)).fillna(False)
+    master["risk_defect_qty"] = master["defect_qty"].where(alerts, 0.0)
+
+    gate = master.groupby(
+        ["supplier", "product_key", "product_label", "product_group", "quality_gate"],
+        as_index=False,
+    ).agg(
+        defect_qty=("risk_defect_qty", "sum"),
+        inspected_qty=("inspected_qty", lambda values: values.sum(min_count=1)),
+        record_count=("source_row", "size"),
+        latest_date=("date", "max"),
+    )
+    gate["defect_rate"] = gate["defect_qty"].div(gate["inspected_qty"].replace(0, np.nan))
+    peer = ["supplier", "product_group", "quality_gate"]
+    gate["volume_percentile"] = gate.groupby(peer, dropna=False)["defect_qty"].transform(_relative_percentile)
+    gate["rate_percentile"] = gate.groupby(peer, dropna=False)["defect_rate"].transform(_relative_percentile)
+    gate["gate_score"] = np.where(
+        gate["rate_percentile"].notna(),
+        gate["rate_percentile"] * 0.60 + gate["volume_percentile"] * 0.40,
+        gate["volume_percentile"],
+    )
+
+    products = gate.groupby(
+        ["supplier", "product_key", "product_label", "product_group"], as_index=False
+    ).agg(
+        risk_score=("gate_score", "mean"),
+        affected_gates=("defect_qty", lambda values: int((values > 0).sum())),
+        available_gates=("quality_gate", "nunique"),
+        defect_qty=("defect_qty", "sum"),
+        inspected_qty=("inspected_qty", lambda values: values.sum(min_count=1)),
+        latest_date=("latest_date", "max"),
+    )
+    products = products[products["defect_qty"].gt(0)].copy()
+    products["risk_score"] = products["risk_score"].round(1)
+    products["baseline"] = "Supplier + product family + quality gate peer percentile"
+    products = products.sort_values(["risk_score", "defect_qty"], ascending=False).reset_index(drop=True)
+
+    supplier_gate = master.groupby(["supplier", "quality_gate"], as_index=False).agg(
+        defect_qty=("risk_defect_qty", "sum"),
+        inspected_qty=("inspected_qty", lambda values: values.sum(min_count=1)),
+    )
+    supplier_gate["defect_rate"] = supplier_gate["defect_qty"].div(
+        supplier_gate["inspected_qty"].replace(0, np.nan)
+    )
+    supplier_gate["volume_percentile"] = supplier_gate.groupby("quality_gate")["defect_qty"].transform(_relative_percentile)
+    supplier_gate["rate_percentile"] = supplier_gate.groupby("quality_gate")["defect_rate"].transform(_relative_percentile)
+    supplier_gate["gate_score"] = np.where(
+        supplier_gate["rate_percentile"].notna(),
+        supplier_gate["rate_percentile"] * 0.60 + supplier_gate["volume_percentile"] * 0.40,
+        supplier_gate["volume_percentile"],
+    )
+    supplier_scores = supplier_gate.groupby("supplier", as_index=False).agg(
+        risk_score=("gate_score", "mean"),
+        available_gates=("quality_gate", "nunique"),
+        defect_qty=("defect_qty", "sum"),
+        inspected_qty=("inspected_qty", lambda values: values.sum(min_count=1)),
+    )
+    product_counts = products.groupby("supplier")["product_key"].nunique().rename("product_count")
+    supplier_scores = supplier_scores.merge(product_counts, on="supplier", how="left")
+    supplier_scores["product_count"] = supplier_scores["product_count"].fillna(0).astype(int)
+    supplier_scores["risk_score"] = supplier_scores["risk_score"].round(1)
+    supplier_scores["baseline"] = "Quality-gate peer percentile across suppliers"
+    supplier_scores = supplier_scores.sort_values(["risk_score", "defect_qty"], ascending=False).reset_index(drop=True)
+    return products[product_columns], supplier_scores[supplier_columns]
+
+
+def _deterministic_kmeans_labels(
+    points: np.ndarray, cluster_count: int = 3, max_iter: int = 80
+) -> np.ndarray:
+    """Cluster two-dimensional risk signals without a random seed dependency."""
+    if len(points) == 0:
+        return np.array([], dtype=int)
+    unique_points = np.unique(points, axis=0)
+    cluster_count = max(1, min(cluster_count, len(unique_points)))
+    scale = points.std(axis=0)
+    scale[scale == 0] = 1
+    normalized = (points - points.mean(axis=0)) / scale
+    order = np.argsort(normalized.sum(axis=1))
+    seed_positions = np.linspace(0, len(order) - 1, cluster_count).round().astype(int)
+    centroids = normalized[order[seed_positions]].copy()
+    labels = np.zeros(len(points), dtype=int)
+    for _ in range(max_iter):
+        distances = ((normalized[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+        next_labels = distances.argmin(axis=1)
+        next_centroids = centroids.copy()
+        for cluster_id in range(cluster_count):
+            members = normalized[next_labels == cluster_id]
+            if len(members):
+                next_centroids[cluster_id] = members.mean(axis=0)
+            else:
+                farthest = distances.min(axis=1).argmax()
+                next_centroids[cluster_id] = normalized[farthest]
+        if np.array_equal(labels, next_labels) and np.allclose(centroids, next_centroids):
+            labels = next_labels
+            break
+        labels = next_labels
+        centroids = next_centroids
+    return labels
+
+
+def build_cmw_product_clusters(events: pd.DataFrame) -> pd.DataFrame:
+    """Cluster CMW IQC, PQC and FQC quality objects within each source gate.
+
+    CMW IQC component codes, PQC model names and FQC whole-bike item codes do
+    not share an auditable master-data relationship. They are therefore never
+    merged into one lifecycle product. Each gate is normalized and clustered
+    independently, then displayed together as comparable investigation
+    priorities. A valid rate uses 60% rate percentile and 40% defect-volume
+    percentile. PQC has no denominator, so its score uses defect-volume
+    percentile only; issue-record intensity is used only as the second
+    clustering axis.
+    """
+    columns = [
+        "quality_gate", "product_key", "product_label", "product_group",
+        "cluster_label", "risk_score", "severity_axis", "exposure_axis",
+        "defect_qty", "inspected_qty", "defect_rate", "issue_records",
+        "record_count", "latest_date", "confidence", "score_basis",
+    ]
+    master = build_bme_product_master(events)
+    master = master[
+        master["supplier"].eq("CMW")
+        & master["quality_gate"].isin(["IQC", "PQC", "FQC"])
+    ].copy()
+    if master.empty:
+        return pd.DataFrame(columns=columns)
+
+    master["inspected_qty"] = pd.to_numeric(master.get("inspected_qty"), errors="coerce")
+    master["defect_qty"] = pd.to_numeric(master.get("defect_qty"), errors="coerce").fillna(0)
+    alerts = master.get("is_alert", pd.Series(False, index=master.index)).fillna(False)
+    master["risk_defect_qty"] = master["defect_qty"].where(alerts, 0.0)
+    master["risk_issue_record"] = alerts.astype(int)
+    grouped = master.groupby(
+        ["quality_gate", "product_key", "product_label", "product_group"],
+        as_index=False,
+    ).agg(
+        defect_qty=("risk_defect_qty", "sum"),
+        inspected_qty=("inspected_qty", lambda values: values.sum(min_count=1)),
+        issue_records=("risk_issue_record", "sum"),
+        record_count=("source_row", "size"),
+        latest_date=("date", "max"),
+    )
+    grouped["defect_rate"] = grouped["defect_qty"].div(
+        grouped["inspected_qty"].replace(0, np.nan)
+    )
+
+    grouped["volume_percentile"] = grouped.groupby("quality_gate")["defect_qty"].transform(_relative_percentile)
+    grouped["rate_percentile"] = grouped.groupby("quality_gate")["defect_rate"].transform(_relative_percentile)
+    grouped["issue_percentile"] = grouped.groupby("quality_gate")["issue_records"].transform(_relative_percentile)
+    grouped.loc[grouped["defect_qty"].le(0), "volume_percentile"] = 0.0
+    grouped.loc[
+        grouped["defect_rate"].notna() & grouped["defect_rate"].le(0),
+        "rate_percentile",
+    ] = 0.0
+    grouped.loc[grouped["issue_records"].le(0), "issue_percentile"] = 0.0
+
+    has_rate = grouped["rate_percentile"].notna()
+    grouped["risk_score"] = np.where(
+        has_rate,
+        grouped["rate_percentile"] * 0.60 + grouped["volume_percentile"] * 0.40,
+        grouped["volume_percentile"],
+    )
+    grouped["severity_axis"] = np.where(
+        has_rate, grouped["rate_percentile"], grouped["volume_percentile"]
+    )
+    grouped["exposure_axis"] = np.where(
+        has_rate, grouped["volume_percentile"], grouped["issue_percentile"]
+    )
+    grouped["score_basis"] = np.where(
+        has_rate,
+        "Rate percentile 60% + defect-volume percentile 40%",
+        "Defect-volume percentile only; denominator unavailable",
+    )
+    grouped["confidence"] = np.select(
+        [
+            has_rate & grouped["inspected_qty"].ge(30) & grouped["record_count"].ge(3),
+            has_rate,
+        ],
+        ["High", "Medium"],
+        default="Low",
+    )
+
+    cluster_labels = pd.Series(index=grouped.index, dtype="object")
+    label_sets = {
+        1: ["Monitor"],
+        2: ["Monitor", "Priority improvement"],
+        3: ["Monitor", "Attention", "Priority improvement"],
+    }
+    for _, gate_rows in grouped.groupby("quality_gate", sort=True):
+        points = gate_rows[["severity_axis", "exposure_axis"]].fillna(0).to_numpy(dtype=float)
+        raw_labels = _deterministic_kmeans_labels(points, cluster_count=3)
+        cluster_priority = (
+            pd.DataFrame({"cluster_id": raw_labels, "risk_score": gate_rows["risk_score"].to_numpy()})
+            .groupby("cluster_id")["risk_score"]
+            .mean()
+            .sort_values()
+        )
+        ordered = cluster_priority.index.astype(int).tolist()
+        names = label_sets[len(ordered)]
+        name_map = {cluster_id: names[position] for position, cluster_id in enumerate(ordered)}
+        cluster_labels.loc[gate_rows.index] = [name_map[int(value)] for value in raw_labels]
+    grouped["cluster_label"] = cluster_labels
+    grouped["risk_score"] = grouped["risk_score"].round(1)
+    grouped["severity_axis"] = grouped["severity_axis"].round(1)
+    grouped["exposure_axis"] = grouped["exposure_axis"].round(1)
+    return grouped[columns].sort_values(
+        ["risk_score", "defect_qty", "issue_records"], ascending=False
+    ).reset_index(drop=True)
 
 
 def bme_source_fingerprint(root: Path) -> tuple[tuple[str, int, int], ...]:

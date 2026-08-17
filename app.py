@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-11-v6"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-17-v8"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -45,6 +45,8 @@ build_p_chart_data = _bme_quality.build_p_chart_data
 build_xbar_r_chart_data = _bme_quality.build_xbar_r_chart_data
 build_bme_issue_pareto = _bme_quality.build_bme_issue_pareto
 build_bme_product_master = _bme_quality.build_bme_product_master
+build_bme_relative_risk_scores = _bme_quality.build_bme_relative_risk_scores
+build_cmw_product_clusters = _bme_quality.build_cmw_product_clusters
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
@@ -14081,6 +14083,142 @@ def _render_bme_bike_quality_dashboard_v3_legacy(events: pd.DataFrame) -> None:
             )
 
 
+def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
+    """Render the CMW gate-aware product clustering block below Data Map."""
+    clusters = build_cmw_product_clusters(events)
+    st.subheader(t("CMW 产品风险聚类", "CMW Product Risk Clustering"))
+    render_chart_heading(
+        "IQC / PQC / FQC 聚类优先级",
+        "IQC / PQC / FQC Cluster Priority",
+        "把 CMW 当前期间内需要优先调查的质量对象分组，并给出相对风险分。",
+        "Group CMW quality objects that need investigation first and calculate a relative risk score.",
+        "IQC 是来料零部件料号、PQC 是车型、FQC 是整车料号；三者没有正式主数据映射，因此分别聚类，不冒充同一个产品全生命周期。",
+        "IQC uses incoming-component codes, PQC uses models, and FQC uses whole-bike item codes. Without a formal master-data map, each gate is clustered separately rather than presented as one product lifecycle.",
+        "有检验分母时，风险分=同环节不良率百分位60%+不良数量百分位40%；PQC 缺少分母，只按不良数量百分位评分。K-means 使用同环节标准化后的严重度与暴露度轴形成持续观察、重点关注和优先改善三组。分数只用于调查排序，不是放行结论。",
+        "With a valid denominator, risk score = 60% gate-level defect-rate percentile + 40% defect-volume percentile. PQC has no denominator and is scored by defect-volume percentile only. K-means uses gate-normalized severity and exposure axes to form Monitor, Attention, and Priority improvement groups. Scores rank investigations and are not release decisions.",
+        "CMW IQC + PQC + FQC",
+        "bme_cmw_product_cluster_v1",
+    )
+    if clusters.empty:
+        st.info(t("当前期间没有可用于 CMW 产品聚类的数据。", "No CMW data is available for product clustering in the current period."))
+        return clusters
+
+    cluster_local = {
+        "Monitor": t("持续观察", "Monitor"),
+        "Attention": t("重点关注", "Attention"),
+        "Priority improvement": t("优先改善", "Priority improvement"),
+    }
+    confidence_local = {
+        "High": t("高", "High"),
+        "Medium": t("中", "Medium"),
+        "Low": t("低", "Low"),
+    }
+    clusters = clusters.copy()
+    clusters["cluster_display"] = clusters["cluster_label"].map(cluster_local)
+    clusters["confidence_display"] = clusters["confidence"].map(confidence_local)
+    priority_count = int(clusters["cluster_label"].eq("Priority improvement").sum())
+    issue_count = int(clusters["defect_qty"].gt(0).sum())
+    high_confidence_share = float(clusters["confidence"].eq("High").mean())
+    render_kpi_cards([
+        {"label": t("聚类质量对象", "Clustered Quality Objects"), "value": f"{len(clusters):,}", "note": t("各环节使用源生产品标识", "Source-native identifier by gate"), "level": "medium"},
+        {"label": t("出现问题对象", "Objects with Issues"), "value": f"{issue_count:,}", "note": t("不把零问题解释为零风险", "No issue is not treated as no risk"), "level": "medium"},
+        {"label": t("优先改善对象", "Priority Improvement"), "value": f"{priority_count:,}", "note": t("K-means 相对分组", "Relative K-means group"), "level": "high"},
+        {"label": t("高置信度覆盖", "High-confidence Coverage"), "value": f"{high_confidence_share:.0%}", "note": t("有分母且样本量充分", "Valid denominator and sufficient sample"), "level": "low"},
+    ], variant="bme-overall bme-cmw-row")
+
+    gate_options = [t("全部", "All")] + [gate for gate in ["IQC", "PQC", "FQC"] if gate in set(clusters["quality_gate"])]
+    selected_gate = st.segmented_control(
+        t("质量环节", "Quality Gate"),
+        gate_options,
+        default=gate_options[0],
+        key="bme_cmw_cluster_gate",
+        width="stretch",
+    ) or gate_options[0]
+    plot_view = clusters if selected_gate == gate_options[0] else clusters[clusters["quality_gate"].eq(selected_gate)]
+    plot_view = plot_view.copy()
+    top_labels = plot_view.nlargest(min(12, len(plot_view)), "risk_score").index
+    plot_view["chart_label"] = ""
+    plot_view.loc[top_labels, "chart_label"] = plot_view.loc[top_labels, "product_label"].map(
+        lambda value: str(value)[:22] + ("…" if len(str(value)) > 22 else "")
+    )
+    plot_view["bubble_size"] = plot_view["defect_qty"].clip(lower=1)
+    plot_view["defect_rate_display"] = plot_view["defect_rate"].map(
+        lambda value: f"{value:.2%}" if pd.notna(value) else t("无可靠分母", "No valid denominator")
+    )
+    fig = px.scatter(
+        plot_view,
+        x="exposure_axis",
+        y="severity_axis",
+        size="bubble_size",
+        color="cluster_display",
+        symbol="quality_gate",
+        text="chart_label",
+        hover_name="product_label",
+        hover_data={
+            "quality_gate": True,
+            "risk_score": ":.1f",
+            "defect_qty": ":,.0f",
+            "inspected_qty": ":,.0f",
+            "defect_rate_display": True,
+            "issue_records": True,
+            "confidence_display": True,
+            "bubble_size": False,
+            "chart_label": False,
+            "exposure_axis": ":.1f",
+            "severity_axis": ":.1f",
+        },
+        labels={
+            "exposure_axis": t("暴露度（同环节百分位）", "Exposure (within-gate percentile)"),
+            "severity_axis": t("严重度（同环节百分位）", "Severity (within-gate percentile)"),
+            "cluster_display": t("聚类", "Cluster"),
+            "quality_gate": t("质量环节", "Quality Gate"),
+            "risk_score": t("相对风险分", "Relative Risk Score"),
+            "defect_qty": t("问题数量", "Issue Quantity"),
+            "inspected_qty": t("检验数量", "Inspected Quantity"),
+            "defect_rate_display": t("问题率", "Issue Rate"),
+            "issue_records": t("问题记录", "Issue Records"),
+            "confidence_display": t("置信度", "Confidence"),
+        },
+        color_discrete_map={
+            t("持续观察", "Monitor"): "#3f8f75",
+            t("重点关注", "Attention"): "#e6a23c",
+            t("优先改善", "Priority improvement"): "#d4475f",
+        },
+        symbol_map={"IQC": "circle", "PQC": "diamond", "FQC": "square"},
+        size_max=34,
+    )
+    fig.update_traces(textposition="top center", marker={"line": {"width": 1.5, "color": "rgba(255,255,255,.9)"}})
+    fig.update_xaxes(range=[-4, 106], dtick=20)
+    fig.update_yaxes(range=[-4, 112], dtick=20)
+    fig.update_layout(height=610, margin=dict(l=20, r=20, t=30, b=30), legend=dict(orientation="h", y=1.12, x=0))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    priority_view = clusters[clusters["defect_qty"].gt(0)].head(12).copy()
+    priority_view[t("质量环节", "Quality Gate")] = priority_view["quality_gate"]
+    priority_view[t("产品对象", "Product Object")] = priority_view["product_label"]
+    priority_view[t("聚类", "Cluster")] = priority_view["cluster_display"]
+    priority_view[t("相对风险分", "Relative Risk Score")] = priority_view["risk_score"]
+    priority_view[t("问题数量", "Issue Quantity")] = priority_view["defect_qty"]
+    priority_view[t("问题率", "Issue Rate")] = priority_view["defect_rate"]
+    priority_view[t("置信度", "Confidence")] = priority_view["confidence_display"]
+    dataframe_with_format(
+        priority_view[[
+            t("质量环节", "Quality Gate"), t("产品对象", "Product Object"),
+            t("聚类", "Cluster"), t("相对风险分", "Relative Risk Score"),
+            t("问题数量", "Issue Quantity"), t("问题率", "Issue Rate"),
+            t("置信度", "Confidence"),
+        ]],
+        column_config={
+            t("相对风险分", "Relative Risk Score"): st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+            t("问题率", "Issue Rate"): st.column_config.NumberColumn(format="%.2f%%"),
+        },
+        height=455,
+    )
+    if clusters["quality_gate"].eq("PQC").any():
+        st.caption(t("PQC 当前没有可靠检验分母，因此 PQC 风险分置信度标记为低，只用于定位优先级。补充正式分母后才可与 IQC/FQC 一样计算问题率。", "PQC currently lacks a valid inspection denominator, so its score has low confidence and is used only for prioritization. A formal denominator is required before calculating an issue rate like IQC/FQC."))
+    return clusters
+
+
 def render_bme_bike_quality_dashboard_v3(
     events: pd.DataFrame, customer_nc: pd.DataFrame, fsd_orders: pd.DataFrame
 ) -> None:
@@ -14119,6 +14257,9 @@ def render_bme_bike_quality_dashboard_v3(
     if view.empty:
         st.warning(t("当前筛选没有可分析的 BME 数据。", "No BME data is available under the current filters."))
         return
+
+    cmw_cluster_view = view[view["supplier"].eq("CMW")].copy()
+    render_cmw_product_cluster_analysis(cmw_cluster_view)
 
     ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
     customer_period = customer_nc.copy() if not customer_nc.empty else pd.DataFrame()
@@ -14325,6 +14466,70 @@ def render_bme_bike_quality_dashboard_v3(
         render_kpi_cards(fsd_kpi_cards, variant="bme-overall bme-fsd-row")
     if "FSD" in selected_suppliers and pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
+
+    product_risk_scores, supplier_risk_scores = build_bme_relative_risk_scores(view)
+    supplier_risk_scores = supplier_risk_scores[
+        supplier_risk_scores["supplier"].isin(selected_suppliers)
+    ].copy()
+    product_risk_scores = product_risk_scores[
+        product_risk_scores["supplier"].isin(selected_suppliers)
+    ].copy()
+
+    st.subheader(t("供应商与产品风险评分", "Supplier and Product Risk Scores"))
+    render_chart_heading(
+        "相对风险优先级",
+        "Relative Risk Priority",
+        "把当前筛选范围内需要优先调查的供应商和产品排出来，但不替代检验判定。",
+        "Rank suppliers and products for investigation within the current filters without replacing inspection decisions.",
+        "分数越高，表示在可比较的同类数据中越靠前；它不是不合格概率，也不是正式红线。",
+        "A higher score means a higher relative position among comparable peers; it is not a defect probability or an approved threshold.",
+        "产品先按供应商、产品族和质量环节建立基线：有可靠分母时，不良率占60%、不良数量占40%；没有可靠分母时只用不良数量。多个可审计环节取平均，缺失环节不按0分。供应商按相同质量环节做相对比较。不同检验粒度不会直接混算。",
+        "Product baselines are separated by supplier, product family, and quality gate. With a valid denominator, defect-rate percentile is weighted 60% and defect-volume percentile 40%; without one, only volume is used. Auditable gates are averaged and missing gates are not scored as zero. Suppliers are compared within the same quality gate. Unlike inspection grains are not directly merged.",
+        "BME Database",
+        "bme_v10_risk_score_info",
+    )
+    risk_left, risk_right = st.columns(2, gap="small")
+    with risk_left:
+        if supplier_risk_scores.empty:
+            st.info(t("当前范围没有可计算的供应商风险评分。", "No supplier risk score is available in the current scope."))
+        else:
+            supplier_plot = supplier_risk_scores.sort_values("risk_score").copy()
+            supplier_fig = px.bar(
+                supplier_plot,
+                x="risk_score",
+                y="supplier",
+                orientation="h",
+                text="risk_score",
+                color="supplier",
+                hover_data={"available_gates": True, "defect_qty": ":,.0f", "inspected_qty": ":,.0f", "product_count": True, "risk_score": ":.1f"},
+                labels={"risk_score": t("相对风险分", "Relative Risk Score"), "supplier": t("供应商", "Supplier"), "available_gates": t("可用质量环节", "Available Gates"), "defect_qty": t("不良数量", "Defect Qty"), "inspected_qty": t("检验数量", "Inspected Qty"), "product_count": t("问题产品数", "Products with Issues")},
+                color_discrete_sequence=["#3341c4", "#d99a00", "#60a5fa"],
+            )
+            supplier_fig.update_layout(height=360, showlegend=False, margin=dict(l=12, r=20, t=12, b=42))
+            supplier_fig.update_xaxes(range=[0, 105], title_text=t("供应商相对风险分（0–100）", "Supplier Relative Risk Score (0–100)"))
+            supplier_fig.update_yaxes(title_text="")
+            st.plotly_chart(supplier_fig, use_container_width=True, config={"displayModeBar": False})
+    with risk_right:
+        if product_risk_scores.empty:
+            st.info(t("当前范围没有可计算的产品风险评分。", "No product risk score is available in the current scope."))
+        else:
+            product_plot = product_risk_scores.head(10).sort_values("risk_score").copy()
+            product_plot["product_display"] = product_plot["product_label"].map(lambda value: value if len(str(value)) <= 28 else str(value)[:27] + "…")
+            product_fig = px.bar(
+                product_plot,
+                x="risk_score",
+                y="product_display",
+                orientation="h",
+                text="risk_score",
+                color="supplier",
+                hover_data={"product_label": True, "product_group": True, "affected_gates": True, "available_gates": True, "defect_qty": ":,.0f", "inspected_qty": ":,.0f", "risk_score": ":.1f", "product_display": False},
+                labels={"risk_score": t("相对风险分", "Relative Risk Score"), "product_display": t("产品", "Product"), "product_group": t("产品族", "Product Family"), "affected_gates": t("出现问题环节", "Affected Gates"), "available_gates": t("可审计环节", "Auditable Gates"), "defect_qty": t("不良数量", "Defect Qty"), "inspected_qty": t("检验数量", "Inspected Qty")},
+                color_discrete_sequence=["#3341c4", "#d99a00", "#60a5fa"],
+            )
+            product_fig.update_layout(height=360, legend_title_text="", margin=dict(l=12, r=20, t=12, b=42))
+            product_fig.update_xaxes(range=[0, 105], title_text=t("产品相对风险分（0–100）", "Product Relative Risk Score (0–100)"))
+            product_fig.update_yaxes(title_text="")
+            st.plotly_chart(product_fig, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown(
         """
@@ -15607,6 +15812,61 @@ def render_bme_bike_quality_dashboard_v3(
             f"本期重点：{'；'.join(supplementary_conclusion_cn)}。返工样本较少，只用于定位和回查。",
             f"This period's focus: {'; '.join(supplementary_conclusion_en)}. The rework sample is small and is used only for targeting and follow-up.",
         )
+
+    st.subheader(t("AI 汇总报告", "AI Summary Report"))
+    top_supplier_facts = supplier_risk_scores.head(3).to_dict("records") if not supplier_risk_scores.empty else []
+    top_product_facts = product_risk_scores.head(5).to_dict("records") if not product_risk_scores.empty else []
+    report_pareto, report_missing_issues = build_bme_issue_pareto(view, customer_nc, limit=5)
+    bme_report_facts = {
+        "scope": {"suppliers": selected_suppliers, "start_date": str(start_date), "end_date": str(end_date)},
+        "method": "Relative priority only. Product peers are separated by supplier, product family and quality gate. Missing gates are not zero. No score is an acceptance threshold.",
+        "supplier_risks": top_supplier_facts,
+        "product_risks": top_product_facts,
+        "top_issues": report_pareto.sort_values("defect_qty", ascending=False).to_dict("records") if not report_pareto.empty else [],
+        "missing_issue_records": int(report_missing_issues),
+        "data_limits": [
+            "No BOM / model master / machine mapping across CMW IQC, PQC, FQC and Machine Data.",
+            "TEKTRO complaint PPM has no order denominator.",
+            "Missing dates are excluded from period analysis.",
+        ],
+    }
+    if "bme_ai_summary" not in st.session_state:
+        st.session_state["bme_ai_summary"] = ""
+    summary_cols = st.columns([1.2, 4.8], vertical_alignment="center")
+    generate_bme_summary = summary_cols[0].button(
+        t("生成 AI 汇总", "Generate AI Summary"), key="bme_generate_ai_summary", use_container_width=True
+    )
+    summary_cols[1].caption(t(
+        "AI 只整理当前事实与行动建议；数据口径、风险分和 SPC 仍由确定性代码计算。",
+        "AI organizes current facts and action suggestions only; deterministic code owns metrics, risk scores, and SPC.",
+    ))
+    if generate_bme_summary:
+        bme_ai_key = get_qwen_api_key()
+        if not bme_ai_key:
+            st.warning(t("尚未配置 DASHSCOPE_API_KEY，无法调用 AI。", "DASHSCOPE_API_KEY is not configured, so AI generation is unavailable."))
+        else:
+            try:
+                with st.spinner(t("正在生成 BME 管理汇总…", "Generating the BME management summary…")):
+                    bme_ai_result = generate_qwen_quality_summary(
+                        "BME Bike Community quality dashboard",
+                        json.dumps(bme_report_facts, ensure_ascii=False, default=str),
+                        st.session_state.lang,
+                        get_secret_value(["QWEN_MODEL"], default="qwen-max"),
+                        "bme_summary",
+                        "2026-08-13-v1",
+                        hashlib.sha256(bme_ai_key.encode("utf-8")).hexdigest()[:12],
+                        bme_ai_key,
+                    )
+                st.session_state["bme_ai_summary"] = bme_ai_result["content"]
+            except Exception as exc:
+                st.error(t(f"AI 汇总生成失败：{exc}", f"AI summary generation failed: {exc}"))
+    if st.session_state["bme_ai_summary"]:
+        st.markdown(st.session_state["bme_ai_summary"])
+    else:
+        st.info(t(
+            "点击生成后，报告将使用当前供应商风险、产品风险、主要问题和数据缺口生成管理摘要。",
+            "Generate a management summary from the current supplier risks, product risks, top issues, and data gaps.",
+        ))
 
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),

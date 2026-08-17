@@ -9,6 +9,8 @@ import pandas as pd
 from bme_quality import (
     build_bme_issue_pareto,
     build_bme_product_master,
+    build_bme_relative_risk_scores,
+    build_cmw_product_clusters,
     build_imr_chart_data,
     build_p_chart_data,
     build_xbar_r_chart_data,
@@ -23,6 +25,46 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BmeAnalysisFormulaTest(unittest.TestCase):
+    def test_relative_risk_uses_family_peers_and_does_not_penalize_missing_gates(self) -> None:
+        rows = []
+        for code, inspected, defects in [("A", 100, 10), ("B", 100, 2)]:
+            rows.append({
+                "supplier": "FSD", "stage": "PQC", "model_item_code": code,
+                "item_name": code, "family": code, "source_row": len(rows),
+                "date": pd.Timestamp("2026-01-01"), "inspected_qty": inspected,
+                "defect_qty": defects, "is_alert": defects > 0,
+            })
+        events = pd.DataFrame(rows)
+        products, suppliers = build_bme_relative_risk_scores(events)
+        self.assertEqual(products.iloc[0]["product_key"], "FSD|A")
+        self.assertGreater(products.iloc[0]["risk_score"], products.iloc[1]["risk_score"])
+        self.assertTrue(products["available_gates"].eq(1).all())
+        self.assertFalse(suppliers.empty)
+
+    def test_cmw_clusters_keep_gate_grains_separate_and_flag_pqc_confidence(self) -> None:
+        rows = []
+        for stage, code, inspected, defects in [
+            ("IQC", "COMP-A", 100, 10),
+            ("IQC", "COMP-B", 100, 0),
+            ("PQC", "MODEL-A", 0, 8),
+            ("PQC", "MODEL-B", 0, 2),
+            ("AQL", "5535130", 100, 5),
+            ("AQL", "5535131", 100, 0),
+        ]:
+            rows.append({
+                "supplier": "CMW", "stage": stage, "model_item_code": code,
+                "item_name": code, "family": code, "source_row": len(rows),
+                "date": pd.Timestamp("2026-01-01"), "inspected_qty": inspected,
+                "defect_qty": defects, "is_alert": defects > 0,
+            })
+        clusters = build_cmw_product_clusters(pd.DataFrame(rows))
+        self.assertEqual(set(clusters["quality_gate"]), {"IQC", "PQC", "FQC"})
+        self.assertTrue(clusters.loc[clusters["quality_gate"].eq("PQC"), "confidence"].eq("Low").all())
+        self.assertTrue(clusters.loc[clusters["quality_gate"].eq("PQC"), "defect_rate"].isna().all())
+        self.assertTrue(clusters.loc[clusters["quality_gate"].eq("IQC"), "product_key"].str.startswith("CMW|").all())
+        self.assertTrue(clusters.loc[clusters["quality_gate"].eq("PQC"), "product_key"].str.startswith("CMW_MODEL|").all())
+        self.assertTrue(clusters["risk_score"].between(0, 100).all())
+
     def test_imr_uses_standard_constants_and_excludes_suspect(self) -> None:
         frame = pd.DataFrame({
             "measured_value": [10, 12, 11, 13, 999],
