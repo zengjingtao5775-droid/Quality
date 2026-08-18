@@ -1085,7 +1085,7 @@ st.markdown(
         position: fixed;
         top: 8px;
         left: 282px;
-        right: 220px;
+        right: 150px;
         z-index: 90;
         display: flex;
         gap: 6px;
@@ -2037,7 +2037,7 @@ st.markdown(
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .bme-management-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
-        .bme-anchor-nav {left: 220px; right: 150px; margin-bottom: 14px;}
+        .bme-anchor-nav {left: 220px; right: 92px; margin-bottom: 14px;}
         body:has(.bme-anchor-nav)::before {left: 194px;}
         .bme-investigation-context {top: 3.35rem;}
         .st-key-bme_product_defect_filter [data-testid="stHorizontalBlock"] {flex-wrap: wrap !important;}
