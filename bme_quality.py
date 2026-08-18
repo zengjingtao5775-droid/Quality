@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-17-v8"
+BME_QUALITY_LOGIC_VERSION = "2026-08-18-v9"
 
 
 EVENT_COLUMNS = [
@@ -864,6 +864,26 @@ def build_bme_relative_risk_scores(events: pd.DataFrame) -> tuple[pd.DataFrame, 
     supplier_scores["baseline"] = "Quality-gate peer percentile across suppliers"
     supplier_scores = supplier_scores.sort_values(["risk_score", "defect_qty"], ascending=False).reset_index(drop=True)
     return products[product_columns], supplier_scores[supplier_columns]
+
+
+def build_bme_relative_risk_scores_for_selection(
+    period_events: pd.DataFrame,
+    selected_suppliers: list[str] | tuple[str, ...] | set[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Score against the full period peer pool, then filter the displayed rows.
+
+    Supplier selection is a viewing control. It must not change the peer
+    baseline or make the same supplier's score move simply because another
+    supplier is hidden from the page.
+    """
+    products, suppliers = build_bme_relative_risk_scores(period_events)
+    selected = {str(value) for value in selected_suppliers}
+    if not selected:
+        return products.iloc[0:0].copy(), suppliers.iloc[0:0].copy()
+    return (
+        products[products["supplier"].isin(selected)].copy(),
+        suppliers[suppliers["supplier"].isin(selected)].copy(),
+    )
 
 
 def _deterministic_kmeans_labels(

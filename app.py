@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-17-v8"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-18-v9"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -46,6 +46,7 @@ build_xbar_r_chart_data = _bme_quality.build_xbar_r_chart_data
 build_bme_issue_pareto = _bme_quality.build_bme_issue_pareto
 build_bme_product_master = _bme_quality.build_bme_product_master
 build_bme_relative_risk_scores = _bme_quality.build_bme_relative_risk_scores
+build_bme_relative_risk_scores_for_selection = _bme_quality.build_bme_relative_risk_scores_for_selection
 build_cmw_product_clusters = _bme_quality.build_cmw_product_clusters
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
@@ -8678,6 +8679,7 @@ def render_chart_heading(
     extra_renderer: Callable[[], None] | None = None,
     control_renderer: Callable[[], None] | None = None,
     compact: bool = False,
+    heading_level: int = 3,
 ) -> None:
     title = t(title_cn, title_en)
     if control_renderer is not None:
@@ -8688,7 +8690,10 @@ def render_chart_heading(
     control = heading_columns[1] if control_renderer is not None else None
     right = heading_columns[2] if control_renderer is not None else heading_columns[1]
     with left:
-        st.subheader(title)
+        if heading_level == 2:
+            st.header(title)
+        else:
+            st.subheader(title)
     if control is not None:
         with control:
             control_renderer()
@@ -14086,7 +14091,7 @@ def _render_bme_bike_quality_dashboard_v3_legacy(events: pd.DataFrame) -> None:
 def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     """Render the CMW gate-aware product clustering block below Data Map."""
     clusters = build_cmw_product_clusters(events)
-    st.subheader(t("CMW 产品风险聚类", "CMW Product Risk Clustering"))
+    st.header(t("CMW 产品风险聚类", "CMW Product Risk Clustering"))
     render_chart_heading(
         "IQC / PQC / FQC 聚类优先级",
         "IQC / PQC / FQC Cluster Priority",
@@ -14136,14 +14141,24 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     ) or gate_options[0]
     plot_view = clusters if selected_gate == gate_options[0] else clusters[clusters["quality_gate"].eq(selected_gate)]
     plot_view = plot_view.copy()
-    top_labels = plot_view.nlargest(min(12, len(plot_view)), "risk_score").index
+    # The combined view is dense at the top-right corner. Keep labels sparse
+    # and let hover + the priority table carry the remaining detail.
+    label_count = 3 if selected_gate == gate_options[0] else 5
+    top_labels = plot_view.nlargest(min(label_count, len(plot_view)), "risk_score").index
     plot_view["chart_label"] = ""
     plot_view.loc[top_labels, "chart_label"] = plot_view.loc[top_labels, "product_label"].map(
         lambda value: str(value)[:22] + ("…" if len(str(value)) > 22 else "")
     )
     plot_view["bubble_size"] = plot_view["defect_qty"].clip(lower=1)
-    plot_view["defect_rate_display"] = plot_view["defect_rate"].map(
-        lambda value: f"{value:.2%}" if pd.notna(value) else t("无可靠分母", "No valid denominator")
+    plot_view["defect_rate_display"] = plot_view.apply(
+        lambda row: (
+            t("无可靠分母", "No valid denominator")
+            if pd.isna(row["defect_rate"])
+            else t(f"{row['defect_rate']:.2f} 点/台", f"{row['defect_rate']:.2f} points/unit")
+            if row["quality_gate"] == "FQC"
+            else f"{row['defect_rate']:.2%}"
+        ),
+        axis=1,
     )
     fig = px.scatter(
         plot_view,
@@ -14175,7 +14190,7 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
             "risk_score": t("相对风险分", "Relative Risk Score"),
             "defect_qty": t("问题数量", "Issue Quantity"),
             "inspected_qty": t("检验数量", "Inspected Quantity"),
-            "defect_rate_display": t("问题率", "Issue Rate"),
+            "defect_rate_display": t("问题率 / 强度", "Issue Rate / Intensity"),
             "issue_records": t("问题记录", "Issue Records"),
             "confidence_display": t("置信度", "Confidence"),
         },
@@ -14199,18 +14214,27 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     priority_view[t("聚类", "Cluster")] = priority_view["cluster_display"]
     priority_view[t("相对风险分", "Relative Risk Score")] = priority_view["risk_score"]
     priority_view[t("问题数量", "Issue Quantity")] = priority_view["defect_qty"]
-    priority_view[t("问题率", "Issue Rate")] = priority_view["defect_rate"]
+    metric_column = t("问题率 / 强度", "Issue Rate / Intensity")
+
+    def issue_metric_display(row: pd.Series) -> str:
+        value = row["defect_rate"]
+        if pd.isna(value):
+            return t("无可靠分母", "No valid denominator")
+        if row["quality_gate"] == "FQC":
+            return t(f"{value:.2f} 点/台", f"{value:.2f} points/unit")
+        return f"{value:.2%}"
+
+    priority_view[metric_column] = priority_view.apply(issue_metric_display, axis=1)
     priority_view[t("置信度", "Confidence")] = priority_view["confidence_display"]
     dataframe_with_format(
         priority_view[[
             t("质量环节", "Quality Gate"), t("产品对象", "Product Object"),
             t("聚类", "Cluster"), t("相对风险分", "Relative Risk Score"),
-            t("问题数量", "Issue Quantity"), t("问题率", "Issue Rate"),
+            t("问题数量", "Issue Quantity"), metric_column,
             t("置信度", "Confidence"),
         ]],
         column_config={
             t("相对风险分", "Relative Risk Score"): st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
-            t("问题率", "Issue Rate"): st.column_config.NumberColumn(format="%.2f%%"),
         },
         height=455,
     )
@@ -14241,7 +14265,7 @@ def render_bme_bike_quality_dashboard_v3(
         start_date, end_date = selected_dates
     supplier_chip = " · ".join(selected_suppliers) if selected_suppliers else t("未选择供应商", "No supplier selected")
     st.markdown(
-        f"""<div class="hero" style="margin-bottom:14px;"><div class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</div><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
+        f"""<div class="hero" style="margin-bottom:14px;"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
         unsafe_allow_html=True,
     )
     with st.expander(t("数据地图", "Data Map"), expanded=True):
@@ -14427,28 +14451,36 @@ def render_bme_bike_quality_dashboard_v3(
     fsd_incoming_ppm_trend = kpi_trend(monthly_ratio(fsd_incoming_trend, "defect_qty", "inspected_qty", 1_000_000), lambda value: f"{value:,.0f}")
     fsd_rate_trend = kpi_trend(monthly_ratio(fsd_attr_trend, "defect_qty", "inspected_qty"), lambda value: f"{value:.2%}")
     cmw_return_trend = kpi_trend(monthly_ratio(cmw_iqc_trend, "defect_qty", "inspected_qty", 1_000_000), lambda value: f"{value:,.0f}")
-    cmw_fqc_rate_trend = kpi_trend(monthly_ratio(cmw_fqc_trend_source, "defect_qty", "inspected_qty"), lambda value: f"{value:.2%}")
+    cmw_fqc_rate_trend = kpi_trend(
+        monthly_ratio(cmw_fqc_trend_source, "defect_qty", "inspected_qty").mul(100),
+        lambda value: f"{value:.2f}",
+    )
 
     def with_trend(card: dict[str, str], trend: dict[str, str]) -> dict[str, str]:
-        return {**card, **{key: trend[key] for key in ("trend_direction", "trend_tone", "trend_label")}, "note": trend["trend_note"]}
+        return {
+            **card,
+            **{key: trend[key] for key in ("trend_direction", "trend_tone", "trend_label")},
+            "note": t("最近完整月：", "Latest complete month: ") + trend["trend_note"],
+        }
 
     render_chart_heading(
         "工厂整体质量",
         "Factory Quality",
-        "先看所选期间的工厂整体质量结果和最近两个月变化。",
+        "先看所选期间的工厂整体质量结果和最近两个完整月的变化。",
         "Review selected-period factory quality results and the latest two-month change.",
-        "卡片大数字是所选日期范围的累计结果；下方按真实月份显示范围内最近两个完整自然月。PPM 表示每一百万件中的问题数量。",
-        "Headline values use the selected period; the line below shows the latest two complete calendar months inside that period. PPM is issues per million units.",
-        "FSD 客诉 PPM 使用 Component Box 问题数量和已关联的 FSD 订单量；来料退货 PPM 使用 CMW IQC 的退货数量和来料数量；FSD 检验 NC 率使用 AQL / DKL 的 NC 数量÷检验数量；CMW 验货问题率使用 FQC 的不良点数÷检验批量，不解释为不合格车辆占比。Component Box 没有唯一记录 ID，当前保留全部源行，不自动去重。没有正式目标值时，卡片颜色不表示风险等级。",
-        "FSD complaint PPM uses Component Box issue quantities and linked FSD order quantities; incoming return PPM uses CMW IQC return and incoming quantities; FSD inspection NC rate uses AQL/DKL NC quantity divided by inspected quantity; CMW final-inspection issue rate uses FQC defect points divided by inspection volume and is not a failed-bike rate. Component Box has no unique record ID, so all source rows are retained. Card color does not imply risk without a formal target.",
+        "卡片大数字明确标记为所选期间累计结果；下方显示范围内最近两个完整自然月。PPM 表示每一百万件中的问题数量。",
+        "Headline values are explicitly labeled as selected-period results; the line below shows the latest two complete calendar months inside that period. PPM is issues per million units.",
+        "FSD 客诉 PPM 使用 Component Box 问题数量和已关联的 FSD 订单量；来料退货 PPM 使用 CMW IQC 的退货数量和来料数量；FSD 检验 NC 率使用 AQL / DKL 的 NC 数量÷检验数量；CMW FQC 使用每100台检验量中的问题点数，不解释为不合格车辆占比。Component Box 没有唯一记录 ID，当前保留全部源行，不自动去重。没有正式目标值时，卡片颜色不表示风险等级。",
+        "FSD complaint PPM uses Component Box issue quantities and linked FSD order quantities; incoming return PPM uses CMW IQC return and incoming quantities; FSD inspection NC rate uses AQL/DKL NC quantity divided by inspected quantity; CMW FQC uses defect points per 100 inspected units and is not a failed-bike rate. Component Box has no unique record ID, so all source rows are retained. Card color does not imply risk without a formal target.",
         "BME Database + Component Box",
         "bme_v6_kpi_info",
+        heading_level=2,
     )
     cmw_kpi_cards: list[dict[str, str]] = []
     if "CMW" in selected_suppliers:
         cmw_kpi_cards.extend([
-            with_trend({"label": t("CMW 来料退货 PPM", "CMW Incoming Return PPM"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
-            with_trend({"label": t("CMW 验货问题率", "CMW Final Inspection Issue Rate"), "value": pct(cmw_fqc_rate) if pd.notna(cmw_fqc_rate) else "—", "level": "medium"}, cmw_fqc_rate_trend),
+            with_trend({"label": t("CMW 来料退货 PPM（期间累计）", "CMW Incoming Return PPM (Period)"), "value": f"{cmw_return_ppm:,.0f}" if pd.notna(cmw_return_ppm) else "—", "level": "medium"}, cmw_return_trend),
+            with_trend({"label": t("CMW FQC 每100台问题点数（期间累计）", "CMW FQC Defect Points per 100 Units (Period)"), "value": f"{cmw_fqc_rate * 100:.2f}" if pd.notna(cmw_fqc_rate) else "—", "level": "medium"}, cmw_fqc_rate_trend),
         ])
     if cmw_kpi_cards:
         st.markdown(f'<div class="bme-kpi-row-label">{t("CMW", "CMW")}</div>', unsafe_allow_html=True)
@@ -14457,9 +14489,9 @@ def render_bme_bike_quality_dashboard_v3(
     fsd_kpi_cards: list[dict[str, str]] = []
     if "FSD" in selected_suppliers:
         fsd_kpi_cards.extend([
-            with_trend({"label": t("FSD 客诉 PPM", "FSD Complaint PPM"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) else "—", "level": "medium"}, fsd_ppm_trend),
-            with_trend({"label": t("FSD 来料退货 PPM", "FSD Incoming Return PPM"), "value": f"{fsd_incoming_ppm:,.0f}" if pd.notna(fsd_incoming_ppm) else "—", "level": "medium"}, fsd_incoming_ppm_trend),
-            with_trend({"label": t("FSD 检验 NC 率", "FSD Inspection NC Rate"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "—", "level": "medium"}, fsd_rate_trend),
+            with_trend({"label": t("FSD 客诉 PPM（期间累计）", "FSD Complaint PPM (Period)"), "value": f"{ppm['ppm']:,.0f}" if pd.notna(ppm["ppm"]) else "—", "level": "medium"}, fsd_ppm_trend),
+            with_trend({"label": t("FSD 来料退货 PPM（期间累计）", "FSD Incoming Return PPM (Period)"), "value": f"{fsd_incoming_ppm:,.0f}" if pd.notna(fsd_incoming_ppm) else "—", "level": "medium"}, fsd_incoming_ppm_trend),
+            with_trend({"label": t("FSD 检验 NC 率（期间累计）", "FSD Inspection NC Rate (Period)"), "value": pct(fsd_rate) if pd.notna(fsd_rate) else "—", "level": "medium"}, fsd_rate_trend),
         ])
     if fsd_kpi_cards:
         st.markdown(f'<div class="bme-kpi-row-label">{t("FSD", "FSD")}</div>', unsafe_allow_html=True)
@@ -14467,24 +14499,22 @@ def render_bme_bike_quality_dashboard_v3(
     if "FSD" in selected_suppliers and pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
 
-    product_risk_scores, supplier_risk_scores = build_bme_relative_risk_scores(view)
-    supplier_risk_scores = supplier_risk_scores[
-        supplier_risk_scores["supplier"].isin(selected_suppliers)
-    ].copy()
-    product_risk_scores = product_risk_scores[
-        product_risk_scores["supplier"].isin(selected_suppliers)
-    ].copy()
+    # Supplier selection controls visibility only. Scores retain the complete
+    # period peer pool so the same supplier does not move when peers are hidden.
+    product_risk_scores, supplier_risk_scores = build_bme_relative_risk_scores_for_selection(
+        period_events, selected_suppliers
+    )
 
-    st.subheader(t("供应商与产品风险评分", "Supplier and Product Risk Scores"))
+    st.header(t("供应商与产品风险评分", "Supplier and Product Risk Scores"))
     render_chart_heading(
         "相对风险优先级",
         "Relative Risk Priority",
-        "把当前筛选范围内需要优先调查的供应商和产品排出来，但不替代检验判定。",
-        "Rank suppliers and products for investigation within the current filters without replacing inspection decisions.",
-        "分数越高，表示在可比较的同类数据中越靠前；它不是不合格概率，也不是正式红线。",
-        "A higher score means a higher relative position among comparable peers; it is not a defect probability or an approved threshold.",
-        "产品先按供应商、产品族和质量环节建立基线：有可靠分母时，不良率占60%、不良数量占40%；没有可靠分母时只用不良数量。多个可审计环节取平均，缺失环节不按0分。供应商按相同质量环节做相对比较。不同检验粒度不会直接混算。",
-        "Product baselines are separated by supplier, product family, and quality gate. With a valid denominator, defect-rate percentile is weighted 60% and defect-volume percentile 40%; without one, only volume is used. Auditable gates are averaged and missing gates are not scored as zero. Suppliers are compared within the same quality gate. Unlike inspection grains are not directly merged.",
+        "把所选供应商中需要优先调查的供应商和产品排出来，但不替代检验判定。",
+        "Rank the selected suppliers and products for investigation without replacing inspection decisions.",
+        "分数越高，表示在本期完整可比同侪池中越靠前；供应商筛选只改变显示对象，不会重算基线。它不是不合格概率，也不是正式红线。",
+        "A higher score means a higher position in the full comparable peer pool for this period. Supplier filters change visibility only and do not recalculate the baseline. The score is not a defect probability or an approved threshold.",
+        "产品先按供应商、产品族和质量环节建立基线：有可靠分母时，问题率或问题强度占60%、问题数量占40%；没有可靠分母时只用问题数量。多个可审计环节取平均，缺失环节不按0分。供应商按相同质量环节做相对比较。不同检验粒度不会直接混算。",
+        "Product baselines are separated by supplier, product family, and quality gate. With a valid denominator, issue rate or intensity percentile is weighted 60% and issue volume percentile 40%; without one, only volume is used. Auditable gates are averaged and missing gates are not scored as zero. Suppliers are compared within the same quality gate. Unlike inspection grains are not directly merged.",
         "BME Database",
         "bme_v10_risk_score_info",
     )
@@ -14560,7 +14590,7 @@ def render_bme_bike_quality_dashboard_v3(
         """,
         unsafe_allow_html=True,
     )
-    st.subheader(t("重点产品", "Priority Products"))
+    st.header(t("重点产品", "Priority Products"))
     selected_product_key = ""
     selected_product_label = ""
     selected_product_supplier = ""
@@ -14704,12 +14734,12 @@ def render_bme_bike_quality_dashboard_v3(
             render_chart_heading(
                 f"{supplier_name} 产品质量问题",
                 f"{supplier_name} Product Quality Issues",
-                "CMW IQC 按退货数量定位重点来料；FQC 按不良率比较整车料号。" if supplier_name == "CMW" else "在一张图中分别查看来料、制程和成品检验的问题产品。",
-                "CMW IQC prioritizes incoming items by return quantity; FQC compares whole-bike item codes by defect rate." if supplier_name == "CMW" else "Review incoming, process, and final-inspection product issues in one figure.",
-                "CMW IQC 柱高是退货数量、柱顶是不良率；FQC 柱高是不良率、柱顶是不良数量。" if supplier_name == "CMW" else "每个分区只使用对应检验环节的数据，柱高是不良数量。",
-                "For CMW IQC, bar height is return quantity and the label above is defect rate; for FQC, bar height is defect rate and the label above is defect quantity." if supplier_name == "CMW" else "Each panel uses only its own quality-gate data; bar height is defect quantity.",
-                "CMW IQC 不良率 = 退货数量 ÷ 来料数量；FQC 不良率 = 问题点数量 ÷ 检验数量，同一辆车可能记录多个问题点，因此 FQC 不良率可能超过 100%。PQC 缺少车型分母时不显示空图。每张图下方的双端滑杆控制横轴可见范围：范围越窄柱子越稀疏，范围越宽柱子越密集。" if supplier_name == "CMW" else "三个检验环节的数据口径仍然分开。FSD 的 IQC 只按源表料号统计，PQC 与 FQC 才使用车系 / 型号。每张图下方的双端滑杆控制横轴可见范围；没有可靠的一对一关系时不强行串款。",
-                "CMW IQC defect rate equals return quantity divided by incoming quantity. FQC defect rate equals defect points divided by inspected quantity; one bike can contain multiple defect points, so the rate can exceed 100%. An empty PQC chart is not shown when model-level denominators are unavailable. Drag the two-ended slider below each chart to change the visible x-axis range." if supplier_name == "CMW" else "The three gates retain separate data grains. FSD IQC uses only source item codes, while PQC and FQC use family/model aliases. Drag the two-ended slider below each chart to change the visible x-axis range; records are not force-linked without a reliable one-to-one match.",
+                "CMW IQC 按退货数量定位重点来料；FQC 按每台检验量的问题点数比较整车料号。" if supplier_name == "CMW" else "在一张图中分别查看来料、制程和成品检验的问题产品。",
+                "CMW IQC prioritizes incoming items by return quantity; FQC compares whole-bike item codes by defect points per inspected unit." if supplier_name == "CMW" else "Review incoming, process, and final-inspection product issues in one figure.",
+                "CMW IQC 柱高是退货数量、柱顶是不良率；FQC 柱高是每台问题点数、柱顶是不良数量。" if supplier_name == "CMW" else "每个分区只使用对应检验环节的数据，柱高是不良数量。",
+                "For CMW IQC, bar height is return quantity and the label above is defect rate; for FQC, bar height is defect points per inspected unit and the label above is defect quantity." if supplier_name == "CMW" else "Each panel uses only its own quality-gate data; bar height is defect quantity.",
+                "CMW IQC 不良率 = 退货数量 ÷ 来料数量；FQC 每台问题点数 = 问题点数量 ÷ 检验数量，例如 1.56 表示平均每台检验量记录 1.56 个问题点，不解释为 156% 的车辆不合格率。PQC 缺少车型分母时不显示空图。每个环节只展示 Top 5，完整信息可在悬停提示中查看。" if supplier_name == "CMW" else "三个检验环节的数据口径仍然分开。FSD 的 IQC 只按源表料号统计，PQC 与 FQC 才使用车系 / 型号。每个环节只展示 Top 5；没有可靠的一对一关系时不强行串款。",
+                "CMW IQC defect rate equals return quantity divided by incoming quantity. FQC defect points per unit equals defect points divided by inspected quantity; 1.56 means 1.56 recorded defect points per inspected unit, not a 156% failed-bike rate. An empty PQC chart is not shown when model-level denominators are unavailable. Each gate shows Top 5, with full details available on hover." if supplier_name == "CMW" else "The three gates retain separate data grains. FSD IQC uses only source item codes, while PQC and FQC use family/model aliases. Each gate shows Top 5; records are not force-linked without a reliable one-to-one match.",
                 bme_chart_source(all_product_issues[all_product_issues["supplier"].eq(supplier_name)]),
                 f"bme_v9_product_{supplier_name.lower()}_info",
             )
@@ -14754,6 +14784,8 @@ def render_bme_bike_quality_dashboard_v3(
                 y_axis_name = (
                     t("退货数量", "Return Qty")
                     if supplier_name == "CMW" and gate_name == "IQC"
+                    else t("每台问题点数", "Defect Points per Unit")
+                    if supplier_name == "CMW" and gate_name == "FQC"
                     else t("不良率", "Defect Rate")
                     if supplier_name == "CMW"
                     else t("不良数量", "Defect Qty")
@@ -14923,7 +14955,7 @@ def render_bme_bike_quality_dashboard_v3(
                         f"{t('工单 / PO', 'Order / PO')}  %{{customdata[2]}}<br>"
                         f"{t('检验数量', 'Inspected Quantity')}  %{{customdata[3]:,.0f}}<br>"
                         f"{t('不良数量', 'Defect Quantity')}  %{{customdata[4]:,.0f}}<br>"
-                        f"{t('不良率', 'Defect Rate')}  %{{customdata[5]:.2%}}<br>"
+                        f"{t('每台问题点数', 'Defect Points per Unit')}  %{{customdata[5]:.2f}}<br>"
                         f"{t('不良记录数', 'Defect Records')}  %{{customdata[6]:,.0f}}<br>"
                         f"{t('最近检验日期', 'Latest Inspection Date')}  %{{customdata[7]}}<extra></extra>"
                     )
@@ -14973,7 +15005,7 @@ def render_bme_bike_quality_dashboard_v3(
                         )
                     combined_gate_fig.update_yaxes(
                         title_text=None,
-                        tickformat=",.0f" if gate_name == "IQC" else ".1%",
+                        tickformat=",.0f" if gate_name == "IQC" else ".2f" if gate_name == "FQC" else ".1%",
                         rangemode="tozero",
                         tickangle=0,
                         row=plot_row,
@@ -15061,6 +15093,9 @@ def render_bme_bike_quality_dashboard_v3(
                     if gate_name == "IQC":
                         conclusion_cn.append(f"{gate_name}：{leader_label_cn}，退货数量 {gate_leader['defect_qty']:,.0f}，不良率 {gate_leader['defect_rate']:.2%}")
                         conclusion_en.append(f"{gate_name}: {leader_label_en}, return quantity {gate_leader['defect_qty']:,.0f}, defect rate {gate_leader['defect_rate']:.2%}")
+                    elif gate_name == "FQC":
+                        conclusion_cn.append(f"{gate_name}：{leader_label_cn}，每台问题点数 {gate_leader['defect_rate']:.2f}，问题点总数 {gate_leader['defect_qty']:,.0f}")
+                        conclusion_en.append(f"{gate_name}: {leader_label_en}, {gate_leader['defect_rate']:.2f} defect points per unit, {gate_leader['defect_qty']:,.0f} total defect points")
                     else:
                         conclusion_cn.append(f"{gate_name}：{leader_label_cn}，不良率 {gate_leader['defect_rate']:.2%}，不良数量 {gate_leader['defect_qty']:,.0f}")
                         conclusion_en.append(f"{gate_name}: {leader_label_en}, defect rate {gate_leader['defect_rate']:.2%}, defect quantity {gate_leader['defect_qty']:,.0f}")
@@ -15100,21 +15135,40 @@ def render_bme_bike_quality_dashboard_v3(
         )
         top_product = top_products.iloc[0]
 
-        st.subheader(t("查看具体产品问题", "Review a Specific Product"))
+        st.header(t("查看具体产品问题", "Review a Specific Product"))
         with st.container(key="bme_product_defect_filter"):
-            product_filter_cols = st.columns([0.8, 2.2], gap="small")
-            product_groups = top_products["product_group"].drop_duplicates().tolist()
-            default_group = str(top_product["product_group"])
-            selected_product_group = product_filter_cols[0].selectbox(
+            product_filter_cols = st.columns([0.65, 0.85, 1.7], gap="small")
+            product_suppliers = top_products["supplier"].drop_duplicates().tolist()
+            default_supplier = str(top_product["supplier"])
+            selected_product_supplier_filter = product_filter_cols[0].selectbox(
+                t("供应商", "Supplier"),
+                product_suppliers,
+                index=product_suppliers.index(default_supplier),
+                key="bme_v11_product_supplier",
+            )
+            supplier_products = top_products[
+                top_products["supplier"].eq(selected_product_supplier_filter)
+            ].copy()
+            product_groups = supplier_products["product_group"].drop_duplicates().tolist()
+            default_group = (
+                str(top_product["product_group"])
+                if default_supplier == selected_product_supplier_filter
+                else str(product_groups[0])
+            )
+            selected_product_group = product_filter_cols[1].selectbox(
                 t("产品类型", "Product Type"),
                 product_groups,
                 index=product_groups.index(default_group),
-                key="bme_v6_product_group",
+                key=f"bme_v11_product_group_{selected_product_supplier_filter}",
             )
-            group_products = top_products[top_products["product_group"].eq(selected_product_group)].copy()
+            group_products = supplier_products[
+                supplier_products["product_group"].eq(selected_product_group)
+            ].copy()
             product_options = group_products["product_label"].tolist()
-            selected_product_label = product_filter_cols[1].selectbox(
-                t("产品 / 款式", "Product / Style"), product_options, key="bme_v6_product"
+            selected_product_label = product_filter_cols[2].selectbox(
+                t("产品 / 款式", "Product / Style"),
+                product_options,
+                key=f"bme_v11_product_{selected_product_supplier_filter}_{selected_product_group}",
             )
         selected_product_key = str(
             group_products.loc[group_products["product_label"].eq(selected_product_label), "product_key"].iloc[0]
@@ -15155,12 +15209,12 @@ def render_bme_bike_quality_dashboard_v3(
             st.info(t("这个产品有不良数量，但源记录没有填写可用于排名的具体疵点。", "This product has defect quantity, but its source records do not contain a specific defect that can be ranked."))
         else:
             defect_pareto["issue_display"] = defect_pareto["issue_driver"].map(
-                lambda value: value if len(str(value)) <= 20 else str(value)[:19] + "…"
+                lambda value: value if len(str(value)) <= 32 else str(value)[:31] + "…"
             )
             issue_order = (
                 issue_summary[issue_summary["issue_driver"].isin(top_issue_names)]
                 .sort_values("defect_qty", ascending=False)["issue_driver"]
-                .map(lambda value: value if len(str(value)) <= 20 else str(value)[:19] + "…")
+                .map(lambda value: value if len(str(value)) <= 32 else str(value)[:31] + "…")
                 .tolist()
             )
             render_chart_heading(
@@ -15177,12 +15231,13 @@ def render_bme_bike_quality_dashboard_v3(
             )
             defect_fig = px.bar(
                 defect_pareto,
-                x="issue_display",
-                y="defect_qty",
+                x="defect_qty",
+                y="issue_display",
                 color="quality_gate",
                 text="defect_qty",
+                orientation="h",
                 barmode="stack",
-                category_orders={"issue_display": issue_order, "quality_gate": ["IQC", "PQC", "FQC"]},
+                category_orders={"issue_display": issue_order[::-1], "quality_gate": ["IQC", "PQC", "FQC"]},
                 hover_data={
                     "issue_driver": True,
                     "issue_records": True,
@@ -15205,19 +15260,21 @@ def render_bme_bike_quality_dashboard_v3(
             )
             defect_fig.update_traces(textposition="inside", insidetextanchor="middle")
             defect_fig.update_layout(
-                height=580,
-                margin=dict(l=55, r=45, t=25, b=120),
+                height=max(300, min(640, 72 * len(issue_order) + 150)),
+                margin=dict(l=40, r=45, t=25, b=55),
                 legend_title_text="",
                 hoverlabel=dict(align="left"),
             )
-            defect_fig.update_xaxes(
+            defect_fig.update_yaxes(
                 title_text=None,
-                tickangle=-45,
                 automargin=True,
-                range=[-0.5, min(9.5, len(issue_order) - 0.5)],
-                rangeslider=dict(visible=True, thickness=0.08),
+                categoryorder="array",
+                categoryarray=issue_order[::-1],
             )
-            defect_fig.update_yaxes(title_text=None, tickangle=0, rangemode="tozero")
+            defect_fig.update_xaxes(
+                title_text=t("不良数量", "Defect Quantity"),
+                rangemode="tozero",
+            )
             st.plotly_chart(defect_fig, use_container_width=True, config={"displayModeBar": False})
             top_defect = issue_summary.iloc[0]
             top_gate = defect_pareto[defect_pareto["issue_driver"].eq(top_defect["issue_driver"])].sort_values(
@@ -15228,7 +15285,7 @@ def render_bme_bike_quality_dashboard_v3(
                 f"The top problem for {selected_product_label} is “{top_defect['issue_driver']}”, with {top_defect['defect_qty']:,.0f} defects, mainly in {top_gate['quality_gate']}. Of the {product_defect_total:,.0f} defects in the product chart, {described_defect_total:,.0f} have a specific description and {missing_defect_total:,.0f} do not.",
             )
 
-    st.subheader(t("Machine Data（CMW / TEKTRO）", "Machine Data (CMW / TEKTRO)"))
+    st.header(t("Machine Data（CMW / TEKTRO）", "Machine Data (CMW / TEKTRO)"))
     spc_heading_slot = st.empty()
     selected_machine_label = ""
     selected_machine_data = pd.DataFrame()
@@ -15635,7 +15692,7 @@ def render_bme_bike_quality_dashboard_v3(
             f"{'' if machine_scope_linked else 'This is a factory-wide high-risk process and does not represent the product selected above. '}This period has {len(parameter_view):,} measurements ranging from {measured_min:,.2f} to {measured_max:,.2f}{'; source specifications are shown' if limits_available else '; source specifications are unavailable, so only the trend is shown'}.",
         )
 
-    st.subheader(t("补充分析：来料与返工", "Supplementary Analysis: Incoming and Rework"))
+    st.header(t("补充分析：来料与返工", "Supplementary Analysis: Incoming and Rework"))
     supplementary_panels: list[dict[str, object]] = []
     supplementary_sources: list[pd.DataFrame] = []
     supplementary_conclusion_cn: list[str] = []
@@ -15689,7 +15746,7 @@ def render_bme_bike_quality_dashboard_v3(
         rework_comments = rework_comments[rework_comments.ne("") & ~rework_comments.str.fullmatch(r"返工|Rework|Not recorded|未记录", case=False, na=False)]
         top_comments = rework_comments.value_counts().head(30).rename_axis("comment").reset_index(name="rework_count")
         if not top_comments.empty:
-            top_comments["comment_label"] = top_comments["comment"].map(lambda value: value if len(value) <= 20 else value[:19] + "…")
+            top_comments["comment_label"] = top_comments["comment"].map(lambda value: value if len(value) <= 32 else value[:31] + "…")
             supplementary_panels.append({"kind": "reason", "title": t("返工原因", "Rework Reasons"), "data": top_comments})
             top_reason = top_comments.sort_values("rework_count", ascending=False).iloc[0]
             supplementary_conclusion_cn.append(f"最常见返工原因：“{top_reason['comment']}” {int(top_reason['rework_count']):,} 次")
@@ -15785,19 +15842,25 @@ def render_bme_bike_quality_dashboard_v3(
                 supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
             else:
                 supplementary_fig.add_trace(go.Bar(
-                    x=panel_data["comment_label"], y=panel_data["rework_count"], orientation="v",
+                    x=panel_data["rework_count"], y=panel_data["comment_label"], orientation="h",
                     text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#d99a00",
                     width=0.68,
                     customdata=np.column_stack([panel_data["comment"]]),
-                    hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{y:,.0f}}<extra></extra>",
+                    hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>",
                     showlegend=False,
                 ), row=plot_row, col=plot_col)
                 supplementary_fig.update_xaxes(
-                    title_text=None, tickangle=-45, automargin=True,
-                    range=panel_range,
-                    rangeslider=dict(visible=False), row=plot_row, col=plot_col,
+                    title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1,
+                    row=plot_row, col=plot_col,
                 )
-                supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
+                supplementary_fig.update_yaxes(
+                    title_text=None,
+                    categoryorder="array",
+                    categoryarray=panel_data["comment_label"].tolist()[::-1],
+                    automargin=True,
+                    row=plot_row,
+                    col=plot_col,
+                )
         supplementary_fig.update_layout(
             height=920 if supplementary_rows > 1 else 500,
             margin=dict(l=62, r=34, t=58, b=72),
@@ -15813,7 +15876,7 @@ def render_bme_bike_quality_dashboard_v3(
             f"This period's focus: {'; '.join(supplementary_conclusion_en)}. The rework sample is small and is used only for targeting and follow-up.",
         )
 
-    st.subheader(t("AI 汇总报告", "AI Summary Report"))
+    st.header(t("AI 汇总报告", "AI Summary Report"))
     top_supplier_facts = supplier_risk_scores.head(3).to_dict("records") if not supplier_risk_scores.empty else []
     top_product_facts = product_risk_scores.head(5).to_dict("records") if not product_risk_scores.empty else []
     report_pareto, report_missing_issues = build_bme_issue_pareto(view, customer_nc, limit=5)
@@ -16351,6 +16414,18 @@ def _render_bme_data_map(
     status_matrix = pd.DataFrame(status_rows, columns=display_columns)
 
     render_data_gap_matrix(status_matrix, wrapper_class="bme-data-map-matrix")
+    st.caption(t(
+        "该表是全项目数据源覆盖总览，不随供应商或日期分析筛选变化。",
+        "This table is the project-wide source coverage overview and does not change with supplier or date analysis filters.",
+    ))
+    event_dates = pd.to_datetime(events.get("date", pd.Series(pd.NaT, index=events.index)), errors="coerce")
+    undated_count = int(event_dates.isna().sum())
+    future_count = int(event_dates.dt.date.gt(dt.date.today()).fillna(False).sum())
+    if undated_count or future_count:
+        st.caption(t(
+            f"数据质量提醒：{undated_count:,} 条记录没有日期；{future_count:,} 条记录日期晚于今天，默认分析不包含未来日期。",
+            f"Data-quality note: {undated_count:,} records have no date; {future_count:,} are dated after today and are excluded from the default analysis.",
+        ))
 
 
 def _render_bme_specific_charts(events: pd.DataFrame) -> None:

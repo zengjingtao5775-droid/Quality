@@ -10,6 +10,7 @@ from bme_quality import (
     build_bme_issue_pareto,
     build_bme_product_master,
     build_bme_relative_risk_scores,
+    build_bme_relative_risk_scores_for_selection,
     build_cmw_product_clusters,
     build_imr_chart_data,
     build_p_chart_data,
@@ -40,6 +41,33 @@ class BmeAnalysisFormulaTest(unittest.TestCase):
         self.assertGreater(products.iloc[0]["risk_score"], products.iloc[1]["risk_score"])
         self.assertTrue(products["available_gates"].eq(1).all())
         self.assertFalse(suppliers.empty)
+
+    def test_supplier_selection_does_not_recalculate_peer_baseline(self) -> None:
+        events = pd.DataFrame([
+            {
+                "supplier": supplier,
+                "stage": "AQL",
+                "model_item_code": code,
+                "item_name": code,
+                "family": "Bike",
+                "source_row": index,
+                "date": pd.Timestamp("2026-01-01"),
+                "inspected_qty": 100,
+                "defect_qty": defects,
+                "is_alert": defects > 0,
+            }
+            for index, (supplier, code, defects) in enumerate([
+                ("CMW", "CMW-A", 10),
+                ("FSD", "FSD-A", 2),
+            ])
+        ])
+        _, all_suppliers = build_bme_relative_risk_scores_for_selection(events, ["CMW", "FSD"])
+        _, cmw_only = build_bme_relative_risk_scores_for_selection(events, ["CMW"])
+        all_cmw_score = float(
+            all_suppliers.loc[all_suppliers["supplier"].eq("CMW"), "risk_score"].iloc[0]
+        )
+        self.assertEqual(float(cmw_only.iloc[0]["risk_score"]), all_cmw_score)
+        self.assertEqual(cmw_only["supplier"].tolist(), ["CMW"])
 
     def test_cmw_clusters_keep_gate_grains_separate_and_flag_pqc_confidence(self) -> None:
         rows = []
