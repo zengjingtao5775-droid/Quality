@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-18-v9"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-18-v10"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -333,7 +333,7 @@ st.set_page_config(
     page_title=t("NEA 质量管理平台", "NEA Quality Platform"),
     page_icon="assets/decathlon-logo.png",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 st.markdown(
@@ -800,7 +800,7 @@ st.markdown(
         white-space: nowrap;
     }
     .bme-data-map-matrix .gap-matrix-table {
-        min-width: 0;
+        min-width: 980px;
         table-layout: fixed;
     }
     .bme-data-map-matrix .gap-matrix-table th,
@@ -1835,6 +1835,20 @@ st.markdown(
         }
     }
     @media (max-width: 1100px) {
+        section[data-testid="stSidebar"] {
+            width: 210px !important;
+            min-width: 210px !important;
+            max-width: 210px !important;
+            resize: none !important;
+        }
+        section[data-testid="stSidebar"] > div {
+            min-width: 210px !important;
+        }
+        .block-container {
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }
+        h1 {font-size: 2.1rem !important;}
         .kpi-grid.bme-overall {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
@@ -8685,7 +8699,7 @@ def render_chart_heading(
     if control_renderer is not None:
         heading_columns = st.columns([0.64, 0.20, 0.16] if compact else [0.70, 0.20, 0.10])
     else:
-        heading_columns = st.columns([0.78, 0.22] if compact else [0.90, 0.10])
+        heading_columns = st.columns([0.78, 0.22] if compact else [0.84, 0.16])
     left = heading_columns[0]
     control = heading_columns[1] if control_renderer is not None else None
     right = heading_columns[2] if control_renderer is not None else heading_columns[1]
@@ -14143,7 +14157,7 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     plot_view = plot_view.copy()
     # The combined view is dense at the top-right corner. Keep labels sparse
     # and let hover + the priority table carry the remaining detail.
-    label_count = 3 if selected_gate == gate_options[0] else 5
+    label_count = 3 if selected_gate == gate_options[0] else 1
     top_labels = plot_view.nlargest(min(label_count, len(plot_view)), "risk_score").index
     plot_view["chart_label"] = ""
     plot_view.loc[top_labels, "chart_label"] = plot_view.loc[top_labels, "product_label"].map(
@@ -14260,9 +14274,16 @@ def render_bme_bike_quality_dashboard_v3(
     with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
         selected_suppliers = st.multiselect(t("供应商", "Supplier"), suppliers, default=suppliers, key="bme_v4_supplier")
         selected_dates = st.date_input(t("日期范围", "Period"), value=(default_start, max_date), min_value=min_date, max_value=max_date, key="bme_v4_dates")
+        selected_date_caption = st.empty()
     start_date, end_date = default_start, max_date
     if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
         start_date, end_date = selected_dates
+    selected_date_caption.caption(
+        t(
+            f"当前范围：{start_date} → {end_date}",
+            f"Current period: {start_date} → {end_date}",
+        )
+    )
     supplier_chip = " · ".join(selected_suppliers) if selected_suppliers else t("未选择供应商", "No supplier selected")
     st.markdown(
         f"""<div class="hero" style="margin-bottom:14px;"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
@@ -14504,6 +14525,10 @@ def render_bme_bike_quality_dashboard_v3(
     product_risk_scores, supplier_risk_scores = build_bme_relative_risk_scores_for_selection(
         period_events, selected_suppliers
     )
+    unavailable_risk_suppliers = [
+        supplier for supplier in selected_suppliers
+        if supplier not in set(supplier_risk_scores["supplier"])
+    ]
 
     st.header(t("供应商与产品风险评分", "Supplier and Product Risk Scores"))
     render_chart_heading(
@@ -14539,6 +14564,12 @@ def render_bme_bike_quality_dashboard_v3(
             supplier_fig.update_xaxes(range=[0, 105], title_text=t("供应商相对风险分（0–100）", "Supplier Relative Risk Score (0–100)"))
             supplier_fig.update_yaxes(title_text="")
             st.plotly_chart(supplier_fig, use_container_width=True, config={"displayModeBar": False})
+        if unavailable_risk_suppliers:
+            missing_supplier_text = "、".join(unavailable_risk_suppliers)
+            st.info(t(
+                f"{missing_supplier_text}：本期没有具备正式判定或可靠问题口径的可比质量环节，因此显示为不可计算，不按 0 风险参与排名。",
+                f"{', '.join(unavailable_risk_suppliers)}: no comparable quality gate with a formal judgement or reliable issue definition is available in this period. The score is unavailable and is not treated as zero risk.",
+            ))
     with risk_right:
         if product_risk_scores.empty:
             st.info(t("当前范围没有可计算的产品风险评分。", "No product risk score is available in the current scope."))
@@ -14790,34 +14821,24 @@ def render_bme_bike_quality_dashboard_v3(
                     if supplier_name == "CMW"
                     else t("不良数量", "Defect Qty")
                 )
-                top_label_name = (
-                    t("不良率", "Defect Rate")
+                measure_caption = (
+                    t("柱高=退货量 · 柱顶=退货率", "Bar=Return Qty · Label=Rate")
                     if supplier_name == "CMW" and gate_name == "IQC"
-                    else t("不良数量", "Defect Quantity")
+                    else t("柱高=点/台 · 柱顶=问题点", "Bar=Points/Unit · Label=Total")
+                    if supplier_name == "CMW" and gate_name == "FQC"
+                    else t("柱高=不良率 · 柱顶=不良数", "Bar=Defect Rate · Label=Defect Qty")
                 )
                 combined_gate_fig.add_annotation(
-                    text=gate_name,
-                    x=0,
+                    text=f"{gate_name} · {measure_caption}" if supplier_name == "CMW" else gate_name,
+                    x=0.5 if supplier_name == "CMW" else 0,
                     y=1.10,
                     xref=x_domain_ref,
                     yref=y_domain_ref,
-                    xanchor="left",
+                    xanchor="center" if supplier_name == "CMW" else "left",
                     yanchor="bottom",
                     showarrow=False,
-                    font=dict(size=17, color="#667085"),
+                    font=dict(size=12 if supplier_name == "CMW" else 17, color="#667085"),
                 )
-                if supplier_name == "CMW":
-                    combined_gate_fig.add_annotation(
-                        text=top_label_name,
-                        x=0.5,
-                        y=1.10,
-                        xref=x_domain_ref,
-                        yref=y_domain_ref,
-                        xanchor="center",
-                        yanchor="bottom",
-                        showarrow=False,
-                        font=dict(size=15, color="#667085"),
-                    )
                 # English labels are longer than the Chinese equivalents.
                 # Use compact wording and keep them just outside their panel.
                 english_chart = st.session_state.lang == "English"
@@ -15195,6 +15216,11 @@ def render_bme_bike_quality_dashboard_v3(
             latest_date=("date", "max"),
         )
         defect_gate = defect_gate[defect_gate["defect_qty"].gt(0)]
+        defect_gate["latest_date_display"] = (
+            pd.to_datetime(defect_gate["latest_date"], errors="coerce")
+            .dt.strftime("%Y-%m-%d")
+            .fillna(t("无可靠日期", "No reliable date"))
+        )
         issue_summary = defect_gate.groupby("issue_driver", as_index=False).agg(
             defect_qty=("defect_qty", "sum"), issue_records=("issue_records", "sum")
         ).sort_values(["defect_qty", "issue_records"], ascending=False)
@@ -15242,7 +15268,8 @@ def render_bme_bike_quality_dashboard_v3(
                     "issue_driver": True,
                     "issue_records": True,
                     "main_po": True,
-                    "latest_date": "|%Y-%m-%d",
+                    "latest_date_display": True,
+                    "latest_date": False,
                     "issue_total": True,
                     "issue_display": False,
                 },
@@ -15253,7 +15280,7 @@ def render_bme_bike_quality_dashboard_v3(
                     "issue_driver": t("完整问题", "Full Problem"),
                     "issue_records": t("问题记录数", "Issue Records"),
                     "main_po": t("主要工单 / PO", "Main Order / PO"),
-                    "latest_date": t("最近日期", "Latest Date"),
+                    "latest_date_display": t("最近日期", "Latest Date"),
                     "issue_total": t("该问题合计", "Problem Total"),
                 },
                 color_discrete_map={"IQC": "#6aa8ff", "PQC": "#3341c4", "FQC": "#d99a00"},
@@ -18649,8 +18676,8 @@ st.sidebar.markdown(
     f"""
     <div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>
     <div class='language-links'>
-        <a class='{'active' if st.session_state.lang == '中文' else ''}' href='?scope={html.escape(active_scope_key)}{language_page_query}&lang=zh' target='_self'>中文</a>
-        <a class='{'active' if st.session_state.lang == 'English' else ''}' href='?scope={html.escape(active_scope_key)}{language_page_query}&lang=en' target='_self'>English</a>
+        <a class='{'active' if st.session_state.lang == '中文' else ''}' href='?scope={html.escape(active_scope_key)}{language_page_query}&lang=zh' target='_top'>中文</a>
+        <a class='{'active' if st.session_state.lang == 'English' else ''}' href='?scope={html.escape(active_scope_key)}{language_page_query}&lang=en' target='_top'>English</a>
     </div>
     """,
     unsafe_allow_html=True,

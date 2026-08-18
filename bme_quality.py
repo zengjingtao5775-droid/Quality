@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-18-v9"
+BME_QUALITY_LOGIC_VERSION = "2026-08-18-v10"
 
 
 EVENT_COLUMNS = [
@@ -802,6 +802,23 @@ def build_bme_relative_risk_scores(events: pd.DataFrame) -> tuple[pd.DataFrame, 
     master["defect_qty"] = pd.to_numeric(master.get("defect_qty"), errors="coerce").fillna(0)
     alerts = master.get("is_alert", pd.Series(False, index=master.index)).fillna(False)
     master["risk_defect_qty"] = master["defect_qty"].where(alerts, 0.0)
+
+    # A measured-only process is valid for SPC, but it is not automatically an
+    # auditable conforming quality gate. Keep a supplier/gate in relative-risk
+    # scoring only when the source contains an explicit judgement or a recorded
+    # issue. This prevents missing specifications or blank pass/fail fields from
+    # being converted into a misleading zero-risk score.
+    result_values = master.get("result", pd.Series("", index=master.index)).fillna("").astype(str).str.strip()
+    explicit_judgement = result_values.ne("") & ~result_values.str.fullmatch(
+        r"Not recorded|Unrecorded|未记录|None|nan", case=False, na=False
+    )
+    master["risk_gate_evidence"] = explicit_judgement | alerts | master["defect_qty"].gt(0)
+    auditable_gate = master.groupby(["supplier", "quality_gate"], dropna=False)[
+        "risk_gate_evidence"
+    ].transform("any")
+    master = master[auditable_gate].copy()
+    if master.empty:
+        return pd.DataFrame(columns=product_columns), pd.DataFrame(columns=supplier_columns)
 
     gate = master.groupby(
         ["supplier", "product_key", "product_label", "product_group", "quality_gate"],

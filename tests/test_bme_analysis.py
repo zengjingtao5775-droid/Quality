@@ -69,6 +69,21 @@ class BmeAnalysisFormulaTest(unittest.TestCase):
         self.assertEqual(float(cmw_only.iloc[0]["risk_score"]), all_cmw_score)
         self.assertEqual(cmw_only["supplier"].tolist(), ["CMW"])
 
+    def test_measured_only_gate_without_judgement_is_not_zero_risk(self) -> None:
+        events = pd.DataFrame([
+            {
+                "supplier": "TEKTRO", "stage": "PQC", "model_item_code": "Q13RS",
+                "item_name": "Pull-out force", "family": "1000", "source_row": index,
+                "date": pd.Timestamp("2026-01-01"), "inspected_qty": 1,
+                "defect_qty": 0, "is_alert": False, "result": "",
+                "measured_value": value, "spec_low": np.nan, "spec_high": np.nan,
+            }
+            for index, value in enumerate([320, 330, 325, 335, 328])
+        ])
+        products, suppliers = build_bme_relative_risk_scores(events)
+        self.assertTrue(products.empty)
+        self.assertTrue(suppliers.empty)
+
     def test_cmw_clusters_keep_gate_grains_separate_and_flag_pqc_confidence(self) -> None:
         rows = []
         for stage, code, inspected, defects in [
