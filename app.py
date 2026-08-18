@@ -90,6 +90,7 @@ def language_query_code() -> str:
 
 requested_language_code = str(query_param_value("lang", "zh") or "zh").strip().lower()
 requested_language = normalize_language(requested_language_code)
+language_query_changed = False
 if "_language_query_seen" not in st.session_state:
     st.session_state.lang = requested_language
     st.session_state._language_query_seen = requested_language_code
@@ -98,6 +99,7 @@ elif st.session_state.get("_language_query_seen") != requested_language_code:
     # the in-app control below to switch languages without a browser reload.
     st.session_state.lang = requested_language
     st.session_state._language_query_seen = requested_language_code
+    language_query_changed = True
 
 
 def t(cn_text: str, en_text: str) -> str:
@@ -18669,18 +18671,30 @@ render_scope_nav(active_scope_key, active_zx_page)
 selected_factories = DASHBOARD_SCOPES[active_scope_key]["factories"]
 selected_factory_source_label = ", ".join(english_display_text(FACTORIES[code]["name"]) for code in selected_factories)
 
-language_page_query = (
-    f"&page={html.escape(active_zx_page)}" if active_scope_key == "ZX" else ""
-)
+language_control_key = f"global_language_control_{active_scope_key}"
+if language_control_key not in st.session_state or language_query_changed:
+    st.session_state[language_control_key] = st.session_state.lang
+
+
+def sync_language_query() -> None:
+    selected_language = st.session_state.get(language_control_key, "中文")
+    language_code = "en" if selected_language == "English" else "zh"
+    st.session_state.lang = selected_language
+    st.session_state._language_query_seen = language_code
+    st.query_params["lang"] = language_code
+
+
 st.sidebar.markdown(
-    f"""
-    <div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>
-    <div class='language-links'>
-        <a class='{'active' if st.session_state.lang == '中文' else ''}' href='?scope={html.escape(active_scope_key)}{language_page_query}&lang=zh' target='_top'>中文</a>
-        <a class='{'active' if st.session_state.lang == 'English' else ''}' href='?scope={html.escape(active_scope_key)}{language_page_query}&lang=en' target='_top'>English</a>
-    </div>
-    """,
+    f"<div class='language-toggle-title'>{html.escape(t('Language / 语言', 'Language'))}</div>",
     unsafe_allow_html=True,
+)
+st.sidebar.segmented_control(
+    t("Language / 语言", "Language"),
+    ["中文", "English"],
+    key=language_control_key,
+    on_change=sync_language_query,
+    label_visibility="collapsed",
+    width="stretch",
 )
 
 if active_scope_key == "BME_CMW":
