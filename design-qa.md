@@ -32,6 +32,38 @@ final result: passed
 
 ---
 
+# BME Large-screen Header and State QA — 2026-08-18
+
+## Evidence
+
+- User-provided source screenshot: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-2a205760-e36e-4e9d-a3b7-5a62dfb16322.png`.
+- Same-state implementation screenshot: `/tmp/bme-wide-final-zh-r12m-2.png`.
+- Normalized side-by-side comparison: `/tmp/bme-layout-comparison-final.png`.
+- Tested desktop viewports: `1469 × 717` and `900 × 720` CSS px.
+- Tested state: all suppliers, R12M and YTD, Chinese and English.
+
+## Findings and fixes
+
+1. P1: the resizable sidebar could expand over the fixed top navigation, clipping the first item and producing a horizontal scrollbar. Fix: lock the desktop sidebar to 252 px, remove horizontal resize, and hide horizontal overflow.
+2. P1: the navigation used hard-coded viewport coordinates and did not follow the centered dashboard container. Fix: make the Streamlit element wrapper sticky so the navigation inherits the content alignment and stays visible while scrolling.
+3. P2: the first-screen management summary used more height than its information required. Fix: reduce the container padding, grid gap, card padding, and action-band spacing without reducing the readable text size.
+4. P1: switching language immediately after choosing YTD could leave the header, filter label, date chip, and selected period out of sync. Fix: use one canonical period value plus language-specific segmented-control state, and keep the URL language authoritative after reruns.
+
+## Verification
+
+- Wide layout: sidebar width 252 px; navigation and hero both start at x=332 px; document scroll width equals viewport width (1469 px).
+- Narrow desktop: sidebar width 194 px; navigation and hero both start at x=210 px; document scroll width equals viewport width (900 px).
+- Navigation: Overview, Risk, Priority products, Problem drill-down, SPC, Incoming & rework, and Data & AI each updated to the correct anchor; sticky top remained 7 px after scrolling.
+- Date/language: YTD remained `2026-01-01 — 2026-08-18` in the header and filter after switching from Chinese to English; R12M remained `2025-08-19 — 2026-08-18` after switching back.
+- Browser console errors: 0.
+- Streamlit AppTest (`scope=BME_CMW`, `lang=zh`): 0 exceptions.
+- BME regression suite: 18 tests passed.
+- Python compilation and `git diff --check`: passed.
+
+final result: passed
+
+---
+
 **Comparison Target**
 
 - Source visual truth: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-239fbfc2-61de-4a0e-a1a8-9c98777d2876.png`

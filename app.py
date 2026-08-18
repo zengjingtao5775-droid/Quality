@@ -100,6 +100,12 @@ elif st.session_state.get("_language_query_seen") != requested_language_code:
     st.session_state.lang = requested_language
     st.session_state._language_query_seen = requested_language_code
     language_query_changed = True
+elif st.session_state.get("lang") != requested_language:
+    # Keep the URL, sidebar control, and rendered language in one state even
+    # after another widget reruns the page immediately after a language switch.
+    st.session_state.lang = requested_language
+    st.session_state._language_query_seen = requested_language_code
+    language_query_changed = True
 
 
 def t(cn_text: str, en_text: str) -> str:
@@ -424,13 +430,14 @@ st.markdown(
         white-space: nowrap;
     }
     .stApp {background: #f5f7fa;}
-    .block-container {padding-top: 1.0rem; padding-bottom: 2.5rem; max-width: 1420px;}
+    .block-container {padding-top: 0.65rem; padding-bottom: 2.5rem; max-width: 1280px;}
     section[data-testid="stSidebar"] {
         width: 252px;
-        min-width: 244px !important;
-        max-width: 380px !important;
-        resize: horizontal !important;
-        overflow: auto !important;
+        min-width: 252px !important;
+        max-width: 252px !important;
+        resize: none !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
         background:
             linear-gradient(180deg, #4352cb 0%, #3043b5 54%, #273a9f 100%);
         background-color: #3043b5 !important;
@@ -445,7 +452,9 @@ st.markdown(
     }
     section[data-testid="stSidebar"] > div {
         width: 100% !important;
-        min-width: 244px !important;
+        min-width: 252px !important;
+        max-width: 252px !important;
+        overflow-x: hidden !important;
     }
     section[data-testid="stSidebar"] * {color: #ffffff;}
     section[data-testid="stSidebar"] div[data-baseweb="select"] * {color: #111827;}
@@ -1026,8 +1035,8 @@ st.markdown(
         line-height: 1.42;
     }
     .bme-management-summary {
-        margin: 14px 0 22px;
-        padding: 20px;
+        margin: 10px 0 18px;
+        padding: 16px;
         background: #ffffff;
         border: 1px solid #dbe2ec;
         border-radius: 10px;
@@ -1050,20 +1059,20 @@ st.markdown(
     .bme-management-grid {
         display: grid;
         grid-template-columns: 0.9fr 0.9fr 1.4fr 0.9fr;
-        gap: 12px;
-        margin-top: 16px;
+        gap: 10px;
+        margin-top: 12px;
     }
     .bme-management-item {
-        padding: 13px 14px;
+        padding: 11px 12px;
         background: #f7f9fc;
         border: 1px solid #e4e8ef;
         border-radius: 8px;
     }
     .bme-management-label {color: #667085; font-size: 0.875rem; font-weight: 760;}
-    .bme-management-value {margin-top: 4px; color: #172033; font-size: 1.05rem; font-weight: 850; line-height: 1.3;}
+    .bme-management-value {margin-top: 4px; color: #172033; font-size: 1rem; font-weight: 850; line-height: 1.3;}
     .bme-management-action {
-        margin-top: 13px;
-        padding: 12px 14px;
+        margin-top: 10px;
+        padding: 10px 12px;
         background: #eef3ff;
         border-left: 4px solid #2855c5;
         color: #25324a;
@@ -1072,13 +1081,9 @@ st.markdown(
         line-height: 1.45;
     }
     .bme-anchor-nav {
-        position: fixed;
-        top: 7px;
-        left: 282px;
-        right: auto;
+        position: static;
         width: max-content;
-        max-width: calc(100vw - 470px);
-        z-index: 90;
+        max-width: 100%;
         display: flex;
         gap: 2px;
         overflow-x: auto;
@@ -1090,19 +1095,15 @@ st.markdown(
         box-shadow: 0 3px 10px rgba(15, 23, 42, 0.07);
         scrollbar-width: none;
     }
-    body:has(.bme-anchor-nav)::before {
-        content: "";
-        position: fixed;
-        top: 0;
-        left: 256px;
-        right: 0;
-        height: 58px;
-        z-index: 89;
-        background: #f4f7fb;
-        pointer-events: none;
+    div[data-testid="stElementContainer"]:has(.bme-anchor-nav) {
+        position: sticky;
+        top: 7px;
+        z-index: 90;
+        width: max-content;
+        max-width: 100%;
+        margin-bottom: 10px;
     }
-    body:has(.bme-anchor-nav) .block-container {padding-top: 4rem !important;}
-    /* Streamlit renders a transparent app header above fixed page content.
+    /* Streamlit renders a transparent app header above sticky page content.
        Let pointer events pass through its empty area so the visible BME
        navigation is genuinely clickable, while preserving header controls. */
     [data-testid="stHeader"] {pointer-events: none !important;}
@@ -2106,8 +2107,7 @@ st.markdown(
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .bme-management-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
-        .bme-anchor-nav {left: 220px; right: auto; max-width: calc(100vw - 320px);}
-        body:has(.bme-anchor-nav)::before {left: 194px;}
+        .bme-anchor-nav {max-width: 100%;}
         .bme-investigation-context {top: 3.35rem;}
         .st-key-bme_product_defect_filter [data-testid="stHorizontalBlock"] {flex-wrap: wrap !important;}
         .st-key-bme_top_filter [data-testid="stHorizontalBlock"] {flex-wrap: wrap !important;}
@@ -2125,8 +2125,7 @@ st.markdown(
         .hero-title {font-size: 1.8rem;}
         .hero {padding: 22px 20px; border-radius: 16px;}
         .bme-management-grid {grid-template-columns: 1fr;}
-        .bme-anchor-nav {left: 64px; right: auto; max-width: calc(100vw - 136px);}
-        body:has(.bme-anchor-nav)::before {left: 0;}
+        .bme-anchor-nav {max-width: 100%;}
         .st-key-bme_top_filter [data-testid="stColumn"] {
             flex: 1 1 100% !important;
             width: 100% !important;
@@ -14619,14 +14618,33 @@ def render_bme_bike_quality_dashboard_v3(
     )
     ytd_start = max(min_date, dt.date(max_date.year, 1, 1))
     default_start = r12m_start
+    st.markdown(
+        f"""
+        <nav class="bme-anchor-nav" aria-label="{html.escape(t('本页调查导航', 'Investigation navigation'))}">
+          <a href="#bme-overview">{html.escape(t('概览', 'Overview'))}</a>
+          <a href="#bme-risk">{html.escape(t('风险', 'Risk'))}</a>
+          <a href="#bme-products">{html.escape(t('重点产品', 'Priority products'))}</a>
+          <a href="#bme-investigation">{html.escape(t('问题下钻', 'Problem drill-down'))}</a>
+          <a href="#bme-spc">SPC</a>
+          <a href="#bme-supplementary">{html.escape(t('来料与返工', 'Incoming & rework'))}</a>
+          <a href="#bme-data-ai">{html.escape(t('数据与 AI', 'Data & AI'))}</a>
+        </nav>
+        """,
+        unsafe_allow_html=True,
+    )
     hero_slot = st.empty()
 
     if st.session_state.get("bme_v4_period_preset") not in {"R12M", "YTD", "Custom"}:
         st.session_state["bme_v4_period_preset"] = "R12M"
         st.session_state["bme_v4_dates"] = (r12m_start, max_date)
+    period_control_key = f"bme_v4_period_control_{language_query_code()}"
 
     def sync_bme_period_dates() -> None:
-        preset = st.session_state.get("bme_v4_period_preset", "R12M")
+        preset = st.session_state.get(
+            period_control_key,
+            st.session_state.get("bme_v4_period_preset", "R12M"),
+        )
+        st.session_state["bme_v4_period_preset"] = preset
         if preset == "R12M":
             st.session_state["bme_v4_dates"] = (r12m_start, max_date)
         elif preset == "YTD":
@@ -14635,27 +14653,38 @@ def render_bme_bike_quality_dashboard_v3(
     def reset_bme_top_filters() -> None:
         st.session_state["bme_v4_supplier"] = suppliers
         st.session_state["bme_v4_period_preset"] = "R12M"
+        st.session_state["bme_v4_period_control_zh"] = "R12M"
+        st.session_state["bme_v4_period_control_en"] = "R12M"
         st.session_state["bme_v4_dates"] = (r12m_start, max_date)
 
     with st.container(key="bme_top_filter"):
         current_period = st.session_state.get("bme_v4_period_preset", "R12M")
         with st.expander(t(f"筛选 · {current_period}", f"Filters · {current_period}"), expanded=True):
             filter_cols = st.columns([1.15, 1.05, 1.05, 0.42], gap="small", vertical_alignment="bottom")
-            selected_suppliers = filter_cols[0].segmented_control(
+            selected_suppliers_value = filter_cols[0].segmented_control(
                 t("供应商", "Supplier"),
                 suppliers,
                 default=suppliers,
                 key="bme_v4_supplier",
                 selection_mode="multi",
                 width="stretch",
-            ) or []
-            selected_period = filter_cols[1].segmented_control(
+            )
+            selected_suppliers = list(
+                selected_suppliers_value
+                if selected_suppliers_value is not None
+                else (st.session_state.get("bme_v4_supplier", suppliers) or suppliers)
+            )
+            filter_cols[1].segmented_control(
                 t("日期周期", "Period"),
                 ["R12M", "YTD", "Custom"],
-                key="bme_v4_period_preset",
+                default=current_period,
+                key=period_control_key,
                 on_change=sync_bme_period_dates,
                 width="stretch",
-            ) or "R12M"
+            )
+            selected_period = st.session_state.get("bme_v4_period_preset", current_period)
+            if selected_period not in {"R12M", "YTD", "Custom"}:
+                selected_period = current_period
             if selected_period == "Custom":
                 selected_dates = filter_cols[2].date_input(
                     t("自定义日期", "Custom dates"),
@@ -14692,20 +14721,6 @@ def render_bme_bike_quality_dashboard_v3(
     # Rendered after the calculations below, but anchored here so the manager
     # sees the decision summary before any detailed chart.
     management_summary_slot = st.empty()
-    st.markdown(
-        f"""
-        <nav class="bme-anchor-nav" aria-label="{html.escape(t('本页调查导航', 'Investigation navigation'))}">
-          <a href="#bme-overview">{html.escape(t('概览', 'Overview'))}</a>
-          <a href="#bme-risk">{html.escape(t('风险', 'Risk'))}</a>
-          <a href="#bme-products">{html.escape(t('重点产品', 'Priority products'))}</a>
-          <a href="#bme-investigation">{html.escape(t('问题下钻', 'Problem drill-down'))}</a>
-          <a href="#bme-spc">SPC</a>
-          <a href="#bme-supplementary">{html.escape(t('来料与返工', 'Incoming & rework'))}</a>
-          <a href="#bme-data-ai">{html.escape(t('数据与 AI', 'Data & AI'))}</a>
-        </nav>
-        """,
-        unsafe_allow_html=True,
-    )
 
     period_events = events[
         events["date"].notna()
