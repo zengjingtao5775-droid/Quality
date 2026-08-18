@@ -809,21 +809,21 @@ st.markdown(
     }
     .bme-data-map-matrix .gap-matrix-table th,
     .bme-data-map-matrix .gap-matrix-table td {
-        padding: 9px 4px;
-        font-size: 0.7rem;
+        padding: 10px 6px;
+        font-size: 0.78rem;
         overflow-wrap: anywhere;
     }
     .bme-data-map-matrix .gap-status {
         min-width: 0;
         padding: 4px 6px;
-        font-size: 0.7rem;
+        font-size: 0.75rem;
         white-space: nowrap;
         max-width: 100%;
         box-sizing: border-box;
     }
     .bme-data-map-matrix .gap-method {
         padding: 4px 5px;
-        font-size: 0.68rem;
+        font-size: 0.74rem;
         white-space: normal;
     }
     div[data-testid="stMetric"] {
@@ -895,6 +895,11 @@ st.markdown(
         font-weight: 650;
         box-shadow: none;
     }
+    .hero.bme-hero {
+        padding: 16px 22px 15px;
+        margin-bottom: 10px;
+    }
+    .hero.bme-hero .hero-meta {margin-top: 10px;}
     .kpi-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
@@ -929,6 +934,11 @@ st.markdown(
         grid-template-columns: repeat(2, minmax(0, 1fr));
         margin-top: 8px;
     }
+    .kpi-grid.bme-data-summary {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin: 4px 0 14px;
+    }
+    .kpi-grid.bme-data-summary .kpi-card {min-height: 104px; box-shadow: none;}
     .kpi-grid.zx-top {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
@@ -1049,7 +1059,7 @@ st.markdown(
     }
     .bme-management-grid {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: 0.9fr 0.9fr 1.4fr 0.9fr;
         gap: 12px;
         margin-top: 16px;
     }
@@ -1059,7 +1069,7 @@ st.markdown(
         border: 1px solid #e4e8ef;
         border-radius: 8px;
     }
-    .bme-management-label {color: #667085; font-size: 0.82rem; font-weight: 760;}
+    .bme-management-label {color: #667085; font-size: 0.875rem; font-weight: 760;}
     .bme-management-value {margin-top: 4px; color: #172033; font-size: 1.05rem; font-weight: 850; line-height: 1.3;}
     .bme-management-action {
         margin-top: 13px;
@@ -1088,6 +1098,17 @@ st.markdown(
         box-shadow: 0 5px 16px rgba(15, 23, 42, 0.08);
         scrollbar-width: none;
     }
+    body:has(.bme-anchor-nav)::before {
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 256px;
+        right: 0;
+        height: 70px;
+        z-index: 89;
+        background: #f4f7fb;
+        pointer-events: none;
+    }
     body:has(.bme-anchor-nav) .block-container {padding-top: 4.8rem !important;}
     /* Streamlit renders a transparent app header above fixed page content.
        Let pointer events pass through its empty area so the visible BME
@@ -1103,7 +1124,7 @@ st.markdown(
         padding: 7px 10px;
         border-radius: 7px;
         color: #475467 !important;
-        font-size: 0.82rem;
+        font-size: 0.9rem;
         font-weight: 780;
         text-decoration: none !important;
         white-space: nowrap;
@@ -1116,6 +1137,10 @@ st.markdown(
     body:has(#bme-spc:target) a[href="#bme-spc"],
     body:has(#bme-supplementary:target) a[href="#bme-supplementary"],
     body:has(#bme-data-ai:target) a[href="#bme-data-ai"] {
+        background: #2855c5;
+        color: #ffffff !important;
+    }
+    body:not(:has(.bme-section-anchor:target)) .bme-anchor-nav a[href="#bme-overview"] {
         background: #2855c5;
         color: #ffffff !important;
     }
@@ -1139,28 +1164,7 @@ st.markdown(
         font-size: 0.9rem;
         font-weight: 720;
     }
-    .bme-context-label {color: #667085; font-size: 0.78rem; font-weight: 780; text-transform: uppercase;}
-    .bme-sidebar-nav {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 5px;
-        margin: 10px 0 14px;
-    }
-    .bme-sidebar-nav a {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 34px;
-        padding: 5px 7px;
-        border-radius: 7px;
-        background: rgba(255, 255, 255, 0.12);
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        color: #ffffff !important;
-        font-size: 0.74rem;
-        font-weight: 760;
-        text-decoration: none !important;
-        text-align: center;
-    }
+    .bme-context-label {color: #667085; font-size: 0.875rem; font-weight: 780; text-transform: uppercase;}
     .bme-sidebar-context {
         margin: 10px 0 14px;
         padding: 11px 12px;
@@ -1168,12 +1172,35 @@ st.markdown(
         background: rgba(255, 255, 255, 0.13);
         border: 1px solid rgba(255, 255, 255, 0.20);
         color: #ffffff !important;
-        font-size: 0.78rem;
+        font-size: 0.875rem;
         font-weight: 700;
         line-height: 1.45;
         overflow-wrap: anywhere;
     }
     .bme-sidebar-context strong {display: block; margin-bottom: 4px; color: #ffffff !important;}
+    .bme-coverage-warning {
+        margin: 10px 0 14px;
+        padding: 13px 15px;
+        border: 1px solid #fedf89;
+        border-left: 4px solid #d98200;
+        border-radius: 8px;
+        background: #fffaeb;
+        color: #7a2e0e;
+        font-size: 0.94rem;
+        font-weight: 720;
+        line-height: 1.5;
+    }
+    .bme-single-issue-card {
+        margin: 8px 0 18px;
+        padding: 17px 18px;
+        border: 1px solid #dbe2ec;
+        border-left: 4px solid #6b5cc5;
+        border-radius: 8px;
+        background: #ffffff;
+    }
+    .bme-single-issue-card .label {color:#667085; font-size:0.875rem; font-weight:760;}
+    .bme-single-issue-card .value {margin-top:5px; color:#172033; font-size:1.08rem; font-weight:850; line-height:1.45; overflow-wrap:anywhere;}
+    .bme-page-end-spacer {height: 360px;}
     [data-testid="stMain"] [data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_control"] {
         background: #ffffff !important;
         border-color: #d5dbe5 !important;
@@ -2006,10 +2033,12 @@ st.markdown(
         }
         h1 {font-size: 2.1rem !important;}
         .kpi-grid.bme-overall {grid-template-columns: repeat(2, minmax(0, 1fr));}
+        .kpi-grid.bme-data-summary {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .bme-management-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .bme-anchor-nav {left: 220px; right: 150px; margin-bottom: 14px;}
+        body:has(.bme-anchor-nav)::before {left: 194px;}
         .bme-investigation-context {top: 3.35rem;}
         .st-key-bme_product_defect_filter [data-testid="stHorizontalBlock"] {flex-wrap: wrap !important;}
         .st-key-bme_product_defect_filter [data-testid="stColumn"] {
@@ -2019,12 +2048,14 @@ st.markdown(
     }
     @media (max-width: 720px) {
         .kpi-grid, .kpi-grid.coverage-grid, .kpi-grid.zx-top, .kpi-grid.bme-overall, .signal-grid {grid-template-columns: 1fr;}
+        .kpi-grid.bme-data-summary {grid-template-columns: 1fr;}
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: 1fr;}
         .hero-title {font-size: 1.8rem;}
         .hero {padding: 22px 20px; border-radius: 16px;}
         .bme-management-grid {grid-template-columns: 1fr;}
         .bme-anchor-nav {left: 64px; right: 72px;}
+        body:has(.bme-anchor-nav)::before {left: 0;}
     }
     </style>
     """,
@@ -8869,8 +8900,8 @@ BME_GATE_COLORS = {
 }
 BME_SUPPLIER_COLORS = {
     "CMW": BME_COLORS["primary"],
-    "FSD": BME_COLORS["pqc"],
-    "TEKTRO": BME_COLORS["machine"],
+    "FSD": "#148A83",
+    "TEKTRO": "#A15C17",
 }
 
 
@@ -14504,12 +14535,12 @@ def render_bme_bike_quality_dashboard_v3(
     min_date = dated.min().date() if not dated.empty else today
     max_date = min(dated.max().date(), today) if not dated.empty else today
     default_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
-    sidebar_context_slot = st.sidebar.empty()
     st.sidebar.markdown("---")
     with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
         selected_suppliers = st.multiselect(t("供应商", "Supplier"), suppliers, default=suppliers, key="bme_v4_supplier")
         selected_dates = st.date_input(t("日期范围", "Period"), value=(default_start, max_date), min_value=min_date, max_value=max_date, key="bme_v4_dates")
         selected_date_caption = st.empty()
+    sidebar_context_slot = st.sidebar.empty()
     start_date, end_date = default_start, max_date
     if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
         start_date, end_date = selected_dates
@@ -14521,7 +14552,7 @@ def render_bme_bike_quality_dashboard_v3(
     )
     supplier_chip = " · ".join(selected_suppliers) if selected_suppliers else t("未选择供应商", "No supplier selected")
     st.markdown(
-        f"""<div id="bme-overview" class="hero" style="margin-bottom:14px;"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
+        f"""<div id="bme-overview" class="hero bme-hero"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
         unsafe_allow_html=True,
     )
     # Rendered after the calculations below, but anchored here so the manager
@@ -14812,7 +14843,7 @@ def render_bme_bike_quality_dashboard_v3(
             f"""
             <div class="bme-management-summary">
               <div class="bme-management-kicker">{html.escape(t('管理视图', 'Management View'))}</div>
-              <div class="bme-management-title">{html.escape(t('本期优先调查方向', 'Investigation focus for this period'))}</div>
+              <h2 class="bme-management-title">{html.escape(t('本期优先调查方向', 'Investigation focus for this period'))}</h2>
               <div class="bme-management-grid">
                 <div class="bme-management-item"><div class="bme-management-label">{html.escape(t('管理判断', 'Management judgement'))}</div><div class="bme-management-value">{html.escape(t('无统一目标：仅判断调查优先级', 'No common target: investigation priority only'))}</div></div>
                 <div class="bme-management-item"><div class="bme-management-label">{html.escape(t('供应商优先级', 'Supplier priority'))}</div><div class="bme-management-value">{html.escape(supplier_focus)}</div></div>
@@ -14839,7 +14870,7 @@ def render_bme_bike_quality_dashboard_v3(
         "BME Database",
         "bme_v10_risk_score_info",
     )
-    risk_left, risk_right = st.columns([0.38, 0.62], gap="medium")
+    risk_left, risk_right = st.columns([0.30, 0.70], gap="medium")
     with risk_left:
         if supplier_risk_scores.empty:
             st.info(t("当前范围没有可计算的供应商风险评分。", "No supplier risk score is available in the current scope."))
@@ -14856,17 +14887,11 @@ def render_bme_bike_quality_dashboard_v3(
                 labels={"risk_score": t("相对风险分", "Relative Risk Score"), "supplier": t("供应商", "Supplier"), "available_gates": t("可用质量环节", "Available Gates"), "defect_qty": t("不良数量", "Defect Qty"), "inspected_qty": t("检验数量", "Inspected Qty"), "product_count": t("问题产品数", "Products with Issues")},
                 color_discrete_map=BME_SUPPLIER_COLORS,
             )
-            supplier_fig.update_layout(height=360, showlegend=False, margin=dict(l=12, r=20, t=12, b=42))
+            supplier_fig.update_layout(height=320, showlegend=False, margin=dict(l=12, r=20, t=12, b=42))
             supplier_fig.update_xaxes(range=[0, 105], title_text=t("供应商相对风险分（0–100）", "Supplier Relative Risk Score (0–100)"))
             supplier_fig.update_yaxes(title_text="")
             apply_bme_chart_style(supplier_fig)
             st.plotly_chart(supplier_fig, use_container_width=True, config={"displayModeBar": False})
-        if unavailable_risk_suppliers:
-            missing_supplier_text = "、".join(unavailable_risk_suppliers)
-            st.info(t(
-                f"{missing_supplier_text}：本期没有具备正式判定或可靠问题口径的可比质量环节，因此显示为不可计算，不按 0 风险参与排名。",
-                f"{', '.join(unavailable_risk_suppliers)}: no comparable quality gate with a formal judgement or reliable issue definition is available in this period. The score is unavailable and is not treated as zero risk.",
-            ))
     with risk_right:
         if product_risk_scores.empty:
             st.info(t("当前范围没有可计算的产品风险评分。", "No product risk score is available in the current scope."))
@@ -14874,7 +14899,21 @@ def render_bme_bike_quality_dashboard_v3(
             product_plot = product_risk_scores.head(10).sort_values("risk_score").copy()
             product_plot["product_label_display"] = product_plot["product_label"].map(bme_display_text)
             product_plot["product_group_display"] = product_plot["product_group"].map(bme_display_text)
-            product_plot["product_display"] = product_plot["product_label_display"].map(lambda value: value if len(str(value)) <= 28 else str(value)[:27] + "…")
+            def compact_risk_product_label(value: object) -> str:
+                label = str(value or "")
+                parts = [part.strip() for part in label.split(" · ") if part.strip()]
+                if len(parts) >= 2:
+                    code = parts[-1]
+                    category = parts[0]
+                    return f"{code}<br>{category}"
+                if len(label) <= 34:
+                    return label
+                code_match = re.search(r"(?:Item Code|Model|料号|车型)\s*[:：]?\s*([A-Z0-9][A-Z0-9._/-]+)", label, flags=re.I)
+                code = code_match.group(1) if code_match else label[:16].rstrip()
+                detail = label[-22:].lstrip(" ·-:/")
+                return f"{code}<br>{detail}"
+
+            product_plot["product_display"] = product_plot["product_label_display"].map(compact_risk_product_label)
             product_fig = px.bar(
                 product_plot,
                 x="risk_score",
@@ -14891,6 +14930,13 @@ def render_bme_bike_quality_dashboard_v3(
             product_fig.update_yaxes(title_text="")
             apply_bme_chart_style(product_fig)
             st.plotly_chart(product_fig, use_container_width=True, config={"displayModeBar": False})
+
+    if unavailable_risk_suppliers:
+        missing_supplier_text = "、".join(unavailable_risk_suppliers)
+        st.warning(t(
+            f"{missing_supplier_text}：本期没有具备正式判定或可靠问题口径的可比质量环节，因此显示为不可计算，不按 0 风险参与排名。",
+            f"{', '.join(unavailable_risk_suppliers)}: no comparable quality gate with a formal judgement or reliable issue definition is available in this period. The score is unavailable and is not treated as zero risk.",
+        ))
 
     if "CMW" in selected_suppliers:
         with st.expander(t("QPS 深入分析：CMW 产品风险聚类", "QPS deep dive: CMW product risk clustering"), expanded=False):
@@ -15081,8 +15127,14 @@ def render_bme_bike_quality_dashboard_v3(
                 ))
                 continue
 
-            available_gate_names = [gate for gate, _, _ in supplier_gate_charts] + [gate for gate, _ in supplier_gate_notes]
-            available_gate_names = list(dict.fromkeys(available_gate_names))
+            available_gate_set = {
+                *[gate for gate, _, _ in supplier_gate_charts],
+                *[gate for gate, _ in supplier_gate_notes],
+            }
+            # Keep the control in a predictable quality-flow order. Reordering
+            # buttons by current volume makes a user's next click land on the
+            # wrong gate after Streamlit reruns the page.
+            available_gate_names = [gate for gate in ["IQC", "PQC", "FQC"] if gate in available_gate_set]
             gate_issue_totals = {
                 gate: float(rows["defect_qty"].sum())
                 for gate, rows, _ in supplier_gate_charts
@@ -15118,6 +15170,14 @@ def render_bme_bike_quality_dashboard_v3(
                 bme_chart_source(all_product_issues[all_product_issues["supplier"].eq(supplier_name)]),
                 f"bme_v9_product_{supplier_name.lower()}_info",
             )
+            if not supplier_gate_charts:
+                note_gate, note_rows = supplier_gate_notes[0]
+                note_total = float(note_rows["defect_qty"].sum())
+                st.warning(t(
+                    f"{supplier_name} · {note_gate} 已记录 {note_total:,.0f} 个问题，但缺少各车型生产量或检验量，无法可靠计算问题率。本页保留问题数量用于定位，不创建空图，也不把缺失分母解释为 0 风险。",
+                    f"{supplier_name} · {note_gate} has {note_total:,.0f} recorded issues, but model-level production or inspection quantities are unavailable. Issue volume remains available for targeting; no empty chart is created and the missing denominator is not treated as zero risk.",
+                ))
+                continue
             gate_specs: list[list[dict[str, object] | None]] = []
             gate_positions: list[tuple[int, int]] = []
             chart_index = 0
@@ -15558,23 +15618,15 @@ def render_bme_bike_quality_dashboard_v3(
             """,
             unsafe_allow_html=True,
         )
+        sidebar_product = selected_product_display if len(selected_product_display) <= 34 else selected_product_display[:33] + "…"
         with sidebar_context_slot.container():
             st.markdown(
                 f"""
                 <div class="bme-sidebar-context">
                   <strong>{html.escape(t('当前调查对象', 'Current investigation'))}</strong>
                   {html.escape(selected_product_supplier)} · {html.escape(bme_display_text(selected_product_group))}<br>
-                  {html.escape(selected_product_display)}
+                  {html.escape(sidebar_product)}
                 </div>
-                <nav class="bme-sidebar-nav" aria-label="{html.escape(t('本页调查导航', 'Investigation navigation'))}">
-                  <a href="#bme-overview">{html.escape(t('概览', 'Overview'))}</a>
-                  <a href="#bme-risk">{html.escape(t('风险', 'Risk'))}</a>
-                  <a href="#bme-products">{html.escape(t('重点产品', 'Products'))}</a>
-                  <a href="#bme-investigation">{html.escape(t('问题下钻', 'Drill-down'))}</a>
-                  <a href="#bme-spc">SPC</a>
-                  <a href="#bme-supplementary">{html.escape(t('来料返工', 'Rework'))}</a>
-                  <a href="#bme-data-ai">{html.escape(t('数据与 AI', 'Data & AI'))}</a>
-                </nav>
                 """,
                 unsafe_allow_html=True,
             )
@@ -15617,6 +15669,13 @@ def render_bme_bike_quality_dashboard_v3(
         if defect_pareto.empty:
             st.info(t("这个产品有不良数量，但源记录没有填写可用于排名的具体疵点。", "This product has defect quantity, but its source records do not contain a specific defect that can be ranked."))
         else:
+            description_coverage = described_defect_total / product_defect_total if product_defect_total > 0 else 0.0
+            if description_coverage < 0.80:
+                st.markdown(
+                    f"<div class='bme-coverage-warning'><strong>{html.escape(t('问题描述覆盖不足', 'Low issue-description coverage'))}</strong><br>"
+                    f"{html.escape(t(f'产品共有 {product_defect_total:,.0f} 个不良，仅 {described_defect_total:,.0f} 个（{description_coverage:.1%}）有可排名的具体问题；其余 {missing_defect_total:,.0f} 个缺少描述。下面的排序不代表完整问题结构。', f'The product has {product_defect_total:,.0f} defects, but only {described_defect_total:,.0f} ({description_coverage:.1%}) have a rankable issue description; {missing_defect_total:,.0f} are undescribed. The ranking below is not representative of the complete issue mix.'))}</div>",
+                    unsafe_allow_html=True,
+                )
             defect_pareto["issue_display"] = defect_pareto["issue_driver"].map(
                 lambda value: value if len(str(value)) <= 32 else str(value)[:31] + "…"
             )
@@ -15694,7 +15753,16 @@ def render_bme_bike_quality_dashboard_v3(
                 f"{selected_product_display} 出现最多的问题是“{top_defect['issue_driver']}”，共 {top_defect['defect_qty']:,.0f} 个，主要出现在 {top_gate['quality_gate']}。产品图中的 {product_defect_total:,.0f} 个不良里，{described_defect_total:,.0f} 个有具体问题描述，{missing_defect_total:,.0f} 个未填写具体问题。",
                 f"The top problem for {selected_product_display} is “{top_defect['issue_driver']}”, with {top_defect['defect_qty']:,.0f} defects, mainly in {top_gate['quality_gate']}. Of the {product_defect_total:,.0f} defects in the product chart, {described_defect_total:,.0f} have a specific description and {missing_defect_total:,.0f} do not.",
             )
-            st.plotly_chart(defect_fig, use_container_width=True, config={"displayModeBar": False})
+            if len(issue_order) == 1:
+                source_prefix = t("源问题原文", "Source text shown as recorded")
+                st.markdown(
+                    f"<div class='bme-single-issue-card'><div class='label'>{html.escape(source_prefix)} · {html.escape(str(top_gate['quality_gate']))}</div>"
+                    f"<div class='value'>{html.escape(str(top_defect['issue_driver']))}</div>"
+                    f"<div class='label'>{html.escape(t('不良数量', 'Defect quantity'))}: {float(top_defect['defect_qty']):,.0f}</div></div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.plotly_chart(defect_fig, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown('<div id="bme-spc" class="bme-section-anchor"></div>', unsafe_allow_html=True)
     st.header(t("Machine Data（CMW / TEKTRO）", "Machine Data (CMW / TEKTRO)"))
@@ -15837,7 +15905,7 @@ def render_bme_bike_quality_dashboard_v3(
             ranked_methods = ranked_all_methods
             machine_scope_note_cn = "当前控制图来自全厂 Machine Data，与上方所选款式未建立关联。"
             machine_scope_note_en = "The control chart uses factory-wide Machine Data and is not linked to the product selected above."
-            st.info(t(
+            st.warning(t(
                 f"{selected_product_display or '所选产品'} 暂无可确认对应的 Machine Data；下面显示全厂高风险过程，不代表该款式。",
                 f"No reliably linked Machine Data is available for {selected_product_display or 'the selected product'}. The factory-wide high-risk process below does not represent that product.",
             ))
@@ -15853,6 +15921,11 @@ def render_bme_bike_quality_dashboard_v3(
             with filter_label:
                 st.markdown(f'<div class="bme-spc-filter-label">{html.escape(t("查看过程", "Process"))}</div>', unsafe_allow_html=True)
             with filter_control:
+                def compact_process_label(label: str) -> str:
+                    parts = [part.strip() for part in str(label).split("·") if part.strip()]
+                    compact = " · ".join(parts[:4])
+                    return compact if len(compact) <= 72 else compact[:71] + "…"
+
                 selected_method = st.selectbox(
                     t(
                         "选择同一产品的过程参数" if machine_scope_linked else "选择全厂过程（高风险优先）",
@@ -15861,7 +15934,10 @@ def render_bme_bike_quality_dashboard_v3(
                     ranked_methods,
                     key="bme_v6_spc",
                     label_visibility="collapsed",
+                    format_func=compact_process_label,
                 )
+                if selected_method:
+                    st.caption(t("完整过程：", "Full process (source text as recorded): ") + selected_method)
         if not selected_method:
             method = ""
             data = pd.DataFrame()
@@ -15953,12 +16029,17 @@ def render_bme_bike_quality_dashboard_v3(
                 hovertemplate=f"{time_label}  %{{x|%Y-%m-%d %H:%M}}<br>{t('相邻两次变化', 'Consecutive Change')}  %{{y:.2f}}<extra></extra>"
             ), row=2, col=1)
             if limits:
-                for value, name, color, dash in [(limits["center"], "CL", BME_COLORS["machine"], "solid"), (limits["ucl"], "UCL", BME_COLORS["control"], "dot"), (limits["lcl"], "LCL", BME_COLORS["control"], "dot")]:
-                    fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, row=1, col=1)
-                fig.add_hline(y=limits["mr_ucl"], line_color=BME_COLORS["control"], line_dash="dot", annotation_text="MR UCL", row=2, col=1)
+                line_specs = [
+                    (limits["center"], "CL", BME_COLORS["machine"], "solid", "bottom left"),
+                    (limits["ucl"], "UCL", BME_COLORS["control"], "dot", "top left"),
+                    (limits["lcl"], "LCL", BME_COLORS["control"], "dot", "bottom left"),
+                ]
+                for value, name, color, dash, position in line_specs:
+                    fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, annotation_position=position, row=1, col=1)
+                fig.add_hline(y=limits["mr_ucl"], line_color=BME_COLORS["control"], line_dash="dot", annotation_text="MR UCL", annotation_position="top left", row=2, col=1)
             if method == "imr":
-                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL", row=1, col=1)
-                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL", row=1, col=1)
+                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL", annotation_position="top right", row=1, col=1)
+                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL", annotation_position="bottom right", row=1, col=1)
             fig.update_xaxes(title_text=time_label, tickangle=0, row=2, col=1)
             fig.update_xaxes(tickangle=0, row=1, col=1)
             fig.update_yaxes(title_text=None, tickangle=0, row=1, col=1)
@@ -15972,7 +16053,7 @@ def render_bme_bike_quality_dashboard_v3(
                     above_spec = chart_plot["spec_high"].notna() & chart_plot["value"].gt(chart_plot["spec_high"])
                     spec_breaches = int((below_spec | above_spec).sum())
                     spec_text_cn = f"，{spec_breaches} 个实测值超出产品规格"
-                    spec_text_en = f", and {spec_breaches} measurements outside product specifications"
+                    spec_text_en = f", and {spec_breaches} measurement{'s' if spec_breaches != 1 else ''} outside product specifications"
                 else:
                     spec_text_cn = "；源数据没有产品规格，本图只判断过程是否稳定"
                     spec_text_en = "; source specifications are unavailable, so the chart assesses stability only"
@@ -15985,7 +16066,7 @@ def render_bme_bike_quality_dashboard_v3(
                     f"当前选择共 {len(chart):,} 个测量点，但有效数据不足以计算控制限；本图只能查看原始变化，不能判断过程稳定性。",
                     f"The selected scope contains {len(chart):,} measurements, but valid data is insufficient for control limits. The chart shows raw variation only and cannot assess process stability.",
                 )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
         elif method == "pchart":
             chart, limits = build_p_chart_data(data)
             fig = go.Figure()
@@ -16137,7 +16218,7 @@ def render_bme_bike_quality_dashboard_v3(
             overall_incoming_qty = float(incoming["incoming_qty"].sum())
             overall_return_qty = float(incoming["return_qty"].sum())
             overall_return_ppm = overall_return_qty / overall_incoming_qty * 1_000_000 if overall_incoming_qty > 0 else np.nan
-            supplementary_panels.append({"kind": "incoming", "title": t("来料供应商退货 PPM", "Incoming-Supplier Return PPM"), "data": incoming_chart, "overall": overall_return_ppm})
+            supplementary_panels.append({"kind": "incoming", "title": t("来料退货 PPM", "Incoming Return PPM"), "data": incoming_chart, "overall": overall_return_ppm})
             supplementary_sources.append(cmw_iqc)
             highest = incoming_chart.sort_values("return_ppm", ascending=False).iloc[0]
             zero_note_cn = f"；另有 {len(zero_return_suppliers):,} 家供应商没有退货" if not zero_return_suppliers.empty else ""
@@ -16154,7 +16235,7 @@ def render_bme_bike_quality_dashboard_v3(
             latest_date=("date", "max"),
         ).sort_values(["rework_count", "latest_date"], ascending=False).head(30)
         if not component_frequency.empty:
-            supplementary_panels.append({"kind": "component", "title": t("零部件返工次数", "Rework Count by Component"), "data": component_frequency})
+            supplementary_panels.append({"kind": "component", "title": t(f"返工零部件（n={len(rework):,}）", f"Rework Components (n={len(rework):,})"), "data": component_frequency})
             supplementary_sources.append(rework)
             top_component = component_frequency.sort_values("rework_count", ascending=False).iloc[0]
             supplementary_conclusion_cn.append(f"返工最多的零部件：{top_component['component']} {int(top_component['rework_count']):,} 次")
@@ -16165,12 +16246,19 @@ def render_bme_bike_quality_dashboard_v3(
         top_comments = rework_comments.value_counts().head(30).rename_axis("comment").reset_index(name="rework_count")
         if not top_comments.empty:
             top_comments["comment_label"] = top_comments["comment"].map(lambda value: value if len(value) <= 32 else value[:31] + "…")
-            supplementary_panels.append({"kind": "reason", "title": t("返工原因", "Rework Reasons"), "data": top_comments})
+            supplementary_panels.append({"kind": "reason", "title": t(f"返工原因（n={len(rework):,}）", f"Rework Reasons (n={len(rework):,}; source text)"), "data": top_comments})
             top_reason = top_comments.sort_values("rework_count", ascending=False).iloc[0]
             supplementary_conclusion_cn.append(f"最常见返工原因：“{top_reason['comment']}” {int(top_reason['rework_count']):,} 次")
             supplementary_conclusion_en.append(f"most common reason: “{top_reason['comment']}” ({int(top_reason['rework_count']):,})")
 
     if supplementary_panels:
+        top_component_count = int(component_frequency["rework_count"].max()) if not rework.empty and not component_frequency.empty else 0
+        top_reason_count = int(top_comments["rework_count"].max()) if not rework.empty and not top_comments.empty else 0
+        if not rework.empty and (len(rework) < 30 or max(top_component_count, top_reason_count) < 5):
+            st.warning(t(
+                f"本期共 {len(rework):,} 条返工申请；最高零部件仅 {top_component_count:,} 条、最高原因仅 {top_reason_count:,} 条。Top 排名仅用于定位回查，不能解释为稳定的长期主要原因。",
+                f"This period has {len(rework):,} rework applications; the leading component has only {top_component_count:,} records and the leading reason only {top_reason_count:,}. The ranking is for targeting follow-up only and does not establish a stable long-term pattern.",
+            ))
         combined_source = pd.concat(supplementary_sources, ignore_index=True).drop_duplicates(subset=["source_file", "source_sheet", "source_row"])
         render_chart_heading(
             "CMW 来料退货与返工重点",
@@ -16301,7 +16389,7 @@ def render_bme_bike_quality_dashboard_v3(
         # unselected source into a false "not connected" status.
         _render_bme_data_map(events, customer_nc, fsd_orders)
 
-    st.header(t("AI 汇总报告", "AI Summary Report"))
+    st.header(t("可选：AI 汇总报告", "Optional: AI Summary Report"))
     top_supplier_facts = supplier_risk_scores.head(3).to_dict("records") if not supplier_risk_scores.empty else []
     top_product_facts = product_risk_scores.head(5).to_dict("records") if not product_risk_scores.empty else []
     report_pareto, report_missing_issues = build_bme_issue_pareto(view, customer_nc, limit=5)
@@ -16322,7 +16410,7 @@ def render_bme_bike_quality_dashboard_v3(
         st.session_state["bme_ai_summary"] = ""
     summary_cols = st.columns([1.2, 4.8], vertical_alignment="center")
     generate_bme_summary = summary_cols[0].button(
-        t("生成 AI 汇总", "Generate AI Summary"), key="bme_generate_ai_summary", use_container_width=True
+        t("按需生成 AI 汇总", "Generate on demand"), key="bme_generate_ai_summary", use_container_width=True, type="secondary"
     )
     summary_cols[1].caption(t(
         "AI 只整理当前事实与行动建议；数据口径、风险分和 SPC 仍由确定性代码计算。",
@@ -16352,9 +16440,10 @@ def render_bme_bike_quality_dashboard_v3(
         st.markdown(st.session_state["bme_ai_summary"])
     else:
         st.info(t(
-            "点击生成后，报告将使用当前供应商风险、产品风险、主要问题和数据缺口生成管理摘要。",
-            "Generate a management summary from the current supplier risks, product risks, top issues, and data gaps.",
+            "这是可选的二次整理入口，不影响上方确定性结果。点击后才会使用当前供应商风险、产品风险、主要问题和数据缺口生成管理摘要。",
+            "This optional secondary action does not affect the deterministic results above. It runs only when clicked and summarizes current supplier risks, product risks, top issues, and data gaps.",
         ))
+    st.markdown('<div class="bme-page-end-spacer" aria-hidden="true"></div>', unsafe_allow_html=True)
 
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),
@@ -16838,6 +16927,22 @@ def _render_bme_data_map(
     status_rows.append(access_row)
     status_matrix = pd.DataFrame(status_rows, columns=display_columns)
 
+    summary_cards: list[dict[str, str]] = []
+    source_columns = display_columns[2:]
+    for supplier_row in status_rows[:-1]:
+        loaded = [column for column in source_columns if supplier_row.get(column) in {"已接入", "Loaded"}]
+        missing = [column for column in source_columns if supplier_row.get(column) in {"缺失", "Missing"}]
+        missing_note = t("缺口：", "Gaps: ") + ("、".join(missing[:3]) if missing else t("无", "None"))
+        if len(missing) > 3:
+            missing_note += f" +{len(missing) - 3}"
+        summary_cards.append({
+            "label": str(supplier_row[supplier_col]),
+            "value": t(f"{len(loaded)}/{len(source_columns)} 已接入", f"{len(loaded)}/{len(source_columns)} loaded"),
+            "note": missing_note,
+            "level": "medium",
+        })
+    if summary_cards:
+        render_kpi_cards(summary_cards, variant="bme-data-summary")
     render_data_gap_matrix(status_matrix, wrapper_class="bme-data-map-matrix")
     st.caption(t(
         "该表是全项目数据源覆盖总览，不随供应商或日期分析筛选变化。",
