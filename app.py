@@ -423,16 +423,11 @@ st.markdown(
         box-shadow: 0 8px 20px rgba(15, 23, 42, 0.10);
         white-space: nowrap;
     }
-    .stApp {
-        background:
-            radial-gradient(circle at 15% 4%, rgba(51, 65, 196, 0.10), transparent 28%),
-            radial-gradient(circle at 88% 6%, rgba(80, 92, 214, 0.13), transparent 34%),
-            linear-gradient(180deg, #f7f9ff 0%, #eef2fb 46%, #f5f7fb 100%);
-    }
+    .stApp {background: #f5f7fa;}
     .block-container {padding-top: 1.0rem; padding-bottom: 2.5rem; max-width: 1420px;}
     section[data-testid="stSidebar"] {
-        width: 238px;
-        min-width: 230px !important;
+        width: 252px;
+        min-width: 244px !important;
         max-width: 380px !important;
         resize: horizontal !important;
         overflow: auto !important;
@@ -450,7 +445,7 @@ st.markdown(
     }
     section[data-testid="stSidebar"] > div {
         width: 100% !important;
-        min-width: 230px !important;
+        min-width: 244px !important;
     }
     section[data-testid="stSidebar"] * {color: #ffffff;}
     section[data-testid="stSidebar"] div[data-baseweb="select"] * {color: #111827;}
@@ -459,6 +454,12 @@ st.markdown(
     section[data-testid="stSidebar"] .stTextInput,
     section[data-testid="stSidebar"] div[data-baseweb="select"] {
         color: #111827 !important;
+    }
+    section[data-testid="stSidebar"] .stDateInput input {
+        font-size: 0.76rem !important;
+        padding-left: 8px !important;
+        padding-right: 8px !important;
+        letter-spacing: -0.01em !important;
     }
     section[data-testid="stSidebar"] [data-baseweb="tag"] {
         background: linear-gradient(135deg, #eef3ff 0%, #dfe7ff 100%) !important;
@@ -659,8 +660,9 @@ st.markdown(
         color: #2434a7 !important;
         box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
     }
-    h1, h2, h3 {letter-spacing: 0;}
-    h1 {font-size: 2.6rem !important; line-height: 1.05 !important;}
+    h1, h2, h3 {letter-spacing: 0; color: #172033;}
+    h1 {font-size: 2.12rem !important; line-height: 1.12 !important;}
+    h2 {font-size: 1.58rem !important; line-height: 1.2 !important;}
     h3 {font-size: 1.28rem !important; margin-top: 1.0rem !important;}
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
@@ -837,14 +839,13 @@ st.markdown(
         font-size: 0.92rem;
     }
     .hero {
-        background:
-            linear-gradient(120deg, rgba(255,255,255,0.98) 0%, rgba(249,250,255,0.96) 42%, rgba(229,235,255,0.94) 100%);
+        background: #ffffff;
         color: #172033;
-        border-radius: 16px;
-        padding: 23px 29px 22px;
+        border-radius: 10px;
+        padding: 20px 24px 19px;
         margin-bottom: 12px;
-        box-shadow: 0 14px 34px rgba(36, 52, 167, 0.11);
-        border: 1px solid rgba(205, 214, 250, 0.95);
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+        border: 1px solid #e2e7ef;
         position: relative;
         overflow: hidden;
     }
@@ -855,21 +856,9 @@ st.markdown(
         top: 0;
         bottom: 0;
         width: 6px;
-        background: linear-gradient(180deg, #5363e6 0%, #3341c4 48%, #1f2f92 100%);
+        background: #2855c5;
     }
-    .hero::after {
-        content: "";
-        position: absolute;
-        right: -68px;
-        top: -92px;
-        width: 230px;
-        height: 230px;
-        border-radius: 50%;
-        background:
-            radial-gradient(circle at 34% 34%, rgba(255,255,255,0.36), transparent 34%),
-            rgba(51, 65, 196, 0.12);
-        pointer-events: none;
-    }
+    .hero::after {display: none;}
     .hero-title {
         font-size: clamp(1.66rem, 2.5vw, 2.08rem);
         font-weight: 860;
@@ -904,7 +893,7 @@ st.markdown(
         color: #344054;
         font-size: 0.82rem;
         font-weight: 650;
-        box-shadow: 0 8px 20px rgba(36, 52, 167, 0.08);
+        box-shadow: none;
     }
     .kpi-grid {
         display: grid;
@@ -1017,14 +1006,14 @@ st.markdown(
         line-height: 1.3;
     }
     .bme-chart-conclusion {
-        margin: 12px 0 22px;
-        padding: 17px 20px;
-        border: 1px solid #f3b4bd;
-        border-left: 6px solid #c01048;
-        border-radius: 12px;
-        background: linear-gradient(135deg, #fff5f7 0%, #ffffff 100%);
-        box-shadow: 0 10px 24px rgba(192, 16, 72, 0.10);
-        color: #3b1420;
+        margin: 12px 0 20px;
+        padding: 15px 18px;
+        border: 1px solid #d8e1f2;
+        border-left: 4px solid #2855c5;
+        border-radius: 8px;
+        background: #f7f9fd;
+        box-shadow: none;
+        color: #25324a;
         font-size: 1rem;
         font-weight: 720;
         line-height: 1.55;
@@ -1032,9 +1021,55 @@ st.markdown(
     .bme-chart-conclusion strong {
         display: block;
         margin-bottom: 4px;
-        color: #a30d3b;
-        font-size: 1.08rem;
+        color: #173b8f;
+        font-size: 1rem;
         font-weight: 880;
+    }
+    .bme-management-summary {
+        margin: 14px 0 22px;
+        padding: 20px;
+        background: #ffffff;
+        border: 1px solid #dbe2ec;
+        border-radius: 10px;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+    }
+    .bme-management-kicker {
+        color: #2855c5;
+        font-size: 0.78rem;
+        font-weight: 850;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+    .bme-management-title {
+        margin-top: 5px;
+        color: #172033;
+        font-size: clamp(1.35rem, 2vw, 1.72rem);
+        font-weight: 860;
+        line-height: 1.25;
+    }
+    .bme-management-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+    }
+    .bme-management-item {
+        padding: 13px 14px;
+        background: #f7f9fc;
+        border: 1px solid #e4e8ef;
+        border-radius: 8px;
+    }
+    .bme-management-label {color: #667085; font-size: 0.82rem; font-weight: 760;}
+    .bme-management-value {margin-top: 4px; color: #172033; font-size: 1.05rem; font-weight: 850; line-height: 1.3;}
+    .bme-management-action {
+        margin-top: 13px;
+        padding: 12px 14px;
+        background: #eef3ff;
+        border-left: 4px solid #2855c5;
+        color: #25324a;
+        font-size: 0.94rem;
+        font-weight: 700;
+        line-height: 1.45;
     }
     .kpi-trend {
         display: inline-flex;
@@ -1838,14 +1873,15 @@ st.markdown(
     }
     @media (max-width: 1100px) {
         section[data-testid="stSidebar"] {
-            width: 210px !important;
-            min-width: 210px !important;
-            max-width: 210px !important;
+            width: 194px !important;
+            min-width: 194px !important;
+            max-width: 194px !important;
             resize: none !important;
         }
         section[data-testid="stSidebar"] > div {
-            min-width: 210px !important;
+            min-width: 194px !important;
         }
+        section[data-testid="stSidebar"] [data-baseweb="tag"] span {max-width: none !important;}
         .block-container {
             padding-left: 1rem !important;
             padding-right: 1rem !important;
@@ -1854,6 +1890,7 @@ st.markdown(
         .kpi-grid.bme-overall {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
+        .bme-management-grid {grid-template-columns: 1fr;}
     }
     @media (max-width: 720px) {
         .kpi-grid, .kpi-grid.coverage-grid, .kpi-grid.zx-top, .kpi-grid.bme-overall, .signal-grid {grid-template-columns: 1fr;}
@@ -8681,6 +8718,53 @@ def render_bme_chart_conclusion(text_cn: str, text_en: str) -> None:
     )
 
 
+# BME visual semantics. Category colours remain stable across charts, while
+# red/green are reserved for actual exceptions and favourable movement. A risk
+# score is an investigation priority, so supplier colours must not imply a
+# formal pass/fail decision.
+BME_COLORS = {
+    "primary": "#2855C5",
+    "primary_dark": "#173B8F",
+    "iqc": "#2F6BFF",
+    "pqc": "#6B5CC5",
+    "fqc": "#D98200",
+    "machine": "#168A83",
+    "alert": "#C83C55",
+    "positive": "#168A5B",
+    "neutral": "#667085",
+    "control": "#475467",
+    "grid": "#E7EAF0",
+}
+BME_GATE_COLORS = {
+    "IQC": BME_COLORS["iqc"],
+    "PQC": BME_COLORS["pqc"],
+    "FQC": BME_COLORS["fqc"],
+}
+BME_SUPPLIER_COLORS = {
+    "CMW": BME_COLORS["primary"],
+    "FSD": BME_COLORS["pqc"],
+    "TEKTRO": BME_COLORS["machine"],
+}
+
+
+def apply_bme_chart_style(fig: go.Figure, *, height: int | None = None, showlegend: bool | None = None) -> go.Figure:
+    """Apply one restrained, readable chart system without changing data."""
+    layout: dict[str, object] = {
+        "paper_bgcolor": "rgba(0,0,0,0)",
+        "plot_bgcolor": "#FFFFFF",
+        "font": {"family": "Inter, PingFang SC, Microsoft YaHei, sans-serif", "size": 14, "color": "#475467"},
+        "hoverlabel": {"align": "left", "font_size": 14},
+    }
+    if height is not None:
+        layout["height"] = height
+    if showlegend is not None:
+        layout["showlegend"] = showlegend
+    fig.update_layout(**layout)
+    fig.update_xaxes(gridcolor=BME_COLORS["grid"], zerolinecolor=BME_COLORS["grid"], tickfont={"size": 13})
+    fig.update_yaxes(gridcolor=BME_COLORS["grid"], zerolinecolor=BME_COLORS["grid"], tickfont={"size": 13})
+    return fig
+
+
 def render_chart_heading(
     title_cn: str,
     title_en: str,
@@ -14107,7 +14191,7 @@ def _render_bme_bike_quality_dashboard_v3_legacy(events: pd.DataFrame) -> None:
 def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     """Render the CMW gate-aware product clustering block below Data Map."""
     clusters = build_cmw_product_clusters(events)
-    st.header(t("CMW 产品风险聚类", "CMW Product Risk Clustering"))
+    st.subheader(t("CMW 产品风险聚类", "CMW Product Risk Clustering"))
     render_chart_heading(
         "IQC / PQC / FQC 聚类优先级",
         "IQC / PQC / FQC Cluster Priority",
@@ -14211,9 +14295,9 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
             "confidence_display": t("置信度", "Confidence"),
         },
         color_discrete_map={
-            t("持续观察", "Monitor"): "#3f8f75",
-            t("重点关注", "Attention"): "#e6a23c",
-            t("优先改善", "Priority improvement"): "#d4475f",
+            t("持续观察", "Monitor"): "#8A94A6",
+            t("重点关注", "Attention"): BME_COLORS["fqc"],
+            t("优先改善", "Priority improvement"): BME_COLORS["alert"],
         },
         symbol_map={"IQC": "circle", "PQC": "diamond", "FQC": "square"},
         size_max=34,
@@ -14221,7 +14305,8 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     fig.update_traces(textposition="top center", marker={"line": {"width": 1.5, "color": "rgba(255,255,255,.9)"}})
     fig.update_xaxes(range=[-4, 106], dtick=20)
     fig.update_yaxes(range=[-4, 112], dtick=20)
-    fig.update_layout(height=610, margin=dict(l=20, r=20, t=30, b=30), legend=dict(orientation="h", y=1.12, x=0))
+    fig.update_layout(height=440, margin=dict(l=20, r=20, t=30, b=30), legend=dict(orientation="h", y=1.12, x=0))
+    apply_bme_chart_style(fig)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     priority_view = clusters[clusters["defect_qty"].gt(0)].head(12).copy()
@@ -14252,7 +14337,7 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
         column_config={
             t("相对风险分", "Relative Risk Score"): st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
         },
-        height=455,
+        height=330,
     )
     if clusters["quality_gate"].eq("PQC").any():
         st.caption(t("PQC 当前没有可靠检验分母，因此 PQC 风险分置信度标记为低，只用于定位优先级。补充正式分母后才可与 IQC/FQC 一样计算问题率。", "PQC currently lacks a valid inspection denominator, so its score has low confidence and is used only for prioritization. A formal denominator is required before calculating an issue rate like IQC/FQC."))
@@ -14291,10 +14376,9 @@ def render_bme_bike_quality_dashboard_v3(
         f"""<div class="hero" style="margin-bottom:14px;"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
         unsafe_allow_html=True,
     )
-    with st.expander(t("数据地图", "Data Map"), expanded=True):
-        # Source coverage is fixed. Analysis filters must never turn an
-        # unselected source into a false "not connected" status.
-        _render_bme_data_map(events, customer_nc, fsd_orders)
+    # Rendered after the calculations below, but anchored here so the manager
+    # sees the decision summary before any detailed chart.
+    management_summary_slot = st.empty()
 
     period_events = events[
         events["date"].notna()
@@ -14306,7 +14390,6 @@ def render_bme_bike_quality_dashboard_v3(
         return
 
     cmw_cluster_view = view[view["supplier"].eq("CMW")].copy()
-    render_cmw_product_cluster_analysis(cmw_cluster_view)
 
     ppm = calculate_fsd_customer_ppm(customer_nc, fsd_orders, start_date, end_date) if not customer_nc.empty else {"ppm": np.nan, "coverage": np.nan, "nc_qty": 0, "ordered_qty": 0}
     customer_period = customer_nc.copy() if not customer_nc.empty else pd.DataFrame()
@@ -14532,6 +14615,58 @@ def render_bme_bike_quality_dashboard_v3(
         if supplier not in set(supplier_risk_scores["supplier"])
     ]
 
+    top_supplier = supplier_risk_scores.iloc[0] if not supplier_risk_scores.empty else None
+    top_product = product_risk_scores.iloc[0] if not product_risk_scores.empty else None
+    if top_supplier is not None:
+        supplier_focus = t(
+            f"{top_supplier['supplier']} · 调查优先级 {float(top_supplier['risk_score']):.1f}",
+            f"{top_supplier['supplier']} · priority {float(top_supplier['risk_score']):.1f}",
+        )
+    else:
+        supplier_focus = t("暂无可计算对象", "No comparable object")
+    if top_product is not None:
+        product_name = str(top_product["product_label"])
+        if st.session_state.lang == "English":
+            product_name = product_name.replace(
+                "PQC 车型（未对应整车料号）",
+                "PQC Model (not linked to whole-bike item)",
+            )
+        product_supplier = str(top_product["supplier"])
+        product_focus = t(
+            f"{product_supplier} · {product_name} · {float(top_product['risk_score']):.1f}",
+            f"{product_supplier} · {product_name} · {float(top_product['risk_score']):.1f}",
+        )
+        affected_gate_count = int(top_product.get("affected_gates", 0) or 0)
+        gate_focus = t(f"{affected_gate_count} 个问题环节", f"{affected_gate_count} affected gate(s)")
+        action_text = t(
+            f"先核对 {product_supplier} 的 {product_name}，再进入该产品的 {gate_focus} 和 Pareto；如涉及过程参数，再回查 SPC 的工单、设备、人员和物料批次。",
+            f"Start with {product_name} at {product_supplier}, then review its {gate_focus} and Pareto. If process parameters are involved, trace the SPC signal to the order, equipment, operator, and material batch.",
+        )
+    else:
+        product_focus = t("暂无可计算对象", "No comparable object")
+        gate_focus = t("检查当前数据覆盖", "Check current data coverage")
+        action_text = t("当前数据不足以形成产品调查排序，请先核对筛选范围和数据覆盖。", "Current data is insufficient for a product investigation ranking. Check the filters and data coverage first.")
+    confidence_text = (
+        t(f"{', '.join(unavailable_risk_suppliers)} 暂不可计算", f"{', '.join(unavailable_risk_suppliers)} unavailable")
+        if unavailable_risk_suppliers else t("可比风险对象已计算", "Comparable risk objects calculated")
+    )
+    with management_summary_slot.container():
+        st.markdown(
+            f"""
+            <div class="bme-management-summary">
+              <div class="bme-management-kicker">{html.escape(t('管理视图', 'Management View'))}</div>
+              <div class="bme-management-title">{html.escape(t('本期优先调查方向', 'Investigation focus for this period'))}</div>
+              <div class="bme-management-grid">
+                <div class="bme-management-item"><div class="bme-management-label">{html.escape(t('供应商优先级', 'Supplier priority'))}</div><div class="bme-management-value">{html.escape(supplier_focus)}</div></div>
+                <div class="bme-management-item"><div class="bme-management-label">{html.escape(t('产品优先级', 'Product priority'))}</div><div class="bme-management-value">{html.escape(product_focus)}</div></div>
+                <div class="bme-management-item"><div class="bme-management-label">{html.escape(t('数据置信提示', 'Data-confidence note'))}</div><div class="bme-management-value">{html.escape(confidence_text)}</div></div>
+              </div>
+              <div class="bme-management-action"><strong>{html.escape(t('建议下一步：', 'Recommended next step: '))}</strong>{html.escape(action_text)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     st.header(t("供应商与产品风险评分", "Supplier and Product Risk Scores"))
     render_chart_heading(
         "相对风险优先级",
@@ -14545,7 +14680,7 @@ def render_bme_bike_quality_dashboard_v3(
         "BME Database",
         "bme_v10_risk_score_info",
     )
-    risk_left, risk_right = st.columns(2, gap="small")
+    risk_left, risk_right = st.columns([0.38, 0.62], gap="medium")
     with risk_left:
         if supplier_risk_scores.empty:
             st.info(t("当前范围没有可计算的供应商风险评分。", "No supplier risk score is available in the current scope."))
@@ -14560,11 +14695,12 @@ def render_bme_bike_quality_dashboard_v3(
                 color="supplier",
                 hover_data={"available_gates": True, "defect_qty": ":,.0f", "inspected_qty": ":,.0f", "product_count": True, "risk_score": ":.1f"},
                 labels={"risk_score": t("相对风险分", "Relative Risk Score"), "supplier": t("供应商", "Supplier"), "available_gates": t("可用质量环节", "Available Gates"), "defect_qty": t("不良数量", "Defect Qty"), "inspected_qty": t("检验数量", "Inspected Qty"), "product_count": t("问题产品数", "Products with Issues")},
-                color_discrete_sequence=["#3341c4", "#d99a00", "#60a5fa"],
+                color_discrete_map=BME_SUPPLIER_COLORS,
             )
             supplier_fig.update_layout(height=360, showlegend=False, margin=dict(l=12, r=20, t=12, b=42))
             supplier_fig.update_xaxes(range=[0, 105], title_text=t("供应商相对风险分（0–100）", "Supplier Relative Risk Score (0–100)"))
             supplier_fig.update_yaxes(title_text="")
+            apply_bme_chart_style(supplier_fig)
             st.plotly_chart(supplier_fig, use_container_width=True, config={"displayModeBar": False})
         if unavailable_risk_suppliers:
             missing_supplier_text = "、".join(unavailable_risk_suppliers)
@@ -14587,12 +14723,17 @@ def render_bme_bike_quality_dashboard_v3(
                 color="supplier",
                 hover_data={"product_label": True, "product_group": True, "affected_gates": True, "available_gates": True, "defect_qty": ":,.0f", "inspected_qty": ":,.0f", "risk_score": ":.1f", "product_display": False},
                 labels={"risk_score": t("相对风险分", "Relative Risk Score"), "product_display": t("产品", "Product"), "product_group": t("产品族", "Product Family"), "affected_gates": t("出现问题环节", "Affected Gates"), "available_gates": t("可审计环节", "Auditable Gates"), "defect_qty": t("不良数量", "Defect Qty"), "inspected_qty": t("检验数量", "Inspected Qty")},
-                color_discrete_sequence=["#3341c4", "#d99a00", "#60a5fa"],
+                color_discrete_map=BME_SUPPLIER_COLORS,
             )
             product_fig.update_layout(height=360, legend_title_text="", margin=dict(l=12, r=20, t=12, b=42))
             product_fig.update_xaxes(range=[0, 105], title_text=t("产品相对风险分（0–100）", "Product Relative Risk Score (0–100)"))
             product_fig.update_yaxes(title_text="")
+            apply_bme_chart_style(product_fig)
             st.plotly_chart(product_fig, use_container_width=True, config={"displayModeBar": False})
+
+    if "CMW" in selected_suppliers:
+        with st.expander(t("QPS 深入分析：CMW 产品风险聚类", "QPS deep dive: CMW product risk clustering"), expanded=False):
+            render_cmw_product_cluster_analysis(cmw_cluster_view)
 
     st.markdown(
         """
@@ -14713,21 +14854,21 @@ def render_bme_bike_quality_dashboard_v3(
                 "IQC Incoming Issues",
                 "看哪些产品在来料检验阶段出现的问题最多。",
                 "Identify products with the most incoming-inspection issues.",
-                "#6aa8ff",
+                BME_GATE_COLORS["IQC"],
             ),
             "PQC": (
                 "PQC 制程问题",
                 "PQC Process Issues",
                 "看哪些产品在生产过程检验阶段出现的问题最多。",
                 "Identify products with the most in-process inspection issues.",
-                "#3341c4",
+                BME_GATE_COLORS["PQC"],
             ),
             "FQC": (
                 "FQC 成品检验问题",
                 "FQC Final-Inspection Issues",
                 "看哪些产品款式在成品检验阶段出现的问题最多；CMW 按整车料号统计。",
                 "Identify product styles with the most final-inspection issues; CMW uses the whole-bike item code.",
-                "#d99a00",
+                BME_GATE_COLORS["FQC"],
             ),
         }
         gate_top_frames: list[pd.DataFrame] = []
@@ -15144,6 +15285,7 @@ def render_bme_bike_quality_dashboard_v3(
                 plot_bgcolor="#ffffff",
                 font=dict(family="Inter, PingFang SC, Microsoft YaHei, sans-serif", size=12, color="#667085"),
             )
+            apply_bme_chart_style(combined_gate_fig)
             st.plotly_chart(combined_gate_fig, use_container_width=True, config={"displayModeBar": False})
             render_bme_chart_conclusion(
                 f"本期 {supplier_name} 各环节问题最多的产品分别是：{'；'.join(conclusion_cn)}。",
@@ -15285,7 +15427,7 @@ def render_bme_bike_quality_dashboard_v3(
                     "latest_date_display": t("最近日期", "Latest Date"),
                     "issue_total": t("该问题合计", "Problem Total"),
                 },
-                color_discrete_map={"IQC": "#6aa8ff", "PQC": "#3341c4", "FQC": "#d99a00"},
+                color_discrete_map=BME_GATE_COLORS,
             )
             defect_fig.update_traces(textposition="inside", insidetextanchor="middle")
             defect_fig.update_layout(
@@ -15304,6 +15446,7 @@ def render_bme_bike_quality_dashboard_v3(
                 title_text=t("不良数量", "Defect Quantity"),
                 rangemode="tozero",
             )
+            apply_bme_chart_style(defect_fig)
             st.plotly_chart(defect_fig, use_container_width=True, config={"displayModeBar": False})
             top_defect = issue_summary.iloc[0]
             top_gate = defect_pareto[defect_pareto["issue_driver"].eq(top_defect["issue_driver"])].sort_values(
@@ -15492,8 +15635,8 @@ def render_bme_bike_quality_dashboard_v3(
             spc_logic_cn = "不会把其他产品的机器数据自动放到所选产品下面。"
             spc_logic_en = "Machine data from another product is never shown as if it belonged to the selected product."
         elif method == "imr":
-            spc_read_cn = "上半图看每次扭力实测值：蓝点是实测值，绿线 CL 是过程平均值，红色 UCL/LCL 是根据历史波动算出的控制限，橙色 USL/LSL 是产品规格上下限。下半图 MR 看相邻两次测量变化有多大。红点表示出现超出控制限、连续偏在中心线一侧或连续上升/下降等异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
-            spc_read_en = "The upper chart shows each measured torque value: blue points are measurements, the green CL is the process average, red UCL/LCL lines are statistical control limits, and orange USL/LSL lines are product specifications. The lower MR chart shows change between consecutive measurements. Investigate the related order, equipment, operator, and material batch when a red point appears; a red point alone does not mean the product must be rejected."
+            spc_read_cn = "上半图看每次扭力实测值：蓝点是实测值，青色 CL 是过程平均值，灰色 UCL/LCL 是统计控制限，橙色 USL/LSL 是产品规格上下限。下半图 MR 看相邻两次测量变化有多大。只有红点表示需要调查的异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
+            spc_read_en = "The upper chart shows each measured torque value: blue points are measurements, the teal CL is the process average, grey UCL/LCL lines are statistical control limits, and orange USL/LSL lines are product specifications. The lower MR chart shows change between consecutive measurements. Only red points indicate patterns requiring investigation. A red point alone does not mean the product must be rejected."
             spc_logic_cn = "同一车型、产品描述、工序、规格和单位形成同质序列；I-MR 控制限为均值 ± 2.66×平均移动极差，并检查超出 3σ、连续 8 点同侧和连续 6 点单调趋势。疑似录入错误保留在源数据中，但不参与图表、SPC 信号、规格超限、稳定性和默认排序。只有过程稳定、样本不少于 25 且规格完整时才显示 Ppk。"
             spc_logic_en = "A homogeneous sequence uses the same model, product description, process, specification, and unit. I-MR limits are mean ± 2.66×average moving range, with 3σ, eight-on-one-side, and six-point-trend rules. Suspected data-entry errors remain in the source data but are excluded from the chart, SPC signals, specification breaches, stability, and ranking. Ppk is shown only for a stable process with at least 25 observations and complete specifications."
         elif method == "imr_stability":
@@ -15502,8 +15645,8 @@ def render_bme_bike_quality_dashboard_v3(
             spc_logic_cn = "同一 TEKTRO 型号、油管长度和订单形成一个 I-MR 序列。源数据没有规格，因此只判断过程稳定性，不判 NG，也不计算能力指数。"
             spc_logic_en = "One I-MR sequence uses the same TEKTRO model, hose length, and order. Source specifications are unavailable, so the chart assesses stability only without NG decisions or capability indices."
         elif method == "pchart":
-            spc_read_cn = "蓝线是每周 NC率，绿线是整个期间的平均 NC率，红色 UCL/LCL 是根据每周检验数量自动变化的控制限。红点表示该周的不合格率或连续走势异常，需要回查当周产品、人员、工序和物料变化；它不是固定的合格标准。"
-            spc_read_en = "The blue line is weekly NC rate, the green line is the overall average, and red UCL/LCL lines are control limits that change with weekly sample size. A red point indicates an unusual week or trend that requires investigation; it is not a fixed acceptance specification."
+            spc_read_cn = "蓝线是每周 NC率，青色线是整个期间的平均 NC率，灰色 UCL/LCL 是根据每周检验数量自动变化的控制限。只有红点表示该周的不合格率或连续走势异常，需要回查当周产品、人员、工序和物料变化；它不是固定的合格标准。"
+            spc_read_en = "The blue line is weekly NC rate, the teal line is the overall average, and grey UCL/LCL lines are control limits that change with weekly sample size. Only red points indicate an unusual week or trend requiring investigation; they are not fixed acceptance specifications."
             spc_logic_cn = "按周汇总检验数和 NC 数，中心线为总 NC÷总检验数；每周控制限随当周样本量变化，并应用 3σ、连续 8 点同侧和连续 6 点趋势规则。"
             spc_logic_en = "Weekly inspected and NC quantities are aggregated. The center line is total NC divided by total inspected; weekly limits vary with sample size and apply the 3σ, eight-on-one-side, and six-point-trend rules."
         else:
@@ -15559,27 +15702,29 @@ def render_bme_bike_quality_dashboard_v3(
             )
             fig.add_trace(go.Scatter(
                 x=chart_plot["spc_time"], y=chart_plot["value"], mode="lines+markers", name=t("实测值", "Measured"),
-                marker=dict(color=np.where(chart_plot["spc_event_signal"], "#c01048", "#3341c4")),
+                marker=dict(color=np.where(chart_plot["spc_event_signal"], BME_COLORS["alert"], BME_COLORS["primary"])),
+                line=dict(color=BME_COLORS["primary"]),
                 customdata=np.column_stack([chart_plot["trace_number"], chart_plot["unit"].fillna(""), chart_plot["comments"], chart_plot["spc_signal_label"]]),
                 hovertemplate=hover_template,
             ), row=1, col=1)
             fig.add_trace(go.Scatter(
                 x=chart_plot["spc_time"], y=chart_plot["moving_range"], mode="lines+markers", name=t("移动极差", "Moving Range"),
-                line=dict(color="#d99a00"), marker=dict(color=np.where(chart_plot["mr_signal"], "#c01048", "#d99a00")),
+                line=dict(color=BME_COLORS["pqc"]), marker=dict(color=np.where(chart_plot["mr_signal"], BME_COLORS["alert"], BME_COLORS["pqc"])),
                 hovertemplate=f"{time_label}  %{{x|%Y-%m-%d %H:%M}}<br>{t('相邻两次变化', 'Consecutive Change')}  %{{y:.2f}}<extra></extra>"
             ), row=2, col=1)
             if limits:
-                for value, name, color, dash in [(limits["center"], "CL", "#168a5b", "solid"), (limits["ucl"], "UCL", "#c01048", "dot"), (limits["lcl"], "LCL", "#c01048", "dot")]:
+                for value, name, color, dash in [(limits["center"], "CL", BME_COLORS["machine"], "solid"), (limits["ucl"], "UCL", BME_COLORS["control"], "dot"), (limits["lcl"], "LCL", BME_COLORS["control"], "dot")]:
                     fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, row=1, col=1)
-                fig.add_hline(y=limits["mr_ucl"], line_color="#c01048", line_dash="dot", annotation_text="MR UCL", row=2, col=1)
+                fig.add_hline(y=limits["mr_ucl"], line_color=BME_COLORS["control"], line_dash="dot", annotation_text="MR UCL", row=2, col=1)
             if method == "imr":
-                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="LSL", row=1, col=1)
-                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color="#d99a00", line_dash="dash", annotation_text="USL", row=1, col=1)
+                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL", row=1, col=1)
+                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL", row=1, col=1)
             fig.update_xaxes(title_text=time_label, tickangle=0, row=2, col=1)
             fig.update_xaxes(tickangle=0, row=1, col=1)
             fig.update_yaxes(title_text=None, tickangle=0, row=1, col=1)
             fig.update_yaxes(title_text=None, tickangle=0, row=2, col=1)
             fig.update_layout(height=570, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
+            apply_bme_chart_style(fig)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
             if limits:
                 signal_count = int(chart_plot["spc_event_signal"].sum())
@@ -15604,13 +15749,14 @@ def render_bme_bike_quality_dashboard_v3(
         elif method == "pchart":
             chart, limits = build_p_chart_data(data)
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=chart["date"], y=chart["rate"], mode="lines+markers", name="NC rate", marker=dict(color=np.where(chart["signal"], "#c01048", "#3341c4"))))
-            fig.add_trace(go.Scatter(x=chart["date"], y=chart["ucl"], mode="lines", name="UCL", line=dict(color="#c01048", dash="dot")))
-            fig.add_trace(go.Scatter(x=chart["date"], y=chart["lcl"], mode="lines", name="LCL", line=dict(color="#c01048", dash="dot")))
-            fig.add_hline(y=limits["center"], line_color="#168a5b", annotation_text="CL")
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["rate"], mode="lines+markers", name="NC rate", line=dict(color=BME_COLORS["primary"]), marker=dict(color=np.where(chart["signal"], BME_COLORS["alert"], BME_COLORS["primary"]))))
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["ucl"], mode="lines", name="UCL", line=dict(color=BME_COLORS["control"], dash="dot")))
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["lcl"], mode="lines", name="LCL", line=dict(color=BME_COLORS["control"], dash="dot")))
+            fig.add_hline(y=limits["center"], line_color=BME_COLORS["machine"], annotation_text="CL")
             fig.update_xaxes(tickangle=0)
             fig.update_yaxes(tickformat=".1%", title_text=None, tickangle=0)
             fig.update_layout(height=460, margin=dict(l=20, r=20, t=25, b=30), legend=dict(orientation="h"))
+            apply_bme_chart_style(fig)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             peak = chart.loc[chart["rate"].idxmax()]
             peak_date = pd.Timestamp(peak["date"]).strftime("%Y-%m-%d")
@@ -15629,14 +15775,15 @@ def render_bme_bike_quality_dashboard_v3(
                 vertical_spacing=.12,
                 subplot_titles=[t("组平均值 X̄", "Subgroup Mean X̄"), t("组内极差 R", "Within-subgroup Range R")],
             )
-            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["mean"], mode="lines+markers", name="X̄", marker=dict(color=np.where(chart["signal"], "#c01048", "#3341c4"))), row=1, col=1)
-            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["range"], mode="lines+markers", name="R", line=dict(color="#d99a00"), marker=dict(color=np.where(chart["range_signal"], "#c01048", "#d99a00"))), row=2, col=1)
-            for value, name in [(limits["center"], "CL"), (limits["ucl"], "UCL"), (limits["lcl"], "LCL")]: fig.add_hline(y=value, annotation_text=name, line_dash="dot" if name != "CL" else "solid", row=1, col=1)
-            fig.add_hline(y=200, annotation_text="LSL", line_color="#d99a00", line_dash="dash", row=1, col=1)
-            fig.add_hline(y=limits["r_ucl"], annotation_text="R UCL", line_color="#c01048", line_dash="dot", row=2, col=1)
+            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["mean"], mode="lines+markers", name="X̄", line=dict(color=BME_COLORS["primary"]), marker=dict(color=np.where(chart["signal"], BME_COLORS["alert"], BME_COLORS["primary"]))), row=1, col=1)
+            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["range"], mode="lines+markers", name="R", line=dict(color=BME_COLORS["pqc"]), marker=dict(color=np.where(chart["range_signal"], BME_COLORS["alert"], BME_COLORS["pqc"]))), row=2, col=1)
+            for value, name in [(limits["center"], "CL"), (limits["ucl"], "UCL"), (limits["lcl"], "LCL")]: fig.add_hline(y=value, annotation_text=name, line_color=BME_COLORS["machine"] if name == "CL" else BME_COLORS["control"], line_dash="dot" if name != "CL" else "solid", row=1, col=1)
+            fig.add_hline(y=200, annotation_text="LSL", line_color=BME_COLORS["fqc"], line_dash="dash", row=1, col=1)
+            fig.add_hline(y=limits["r_ucl"], annotation_text="R UCL", line_color=BME_COLORS["control"], line_dash="dot", row=2, col=1)
             fig.update_xaxes(tickangle=0)
             fig.update_yaxes(title_text=None, tickangle=0)
             fig.update_layout(height=560, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
+            apply_bme_chart_style(fig)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             mean_signals = int(chart["signal"].sum())
             range_signals = int(chart["range_signal"].sum())
@@ -15703,13 +15850,14 @@ def render_bme_bike_quality_dashboard_v3(
                 "comments": t("备注", "Comments"),
                 "unit": t("单位", "Unit"),
             },
-            color_discrete_sequence=["#3341c4"],
+            color_discrete_sequence=[BME_COLORS["primary"]],
         )
         if parameter_view["spec_low"].notna().any():
-            parameter_fig.add_hline(y=float(parameter_view["spec_low"].dropna().iloc[0]), line_color="#d99a00", line_dash="dash", annotation_text="LSL")
+            parameter_fig.add_hline(y=float(parameter_view["spec_low"].dropna().iloc[0]), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL")
         if parameter_view["spec_high"].notna().any():
-            parameter_fig.add_hline(y=float(parameter_view["spec_high"].dropna().iloc[0]), line_color="#d99a00", line_dash="dash", annotation_text="USL")
+            parameter_fig.add_hline(y=float(parameter_view["spec_high"].dropna().iloc[0]), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL")
         parameter_fig.update_layout(height=410, margin=dict(l=20, r=25, t=25, b=40), showlegend=False)
+        apply_bme_chart_style(parameter_fig)
         parameter_fig.update_xaxes(tickangle=0)
         parameter_fig.update_yaxes(title_text=None, tickangle=0)
         st.plotly_chart(parameter_fig, use_container_width=True, config={"displayModeBar": False})
@@ -15827,7 +15975,7 @@ def render_bme_bike_quality_dashboard_v3(
                     x=panel_data["material_supplier"], y=panel_data["return_ppm"], orientation="v",
                     text=panel_data["return_ppm"], texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False,
                     width=0.68,
-                    marker_color="#3341c4",
+                    marker_color=BME_COLORS["iqc"],
                     customdata=np.column_stack([panel_data["receipts"], panel_data["incoming_qty"], panel_data["return_qty"]]),
                     hovertemplate=(f"{t('检验记录数', 'Inspection Records')}  %{{customdata[0]:,.0f}}<br>"
                                    f"{t('来料数量', 'Incoming Quantity')}  %{{customdata[1]:,.0f}}<br>"
@@ -15839,7 +15987,7 @@ def render_bme_bike_quality_dashboard_v3(
                 if pd.notna(overall_ppm):
                     supplementary_fig.add_hline(
                         y=float(overall_ppm),
-                        line_color="#168a5b",
+                        line_color=BME_COLORS["machine"],
                         line_dash="dash",
                         annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"),
                         annotation_position="top right",
@@ -15855,7 +16003,7 @@ def render_bme_bike_quality_dashboard_v3(
             elif panel_kind == "component":
                 supplementary_fig.add_trace(go.Bar(
                     x=panel_data["component"], y=panel_data["rework_count"], orientation="v",
-                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#3341c4",
+                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color=BME_COLORS["machine"],
                     width=0.68,
                     customdata=np.column_stack([panel_data["first_date"].astype(str), panel_data["latest_date"].astype(str)]),
                     hovertemplate=(f"{t('首次申请', 'First Application')}  %{{customdata[0]}}<br>"
@@ -15872,7 +16020,7 @@ def render_bme_bike_quality_dashboard_v3(
             else:
                 supplementary_fig.add_trace(go.Bar(
                     x=panel_data["rework_count"], y=panel_data["comment_label"], orientation="h",
-                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color="#d99a00",
+                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color=BME_COLORS["pqc"],
                     width=0.68,
                     customdata=np.column_stack([panel_data["comment"]]),
                     hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>",
@@ -15899,11 +16047,17 @@ def render_bme_bike_quality_dashboard_v3(
             plot_bgcolor="#ffffff",
             font=dict(family="Inter, PingFang SC, Microsoft YaHei, sans-serif", size=12, color="#667085"),
         )
+        apply_bme_chart_style(supplementary_fig)
         st.plotly_chart(supplementary_fig, use_container_width=True, config={"displayModeBar": False})
         render_bme_chart_conclusion(
             f"本期重点：{'；'.join(supplementary_conclusion_cn)}。返工样本较少，只用于定位和回查。",
             f"This period's focus: {'; '.join(supplementary_conclusion_en)}. The rework sample is small and is used only for targeting and follow-up.",
         )
+
+    with st.expander(t("数据覆盖与口径 / Data Map", "Data coverage and definitions / Data Map"), expanded=False):
+        # Source coverage is fixed. Analysis filters must never turn an
+        # unselected source into a false "not connected" status.
+        _render_bme_data_map(events, customer_nc, fsd_orders)
 
     st.header(t("AI 汇总报告", "AI Summary Report"))
     top_supplier_facts = supplier_risk_scores.head(3).to_dict("records") if not supplier_risk_scores.empty else []
