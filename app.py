@@ -1016,24 +1016,14 @@ st.markdown(
         line-height: 1.3;
     }
     .bme-chart-conclusion {
-        margin: 12px 0 20px;
-        padding: 15px 18px;
-        border: 1px solid #d8e1f2;
-        border-left: 4px solid #2855c5;
-        border-radius: 8px;
-        background: #f7f9fd;
-        box-shadow: none;
+        margin: 6px 0 14px;
+        padding: 8px 11px;
+        border-left: 3px solid #2855c5;
+        background: #f3f6fc;
         color: #25324a;
-        font-size: 1rem;
-        font-weight: 720;
-        line-height: 1.55;
-    }
-    .bme-chart-conclusion strong {
-        display: block;
-        margin-bottom: 4px;
-        color: #173b8f;
-        font-size: 1rem;
-        font-weight: 880;
+        font-size: 0.91rem;
+        font-weight: 680;
+        line-height: 1.42;
     }
     .bme-management-summary {
         margin: 14px 0 22px;
@@ -1083,19 +1073,21 @@ st.markdown(
     }
     .bme-anchor-nav {
         position: fixed;
-        top: 8px;
+        top: 7px;
         left: 282px;
-        right: 150px;
+        right: auto;
+        width: max-content;
+        max-width: calc(100vw - 470px);
         z-index: 90;
         display: flex;
-        gap: 6px;
+        gap: 2px;
         overflow-x: auto;
-        margin: 0 0 20px;
-        padding: 7px;
+        margin: 0;
+        padding: 4px;
         background: rgba(255, 255, 255, 0.96);
         border: 1px solid #dbe2ec;
-        border-radius: 9px;
-        box-shadow: 0 5px 16px rgba(15, 23, 42, 0.08);
+        border-radius: 8px;
+        box-shadow: 0 3px 10px rgba(15, 23, 42, 0.07);
         scrollbar-width: none;
     }
     body:has(.bme-anchor-nav)::before {
@@ -1104,12 +1096,12 @@ st.markdown(
         top: 0;
         left: 256px;
         right: 0;
-        height: 70px;
+        height: 58px;
         z-index: 89;
         background: #f4f7fb;
         pointer-events: none;
     }
-    body:has(.bme-anchor-nav) .block-container {padding-top: 4.8rem !important;}
+    body:has(.bme-anchor-nav) .block-container {padding-top: 4rem !important;}
     /* Streamlit renders a transparent app header above fixed page content.
        Let pointer events pass through its empty area so the visible BME
        navigation is genuinely clickable, while preserving header controls. */
@@ -1121,11 +1113,14 @@ st.markdown(
     .bme-anchor-nav::-webkit-scrollbar {display: none;}
     .bme-anchor-nav a {
         flex: 0 0 auto;
-        padding: 7px 10px;
-        border-radius: 7px;
+        min-height: 38px;
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 6px;
         color: #475467 !important;
-        font-size: 0.9rem;
-        font-weight: 780;
+        font-size: 0.875rem;
+        font-weight: 650;
         text-decoration: none !important;
         white-space: nowrap;
     }
@@ -1144,8 +1139,8 @@ st.markdown(
         background: #2855c5;
         color: #ffffff !important;
     }
-    #bme-overview {scroll-margin-top: 76px;}
-    .bme-section-anchor {height: 1px; scroll-margin-top: 76px;}
+    #bme-overview {scroll-margin-top: 64px;}
+    .bme-section-anchor {height: 1px; scroll-margin-top: 64px;}
     .bme-investigation-context {
         position: sticky;
         top: 3.7rem;
@@ -1166,28 +1161,29 @@ st.markdown(
     }
     .bme-context-label {color: #667085; font-size: 0.875rem; font-weight: 780; text-transform: uppercase;}
     .st-key-bme_top_filter {
-        margin: 0 0 18px;
+        margin: 0 0 12px;
     }
     .st-key-bme_top_filter [data-testid="stExpander"] {
         background: #ffffff;
         border: 1px solid #dbe2ec;
-        border-radius: 10px;
-        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+        outline: none !important;
+        border-radius: 8px;
+        box-shadow: none;
         overflow: hidden;
     }
     .st-key-bme_top_filter [data-testid="stExpander"] > details > summary {
-        min-height: 48px;
-        padding: 0 16px;
+        min-height: 40px;
+        padding: 0 12px;
         color: #172033;
-        font-size: 0.96rem;
-        font-weight: 820;
+        font-size: 0.9rem;
+        font-weight: 720;
     }
     .st-key-bme_top_filter [data-testid="stExpanderDetails"] {
-        padding: 2px 16px 15px;
+        padding: 0 12px 10px;
     }
     .st-key-bme_top_filter [data-baseweb="select"] > div,
     .st-key-bme_top_filter [data-testid="stDateInput"] input {
-        min-height: 46px;
+        min-height: 40px;
         border-color: #cfd6e2 !important;
         border-radius: 8px !important;
         background: #ffffff !important;
@@ -1204,17 +1200,24 @@ st.markdown(
         fill: #ffffff !important;
     }
     .st-key-bme_top_filter [data-testid="stButton"] button {
-        min-height: 46px;
-        margin-top: 28px;
+        min-height: 40px;
+        margin-top: 26px;
         border-color: #c7ced9;
         color: #344054;
-        font-weight: 760;
+        font-weight: 650;
     }
-    .bme-filter-scope-note {
-        margin-top: 5px;
-        color: #667085;
+    .bme-filter-date-chip {
+        min-height: 40px;
+        margin-top: 26px;
+        padding: 9px 12px;
+        border: 1px solid #d5dbe5;
+        border-radius: 8px;
+        background: #f8fafc;
+        color: #344054;
         font-size: 0.86rem;
         font-weight: 650;
+        white-space: nowrap;
+        text-align: center;
     }
     .bme-coverage-warning {
         margin: 10px 0 14px;
@@ -1238,7 +1241,35 @@ st.markdown(
     }
     .bme-single-issue-card .label {color:#667085; font-size:0.875rem; font-weight:760;}
     .bme-single-issue-card .value {margin-top:5px; color:#172033; font-size:1.08rem; font-weight:850; line-height:1.45; overflow-wrap:anywhere;}
-    .bme-page-end-spacer {height: 360px;}
+    .bme-risk-card,
+    .bme-analysis-card {
+        margin-bottom: 12px;
+        padding: 12px 14px 8px;
+        border: 1px solid #e1e6ee;
+        border-radius: 9px;
+        background: #ffffff;
+        box-shadow: none;
+    }
+    .bme-card-title {
+        margin: 0 0 2px;
+        color: #172033;
+        font-size: 1rem;
+        font-weight: 780;
+        line-height: 1.3;
+    }
+    .bme-card-meta {
+        color: #667085;
+        font-size: 0.79rem;
+        font-weight: 620;
+        line-height: 1.35;
+    }
+    .bme-page-end-spacer {height: 24px;}
+    .st-key-bme_generate_ai_summary button {
+        background: #2855c5 !important;
+        border-color: #2855c5 !important;
+        color: #ffffff !important;
+        box-shadow: none !important;
+    }
     [data-testid="stMain"] [data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_control"] {
         background: #ffffff !important;
         border-color: #d5dbe5 !important;
@@ -2075,7 +2106,7 @@ st.markdown(
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .bme-management-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
-        .bme-anchor-nav {left: 220px; right: 92px; margin-bottom: 14px;}
+        .bme-anchor-nav {left: 220px; right: auto; max-width: calc(100vw - 320px);}
         body:has(.bme-anchor-nav)::before {left: 194px;}
         .bme-investigation-context {top: 3.35rem;}
         .st-key-bme_product_defect_filter [data-testid="stHorizontalBlock"] {flex-wrap: wrap !important;}
@@ -2094,7 +2125,7 @@ st.markdown(
         .hero-title {font-size: 1.8rem;}
         .hero {padding: 22px 20px; border-radius: 16px;}
         .bme-management-grid {grid-template-columns: 1fr;}
-        .bme-anchor-nav {left: 64px; right: 72px;}
+        .bme-anchor-nav {left: 64px; right: auto; max-width: calc(100vw - 136px);}
         body:has(.bme-anchor-nav)::before {left: 0;}
         .st-key-bme_top_filter [data-testid="stColumn"] {
             flex: 1 1 100% !important;
@@ -8869,6 +8900,7 @@ def render_readme_popover(
     source: str,
     section_title: str | None = None,
     extra_renderer: Callable[[], None] | None = None,
+    use_container_width: bool = True,
 ) -> None:
     raw_source = source
     title = english_display_text(title)
@@ -8902,7 +8934,7 @@ def render_readme_popover(
         )
         source_parts.append(f"[{english_display_text(part)}]({source_url})")
     source_markdown = "\n".join(f"- {part}" for part in source_parts) if source_parts else f"- {source}"
-    with st.popover(label, use_container_width=True):
+    with st.popover(label, use_container_width=use_container_width):
         st.markdown(f"### {title}")
         st.markdown(f"**1. {t('这张图回答什么问题', 'What This Chart Answers')}**  \n{purpose}")
         st.markdown(f"**2. {t('怎么看这张图', 'How to Read It')}**  \n{method}")
@@ -8917,7 +8949,7 @@ def render_bme_chart_conclusion(text_cn: str, text_en: str) -> None:
     """Render one filter-aware management takeaway directly below a BME chart."""
     conclusion = t(text_cn, text_en)
     st.markdown(
-        f'<div class="bme-chart-conclusion"><strong>{html.escape(t("本期结论", "Period Conclusion"))}</strong>{html.escape(conclusion)}</div>',
+        f'<div class="bme-chart-conclusion">{html.escape(conclusion)}</div>',
         unsafe_allow_html=True,
     )
 
@@ -9007,9 +9039,9 @@ def render_chart_heading(
 ) -> None:
     title = t(title_cn, title_en)
     if control_renderer is not None:
-        heading_columns = st.columns([0.64, 0.20, 0.16] if compact else [0.70, 0.20, 0.10])
+        heading_columns = st.columns([0.72, 0.23, 0.05] if compact else [0.73, 0.22, 0.05])
     else:
-        heading_columns = st.columns([0.78, 0.22] if compact else [0.84, 0.16])
+        heading_columns = st.columns([0.95, 0.05])
     left = heading_columns[0]
     control = heading_columns[1] if control_renderer is not None else None
     right = heading_columns[2] if control_renderer is not None else heading_columns[1]
@@ -9023,13 +9055,14 @@ def render_chart_heading(
             control_renderer()
     with right:
         render_readme_popover(
-            t("说明", "Info"),
+            ":material/info:",
             title,
             t(purpose_cn, purpose_en),
             t(method_cn, method_en),
             t(logic_cn, logic_en),
             source,
             extra_renderer=extra_renderer,
+            use_container_width=False,
         )
 
 
@@ -14580,31 +14613,68 @@ def render_bme_bike_quality_dashboard_v3(
     today = dt.date.today()
     min_date = dated.min().date() if not dated.empty else today
     max_date = min(dated.max().date(), today) if not dated.empty else today
-    default_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
+    r12m_start = max(
+        min_date,
+        (pd.Timestamp(max_date) - pd.DateOffset(years=1) + pd.Timedelta(days=1)).date(),
+    )
+    ytd_start = max(min_date, dt.date(max_date.year, 1, 1))
+    default_start = r12m_start
     hero_slot = st.empty()
+
+    if st.session_state.get("bme_v4_period_preset") not in {"R12M", "YTD", "Custom"}:
+        st.session_state["bme_v4_period_preset"] = "R12M"
+        st.session_state["bme_v4_dates"] = (r12m_start, max_date)
+
+    def sync_bme_period_dates() -> None:
+        preset = st.session_state.get("bme_v4_period_preset", "R12M")
+        if preset == "R12M":
+            st.session_state["bme_v4_dates"] = (r12m_start, max_date)
+        elif preset == "YTD":
+            st.session_state["bme_v4_dates"] = (ytd_start, max_date)
 
     def reset_bme_top_filters() -> None:
         st.session_state["bme_v4_supplier"] = suppliers
-        st.session_state["bme_v4_dates"] = (default_start, max_date)
+        st.session_state["bme_v4_period_preset"] = "R12M"
+        st.session_state["bme_v4_dates"] = (r12m_start, max_date)
 
     with st.container(key="bme_top_filter"):
-        with st.expander(t("筛选当前分析范围", "Filter the current analysis scope"), expanded=True):
-            filter_cols = st.columns([1.25, 1.0, 0.32], gap="medium", vertical_alignment="bottom")
-            selected_suppliers = filter_cols[0].multiselect(
+        current_period = st.session_state.get("bme_v4_period_preset", "R12M")
+        with st.expander(t(f"筛选 · {current_period}", f"Filters · {current_period}"), expanded=True):
+            filter_cols = st.columns([1.15, 1.05, 1.05, 0.42], gap="small", vertical_alignment="bottom")
+            selected_suppliers = filter_cols[0].segmented_control(
                 t("供应商", "Supplier"),
                 suppliers,
                 default=suppliers,
                 key="bme_v4_supplier",
-                placeholder=t("选择供应商", "Select suppliers"),
-            )
-            selected_dates = filter_cols[1].date_input(
-                t("日期范围", "Period"),
-                value=(default_start, max_date),
-                min_value=min_date,
-                max_value=max_date,
-                key="bme_v4_dates",
-            )
-            filter_cols[2].button(
+                selection_mode="multi",
+                width="stretch",
+            ) or []
+            selected_period = filter_cols[1].segmented_control(
+                t("日期周期", "Period"),
+                ["R12M", "YTD", "Custom"],
+                key="bme_v4_period_preset",
+                on_change=sync_bme_period_dates,
+                width="stretch",
+            ) or "R12M"
+            if selected_period == "Custom":
+                selected_dates = filter_cols[2].date_input(
+                    t("自定义日期", "Custom dates"),
+                    value=(r12m_start, max_date),
+                    min_value=min_date,
+                    max_value=max_date,
+                    key="bme_v4_dates",
+                )
+            else:
+                selected_dates = st.session_state.get(
+                    "bme_v4_dates",
+                    (r12m_start, max_date) if selected_period == "R12M" else (ytd_start, max_date),
+                )
+                period_start = r12m_start if selected_period == "R12M" else ytd_start
+                filter_cols[2].markdown(
+                    f"<div class='bme-filter-date-chip'>{period_start} — {max_date}</div>",
+                    unsafe_allow_html=True,
+                )
+            filter_cols[3].button(
                 t("重置", "Reset"),
                 key="bme_reset_top_filters",
                 use_container_width=True,
@@ -14613,16 +14683,10 @@ def render_bme_bike_quality_dashboard_v3(
             start_date, end_date = default_start, max_date
             if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
                 start_date, end_date = selected_dates
-            st.markdown(
-                f"<div class='bme-filter-scope-note'>{html.escape(t('当前范围', 'Current scope'))}: "
-                f"{html.escape(' · '.join(selected_suppliers) if selected_suppliers else t('未选择供应商', 'No supplier selected'))} · "
-                f"{start_date} → {end_date}</div>",
-                unsafe_allow_html=True,
-            )
     supplier_chip = " · ".join(selected_suppliers) if selected_suppliers else t("未选择供应商", "No supplier selected")
     with hero_slot.container():
         st.markdown(
-            f"""<div id="bme-overview" class="hero bme-hero"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
+            f"""<div id="bme-overview" class="hero bme-hero"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{html.escape(selected_period)} · {start_date} — {end_date}</span></div></div>""",
             unsafe_allow_html=True,
         )
     # Rendered after the calculations below, but anchored here so the manager
@@ -14927,79 +14991,88 @@ def render_bme_bike_quality_dashboard_v3(
         )
 
     st.markdown('<div id="bme-risk" class="bme-section-anchor"></div>', unsafe_allow_html=True)
-    st.header(t("供应商与产品风险评分", "Supplier and Product Risk Scores"))
-    render_chart_heading(
-        "相对风险优先级",
-        "Relative Risk Priority",
-        "把所选供应商中需要优先调查的供应商和产品排出来，但不替代检验判定。",
-        "Rank the selected suppliers and products for investigation without replacing inspection decisions.",
-        "分数越高，表示在本期完整可比同侪池中越靠前；供应商筛选只改变显示对象，不会重算基线。它不是不合格概率，也不是正式红线。",
-        "A higher score means a higher position in the full comparable peer pool for this period. Supplier filters change visibility only and do not recalculate the baseline. The score is not a defect probability or an approved threshold.",
-        "产品先按供应商、产品族和质量环节建立基线：有可靠分母时，问题率或问题强度占60%、问题数量占40%；没有可靠分母时只用问题数量。多个可审计环节取平均，缺失环节不按0分。供应商按相同质量环节做相对比较。不同检验粒度不会直接混算。",
-        "Product baselines are separated by supplier, product family, and quality gate. With a valid denominator, issue rate or intensity percentile is weighted 60% and issue volume percentile 40%; without one, only volume is used. Auditable gates are averaged and missing gates are not scored as zero. Suppliers are compared within the same quality gate. Unlike inspection grains are not directly merged.",
-        "BME Database",
-        "bme_v10_risk_score_info",
-    )
-    risk_left, risk_right = st.columns([0.30, 0.70], gap="medium")
+    risk_title_cols = st.columns([0.94, 0.06], vertical_alignment="center")
+    risk_title_cols[0].header(t("相对风险优先级", "Relative Risk Priority"))
+    with risk_title_cols[1]:
+        with st.popover(":material/info:"):
+            st.markdown(t(
+                "风险分仅表示同类对象的调查优先级，不是不合格概率或放行结论。产品按供应商、产品族和质量环节建立可比基线；缺失分母不会按 0 风险处理。",
+                "Risk scores are investigation priorities among comparable peers, not defect probabilities or release decisions. Product peers are separated by supplier, family, and quality gate; a missing denominator is never treated as zero risk.",
+            ))
+    risk_left, risk_right = st.columns([0.35, 0.65], gap="medium")
     with risk_left:
-        if supplier_risk_scores.empty:
-            st.info(t("当前范围没有可计算的供应商风险评分。", "No supplier risk score is available in the current scope."))
-        else:
-            supplier_plot = supplier_risk_scores.sort_values("risk_score").copy()
-            supplier_fig = px.bar(
-                supplier_plot,
-                x="risk_score",
-                y="supplier",
-                orientation="h",
-                text="risk_score",
-                color="supplier",
-                hover_data={"available_gates": True, "defect_qty": ":,.0f", "inspected_qty": ":,.0f", "product_count": True, "risk_score": ":.1f"},
-                labels={"risk_score": t("相对风险分", "Relative Risk Score"), "supplier": t("供应商", "Supplier"), "available_gates": t("可用质量环节", "Available Gates"), "defect_qty": t("不良数量", "Defect Qty"), "inspected_qty": t("检验数量", "Inspected Qty"), "product_count": t("问题产品数", "Products with Issues")},
-                color_discrete_map=BME_SUPPLIER_COLORS,
-            )
-            supplier_fig.update_layout(height=320, showlegend=False, margin=dict(l=12, r=20, t=12, b=42))
-            supplier_fig.update_xaxes(range=[0, 105], title_text=t("供应商相对风险分（0–100）", "Supplier Relative Risk Score (0–100)"))
-            supplier_fig.update_yaxes(title_text="")
-            apply_bme_chart_style(supplier_fig)
-            st.plotly_chart(supplier_fig, use_container_width=True, config={"displayModeBar": False})
+        with st.container(border=True, key="bme_supplier_risk_card"):
+            st.markdown(f"<div class='bme-card-title'>{html.escape(t('供应商优先级', 'Supplier Priority'))}</div>", unsafe_allow_html=True)
+            if supplier_risk_scores.empty:
+                st.info(t("当前范围没有可计算的供应商风险评分。", "No supplier risk score is available in the current scope."))
+            else:
+                supplier_plot = supplier_risk_scores.sort_values("risk_score").copy()
+                supplier_fig = px.bar(
+                    supplier_plot,
+                    x="risk_score",
+                    y="supplier",
+                    orientation="h",
+                    text="risk_score",
+                    color="supplier",
+                    hover_data={"available_gates": True, "defect_qty": ":,.0f", "inspected_qty": ":,.0f", "product_count": True, "risk_score": ":.1f"},
+                    labels={"risk_score": t("相对风险分", "Relative Risk Score"), "supplier": t("供应商", "Supplier"), "available_gates": t("可用质量环节", "Available Gates"), "defect_qty": t("问题数量", "Issue Qty"), "inspected_qty": t("检验数量", "Inspected Qty"), "product_count": t("问题产品数", "Products with Issues")},
+                    color_discrete_map=BME_SUPPLIER_COLORS,
+                )
+                supplier_fig.update_traces(texttemplate="%{text:.1f}", textposition="inside", insidetextanchor="end")
+                supplier_fig.update_layout(height=max(230, 105 + len(supplier_plot) * 56), showlegend=False, margin=dict(l=8, r=12, t=8, b=34))
+                supplier_fig.update_xaxes(range=[0, 105], title_text=t("相对风险分", "Relative risk score"))
+                supplier_fig.update_yaxes(title_text="", automargin=True)
+                apply_bme_chart_style(supplier_fig)
+                st.plotly_chart(supplier_fig, use_container_width=True, config={"displayModeBar": False})
     with risk_right:
-        if product_risk_scores.empty:
-            st.info(t("当前范围没有可计算的产品风险评分。", "No product risk score is available in the current scope."))
-        else:
-            product_plot = product_risk_scores.head(10).sort_values("risk_score").copy()
-            product_plot["product_label_display"] = product_plot["product_label"].map(bme_display_text)
-            product_plot["product_group_display"] = product_plot["product_group"].map(bme_display_text)
-            def compact_risk_product_label(value: object) -> str:
-                label = str(value or "")
-                parts = [part.strip() for part in label.split(" · ") if part.strip()]
-                if len(parts) >= 2:
-                    code = parts[-1]
-                    category = parts[0]
-                    return f"{code}<br>{category}"
-                if len(label) <= 34:
-                    return label
-                code_match = re.search(r"(?:Item Code|Model|料号|车型)\s*[:：]?\s*([A-Z0-9][A-Z0-9._/-]+)", label, flags=re.I)
-                code = code_match.group(1) if code_match else label[:16].rstrip()
-                detail = label[-22:].lstrip(" ·-:/")
-                return f"{code}<br>{detail}"
+        with st.container(border=True, key="bme_product_risk_card"):
+            st.markdown(f"<div class='bme-card-title'>{html.escape(t('产品优先级 · Top 8', 'Product Priority · Top 8'))}</div>", unsafe_allow_html=True)
+            if product_risk_scores.empty:
+                st.info(t("当前范围没有可计算的产品风险评分。", "No product risk score is available in the current scope."))
+            else:
+                product_plot = product_risk_scores.head(8).sort_values("risk_score").copy()
+                product_plot["product_label_display"] = product_plot["product_label"].map(bme_display_text)
+                product_plot["product_group_display"] = product_plot["product_group"].map(bme_display_text)
 
-            product_plot["product_display"] = product_plot["product_label_display"].map(compact_risk_product_label)
-            product_fig = px.bar(
-                product_plot,
-                x="risk_score",
-                y="product_display",
-                orientation="h",
-                text="risk_score",
-                color="supplier",
-                hover_data={"product_label_display": True, "product_group_display": True, "affected_gates": True, "available_gates": True, "defect_qty": ":,.0f", "inspected_qty": ":,.0f", "risk_score": ":.1f", "product_display": False},
-                labels={"risk_score": t("相对风险分", "Relative Risk Score"), "product_display": t("产品", "Product"), "product_label_display": t("完整产品名称", "Full Product Name"), "product_group_display": t("产品族", "Product Family"), "affected_gates": t("出现问题环节", "Affected Gates"), "available_gates": t("可审计环节", "Auditable Gates"), "defect_qty": t("不良数量", "Defect Qty"), "inspected_qty": t("检验数量", "Inspected Qty")},
-                color_discrete_map=BME_SUPPLIER_COLORS,
-            )
-            product_fig.update_layout(height=360, legend_title_text="", margin=dict(l=12, r=20, t=12, b=42))
-            product_fig.update_xaxes(range=[0, 105], title_text=t("产品相对风险分（0–100）", "Product Relative Risk Score (0–100)"))
-            product_fig.update_yaxes(title_text="")
-            apply_bme_chart_style(product_fig)
-            st.plotly_chart(product_fig, use_container_width=True, config={"displayModeBar": False})
+                def compact_risk_product_label(row: pd.Series) -> str:
+                    label = str(row["product_label_display"] or "")
+                    group = str(row["product_group_display"] or "")
+                    detail = label
+                    if group and detail.startswith(group):
+                        detail = detail[len(group):].lstrip(" ·-:/") or label
+                    gate = (
+                        "IQC" if re.search(r"IQC|来料|Incoming", group, flags=re.I)
+                        else "PQC" if re.search(r"PQC|制程|Process", group, flags=re.I)
+                        else "FQC" if re.search(r"FQC|成品|整车|Final", group, flags=re.I)
+                        else t("质量", "Quality")
+                    )
+                    label_short = detail if len(detail) <= 30 else detail[:29].rstrip() + "…"
+                    group_short = group if len(group) <= 24 else group[:23].rstrip() + "…"
+                    return f"{row['supplier']} · {gate} · {group_short}<br>{label_short}"
+
+                product_plot["product_display"] = product_plot.apply(compact_risk_product_label, axis=1)
+                product_plot["confidence_display"] = np.where(
+                    pd.to_numeric(product_plot["inspected_qty"], errors="coerce").fillna(0).gt(0),
+                    t("有检验分母", "Denominator available"),
+                    t("仅问题数量", "Issue volume only"),
+                )
+                product_fig = px.bar(
+                    product_plot,
+                    x="risk_score",
+                    y="product_display",
+                    orientation="h",
+                    text="risk_score",
+                    color="supplier",
+                    hover_data={"product_label_display": True, "product_group_display": True, "confidence_display": True, "affected_gates": True, "available_gates": True, "defect_qty": ":,.0f", "inspected_qty": ":,.0f", "risk_score": ":.1f", "product_display": False},
+                    labels={"risk_score": t("相对风险分", "Relative Risk Score"), "product_display": t("产品", "Product"), "product_label_display": t("完整产品名称", "Full Product Name"), "product_group_display": t("产品族 / 质量环节", "Family / Quality Gate"), "confidence_display": t("数据可靠性", "Data Reliability"), "affected_gates": t("出现问题环节", "Affected Gates"), "available_gates": t("可审计环节", "Auditable Gates"), "defect_qty": t("问题数量", "Issue Qty"), "inspected_qty": t("检验数量", "Inspected Qty")},
+                    color_discrete_map=BME_SUPPLIER_COLORS,
+                )
+                product_fig.update_traces(texttemplate="%{text:.1f}", textposition="inside", insidetextanchor="end")
+                product_fig.update_layout(height=132 + len(product_plot) * 48, showlegend=False, margin=dict(l=8, r=14, t=8, b=34), bargap=0.28)
+                product_fig.update_xaxes(range=[0, 105], title_text=t("相对风险分", "Relative risk score"))
+                product_fig.update_yaxes(title_text="", automargin=True, tickfont={"size": 13})
+                apply_bme_chart_style(product_fig)
+                st.plotly_chart(product_fig, use_container_width=True, config={"displayModeBar": False})
 
     if unavailable_risk_suppliers:
         missing_supplier_text = "、".join(unavailable_risk_suppliers)
@@ -16249,7 +16322,7 @@ def render_bme_bike_quality_dashboard_v3(
         st.plotly_chart(parameter_fig, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown('<div id="bme-supplementary" class="bme-section-anchor"></div>', unsafe_allow_html=True)
-    st.header(t("补充分析：来料与返工", "Supplementary Analysis: Incoming and Rework"))
+    st.header(t("来料与返工", "Incoming and Rework"))
     supplementary_panels: list[dict[str, object]] = []
     supplementary_sources: list[pd.DataFrame] = []
     supplementary_conclusion_cn: list[str] = []
@@ -16266,7 +16339,7 @@ def render_bme_bike_quality_dashboard_v3(
             incoming["material_supplier"].ne("Unrecorded")
             & incoming["incoming_qty"].gt(0)
             & incoming["return_qty"].gt(0)
-        ].sort_values(["return_ppm", "return_qty"], ascending=False).head(30).copy()
+        ].sort_values(["return_ppm", "return_qty"], ascending=False).head(5).copy()
         if not incoming_chart.empty:
             zero_return_suppliers = incoming[
                 incoming["material_supplier"].ne("Unrecorded")
@@ -16291,7 +16364,7 @@ def render_bme_bike_quality_dashboard_v3(
             rework_count=("source_row", "size"),
             first_date=("date", "min"),
             latest_date=("date", "max"),
-        ).sort_values(["rework_count", "latest_date"], ascending=False).head(30)
+        ).sort_values(["rework_count", "latest_date"], ascending=False).head(5)
         if not component_frequency.empty:
             supplementary_panels.append({"kind": "component", "title": t(f"返工零部件（n={len(rework):,}）", f"Rework Components (n={len(rework):,})"), "data": component_frequency})
             supplementary_sources.append(rework)
@@ -16301,7 +16374,7 @@ def render_bme_bike_quality_dashboard_v3(
 
         rework_comments = rework["issue_driver"].fillna("").astype(str).str.strip()
         rework_comments = rework_comments[rework_comments.ne("") & ~rework_comments.str.fullmatch(r"返工|Rework|Not recorded|未记录", case=False, na=False)]
-        top_comments = rework_comments.value_counts().head(30).rename_axis("comment").reset_index(name="rework_count")
+        top_comments = rework_comments.value_counts().head(5).rename_axis("comment").reset_index(name="rework_count")
         if not top_comments.empty:
             top_comments["comment_label"] = top_comments["comment"].map(lambda value: value if len(value) <= 32 else value[:31] + "…")
             supplementary_panels.append({"kind": "reason", "title": t(f"返工原因（n={len(rework):,}）", f"Rework Reasons (n={len(rework):,}; source text)"), "data": top_comments})
@@ -16314,145 +16387,98 @@ def render_bme_bike_quality_dashboard_v3(
         top_reason_count = int(top_comments["rework_count"].max()) if not rework.empty and not top_comments.empty else 0
         if not rework.empty and (len(rework) < 30 or max(top_component_count, top_reason_count) < 5):
             st.warning(t(
-                f"本期共 {len(rework):,} 条返工申请；最高零部件仅 {top_component_count:,} 条、最高原因仅 {top_reason_count:,} 条。Top 排名仅用于定位回查，不能解释为稳定的长期主要原因。",
-                f"This period has {len(rework):,} rework applications; the leading component has only {top_component_count:,} records and the leading reason only {top_reason_count:,}. The ranking is for targeting follow-up only and does not establish a stable long-term pattern.",
+                f"返工样本 n={len(rework):,}，Top 排名仅用于定位回查。",
+                f"Rework sample n={len(rework):,}; Top rankings are for follow-up targeting only.",
             ))
-        combined_source = pd.concat(supplementary_sources, ignore_index=True).drop_duplicates(subset=["source_file", "source_sheet", "source_row"])
-        render_chart_heading(
-            "CMW 来料退货与返工重点",
-            "CMW Incoming Returns and Rework Focus",
-            "在一个组合图中查看来料供应商退货、返工零部件和返工原因。",
-            "Review incoming-supplier returns, reworked components, and rework reasons in one figure.",
-            "三个分区使用各自单位，不相加：来料用 PPM，返工用申请次数。",
-            "The three panels keep separate units and are not added together: incoming uses PPM and rework uses application count.",
-            "来料 PPM=退货数量÷来料数量×1,000,000；返工按申请记录数统计，不解释为返工工时或长期趋势；返工原因保留源文件原文，不自动归类。",
-            "Incoming PPM equals return quantity divided by incoming quantity times 1,000,000. Rework uses application records rather than labor hours or a long-term trend, and source reason text is not automatically classified.",
-            bme_chart_source(combined_source),
-            "bme_v9_incoming_rework_info",
-        )
-        supplementary_count = len(supplementary_panels)
-        if supplementary_count >= 3:
-            supplementary_specs = [[{}, {}], [{"colspan": 2}, None]]
-            supplementary_positions = [(1, 1), (1, 2), (2, 1)]
-            supplementary_rows = 2
-        elif supplementary_count == 2:
-            supplementary_specs = [[{}, {}]]
-            supplementary_positions = [(1, 1), (1, 2)]
-            supplementary_rows = 1
-        else:
-            supplementary_specs = [[{}]]
-            supplementary_positions = [(1, 1)]
-            supplementary_rows = 1
-        supplementary_fig = make_subplots(
-            rows=supplementary_rows,
-            cols=2 if supplementary_count > 1 else 1,
-            specs=supplementary_specs,
-            subplot_titles=[str(panel["title"]) for panel in supplementary_panels],
-            vertical_spacing=0.24 if supplementary_rows > 1 else 0.0,
-            horizontal_spacing=0.12 if supplementary_count > 1 else 0.0,
-        )
-        for panel_index, panel in enumerate(supplementary_panels):
-            plot_row, plot_col = supplementary_positions[panel_index]
+
+        def render_supplementary_panel(panel: dict[str, object]) -> None:
             panel_kind = str(panel["kind"])
             panel_data = panel["data"].head(5).copy()
-            panel_visible_slots = 5
-            panel_range = [-0.5, panel_visible_slots - 0.5]
+            chart_height = min(330, max(230, 104 + len(panel_data) * 42))
+            title = str(panel["title"])
+            meta = ""
             if panel_kind == "incoming":
-                supplementary_fig.add_trace(go.Bar(
-                    x=panel_data["material_supplier"], y=panel_data["return_ppm"], orientation="v",
-                    text=panel_data["return_ppm"], texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False,
-                    width=0.68,
-                    marker_color=BME_COLORS["iqc"],
-                    customdata=np.column_stack([panel_data["receipts"], panel_data["incoming_qty"], panel_data["return_qty"]]),
-                    hovertemplate=(f"{t('检验记录数', 'Inspection Records')}  %{{customdata[0]:,.0f}}<br>"
-                                   f"{t('来料数量', 'Incoming Quantity')}  %{{customdata[1]:,.0f}}<br>"
-                                   f"{t('退货数量', 'Return Quantity')}  %{{customdata[2]:,.0f}}<br>"
-                                   f"{t('退货 PPM', 'Return PPM')}  %{{y:,.0f}}<extra></extra>"),
-                    showlegend=False,
-                ), row=plot_row, col=plot_col)
+                panel_data = panel_data.sort_values("return_ppm")
+                panel_data["label"] = panel_data["material_supplier"].map(lambda value: str(value) if len(str(value)) <= 28 else str(value)[:27] + "…")
                 overall_ppm = panel.get("overall")
+                top_row = panel_data.sort_values("return_ppm", ascending=False).iloc[0]
+                meta = t(
+                    f"最高 {top_row['material_supplier']} · {top_row['return_ppm']:,.0f} PPM" + (f" · 工厂 {overall_ppm:,.0f}" if pd.notna(overall_ppm) else ""),
+                    f"Top {top_row['material_supplier']} · {top_row['return_ppm']:,.0f} PPM" + (f" · Factory {overall_ppm:,.0f}" if pd.notna(overall_ppm) else ""),
+                )
+                fig = go.Figure(go.Bar(
+                    x=panel_data["return_ppm"], y=panel_data["label"], orientation="h",
+                    text=panel_data["return_ppm"], texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False,
+                    marker_color=BME_COLORS["iqc"],
+                    customdata=np.column_stack([panel_data["material_supplier"], panel_data["receipts"], panel_data["incoming_qty"], panel_data["return_qty"]]),
+                    hovertemplate=(f"<b>%{{customdata[0]}}</b><br>{t('检验记录数', 'Inspection Records')}  %{{customdata[1]:,.0f}}<br>"
+                                   f"{t('来料数量', 'Incoming Quantity')}  %{{customdata[2]:,.0f}}<br>"
+                                   f"{t('退货数量', 'Return Quantity')}  %{{customdata[3]:,.0f}}<br>"
+                                   f"{t('退货 PPM', 'Return PPM')}  %{{x:,.0f}}<extra></extra>"),
+                ))
                 if pd.notna(overall_ppm):
-                    supplementary_fig.add_hline(
-                        y=float(overall_ppm),
-                        line_color=BME_COLORS["machine"],
-                        line_dash="dash",
-                        annotation_text=t(f"工厂总体 {overall_ppm:,.0f}", f"Factory overall {overall_ppm:,.0f}"),
-                        annotation_position="top right",
-                        row=plot_row,
-                        col=plot_col,
-                    )
-                supplementary_fig.update_xaxes(
-                    title_text=None, tickangle=-45, automargin=True,
-                    range=panel_range,
-                    rangeslider=dict(visible=False), row=plot_row, col=plot_col,
-                )
-                supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", tickangle=0, row=plot_row, col=plot_col)
+                    fig.add_vline(x=float(overall_ppm), line_color=BME_COLORS["machine"], line_dash="dash")
+                fig.update_xaxes(title_text="PPM", rangemode="tozero")
             elif panel_kind == "component":
-                supplementary_fig.add_trace(go.Bar(
-                    x=panel_data["component"], y=panel_data["rework_count"], orientation="v",
-                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color=BME_COLORS["machine"],
-                    width=0.68,
-                    customdata=np.column_stack([panel_data["first_date"].astype(str), panel_data["latest_date"].astype(str)]),
-                    hovertemplate=(f"{t('首次申请', 'First Application')}  %{{customdata[0]}}<br>"
-                                   f"{t('最近申请', 'Latest Application')}  %{{customdata[1]}}<br>"
-                                   f"{t('返工次数', 'Rework Count')}  %{{y:,.0f}}<extra></extra>"),
-                    showlegend=False,
-                ), row=plot_row, col=plot_col)
-                supplementary_fig.update_xaxes(
-                    title_text=None, tickangle=-45, automargin=True,
-                    range=panel_range,
-                    rangeslider=dict(visible=False), row=plot_row, col=plot_col,
-                )
-                supplementary_fig.update_yaxes(title_text=None, rangemode="tozero", dtick=1, tickangle=0, row=plot_row, col=plot_col)
+                panel_data = panel_data.sort_values("rework_count")
+                panel_data["label"] = panel_data["component"].map(lambda value: str(value) if len(str(value)) <= 28 else str(value)[:27] + "…")
+                top_row = panel_data.sort_values("rework_count", ascending=False).iloc[0]
+                meta = t(f"最多 {top_row['component']} · {int(top_row['rework_count']):,} 次", f"Top {top_row['component']} · {int(top_row['rework_count']):,}")
+                fig = go.Figure(go.Bar(
+                    x=panel_data["rework_count"], y=panel_data["label"], orientation="h",
+                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False,
+                    marker_color=BME_COLORS["machine"],
+                    customdata=np.column_stack([panel_data["component"], panel_data["first_date"].astype(str), panel_data["latest_date"].astype(str)]),
+                    hovertemplate=(f"<b>%{{customdata[0]}}</b><br>{t('首次申请', 'First Application')}  %{{customdata[1]}}<br>"
+                                   f"{t('最近申请', 'Latest Application')}  %{{customdata[2]}}<br>"
+                                   f"{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>"),
+                ))
+                fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1)
             else:
-                supplementary_fig.add_trace(go.Bar(
+                panel_data = panel_data.sort_values("rework_count")
+                top_row = panel_data.sort_values("rework_count", ascending=False).iloc[0]
+                meta = t(f"最高 {int(top_row['rework_count']):,} 次 · n={len(rework):,}", f"Top {int(top_row['rework_count']):,} · n={len(rework):,}")
+                fig = go.Figure(go.Bar(
                     x=panel_data["rework_count"], y=panel_data["comment_label"], orientation="h",
-                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False, marker_color=BME_COLORS["pqc"],
-                    width=0.68,
+                    text=panel_data["rework_count"], textposition="outside", cliponaxis=False,
+                    marker_color=BME_COLORS["pqc"],
                     customdata=np.column_stack([panel_data["comment"]]),
-                    hovertemplate=f"{t('完整原因', 'Full Reason')}  %{{customdata[0]}}<br>{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>",
-                    showlegend=False,
-                ), row=plot_row, col=plot_col)
-                supplementary_fig.update_xaxes(
-                    title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1,
-                    row=plot_row, col=plot_col,
-                )
-                supplementary_fig.update_yaxes(
-                    title_text=None,
-                    categoryorder="array",
-                    categoryarray=panel_data["comment_label"].tolist()[::-1],
-                    automargin=True,
-                    row=plot_row,
-                    col=plot_col,
-                )
-        supplementary_fig.update_layout(
-            height=920 if supplementary_rows > 1 else 500,
-            margin=dict(l=62, r=34, t=58, b=72),
-            showlegend=False,
-            hoverlabel=dict(align="left"),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="#ffffff",
-            font=dict(family="Inter, PingFang SC, Microsoft YaHei, sans-serif", size=12, color="#667085"),
-        )
-        apply_bme_chart_style(supplementary_fig)
-        render_bme_chart_conclusion(
-            f"本期重点：{'；'.join(supplementary_conclusion_cn)}。返工样本较少，只用于定位和回查。",
-            f"This period's focus: {'; '.join(supplementary_conclusion_en)}. The rework sample is small and is used only for targeting and follow-up.",
-        )
-        st.plotly_chart(supplementary_fig, use_container_width=True, config={"displayModeBar": False})
+                    hovertemplate=f"<b>%{{customdata[0]}}</b><br>{t('返工次数', 'Rework Count')}  %{{x:,.0f}}<extra></extra>",
+                ))
+                fig.update_xaxes(title_text=t("返工次数", "Rework Count"), rangemode="tozero", dtick=1)
+            st.markdown(
+                f"<div class='bme-card-title'>{html.escape(title)}</div><div class='bme-card-meta'>{html.escape(meta)}</div>",
+                unsafe_allow_html=True,
+            )
+            fig.update_yaxes(title_text="", automargin=True, tickfont={"size": 12})
+            fig.update_layout(height=chart_height, margin=dict(l=8, r=34, t=8, b=36), showlegend=False, bargap=0.28)
+            apply_bme_chart_style(fig)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        panel_map = {str(panel["kind"]): panel for panel in supplementary_panels}
+        top_panels = [panel_map[kind] for kind in ("incoming", "component") if kind in panel_map]
+        if top_panels:
+            top_columns = st.columns(len(top_panels), gap="medium")
+            for column, panel in zip(top_columns, top_panels):
+                with column:
+                    with st.container(border=True):
+                        render_supplementary_panel(panel)
+        if "reason" in panel_map:
+            with st.container(border=True):
+                render_supplementary_panel(panel_map["reason"])
 
     st.markdown('<div id="bme-data-ai" class="bme-section-anchor"></div>', unsafe_allow_html=True)
-    with st.expander(t("数据覆盖与口径 / Data Map", "Data coverage and definitions / Data Map"), expanded=False):
+    with st.expander(t("数据地图 / Data Map", "Data Map"), expanded=False):
         # Source coverage is fixed. Analysis filters must never turn an
         # unselected source into a false "not connected" status.
         _render_bme_data_map(events, customer_nc, fsd_orders)
 
-    st.header(t("可选：AI 汇总报告", "Optional: AI Summary Report"))
+    st.header(t("AI 汇总", "AI Summary"))
     top_supplier_facts = supplier_risk_scores.head(3).to_dict("records") if not supplier_risk_scores.empty else []
     top_product_facts = product_risk_scores.head(5).to_dict("records") if not product_risk_scores.empty else []
     report_pareto, report_missing_issues = build_bme_issue_pareto(view, customer_nc, limit=5)
     bme_report_facts = {
-        "scope": {"suppliers": selected_suppliers, "start_date": str(start_date), "end_date": str(end_date)},
+        "scope": {"period": selected_period, "suppliers": selected_suppliers, "start_date": str(start_date), "end_date": str(end_date)},
         "method": "Relative priority only. Product peers are separated by supplier, product family and quality gate. Missing gates are not zero. No score is an acceptance threshold.",
         "supplier_risks": top_supplier_facts,
         "product_risks": top_product_facts,
@@ -16466,14 +16492,9 @@ def render_bme_bike_quality_dashboard_v3(
     }
     if "bme_ai_summary" not in st.session_state:
         st.session_state["bme_ai_summary"] = ""
-    summary_cols = st.columns([1.2, 4.8], vertical_alignment="center")
-    generate_bme_summary = summary_cols[0].button(
-        t("按需生成 AI 汇总", "Generate on demand"), key="bme_generate_ai_summary", use_container_width=True, type="secondary"
+    generate_bme_summary = st.button(
+        t("生成 AI 汇总", "Generate AI Summary"), key="bme_generate_ai_summary", type="primary"
     )
-    summary_cols[1].caption(t(
-        "AI 只整理当前事实与行动建议；数据口径、风险分和 SPC 仍由确定性代码计算。",
-        "AI organizes current facts and action suggestions only; deterministic code owns metrics, risk scores, and SPC.",
-    ))
     if generate_bme_summary:
         bme_ai_key = get_qwen_api_key()
         if not bme_ai_key:
@@ -16496,12 +16517,6 @@ def render_bme_bike_quality_dashboard_v3(
                 st.error(t(f"AI 汇总生成失败：{exc}", f"AI summary generation failed: {exc}"))
     if st.session_state["bme_ai_summary"]:
         st.markdown(st.session_state["bme_ai_summary"])
-    else:
-        st.info(t(
-            "这是可选的二次整理入口，不影响上方确定性结果。点击后才会使用当前供应商风险、产品风险、主要问题和数据缺口生成管理摘要。",
-            "This optional secondary action does not affect the deterministic results above. It runs only when clicked and summarizes current supplier risks, product risks, top issues, and data gaps.",
-        ))
-    st.markdown('<div class="bme-page-end-spacer" aria-hidden="true"></div>', unsafe_allow_html=True)
 
 ZX_ALERT_TYPES = {
     "IQC": ("IQC 来料预警", "IQC Alert"),

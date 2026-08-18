@@ -1,3 +1,37 @@
+## BME Compact Decision Dashboard QA — 2026-08-18
+
+**Comparison evidence**
+
+- Source screenshots: `codex-clipboard-381d3edc-e563-4dcd-b2f6-94417b443cfa.png`, `codex-clipboard-3b2386df-df14-4919-bafe-c624f91cfca5.png`, and `codex-clipboard-34988eb4-8558-46c6-8300-65d9f7cb8882.png`.
+- Browser-rendered implementation: `/tmp/bme-redesign-qa/06-overview-final-local.png`, `/tmp/bme-redesign-qa/03-risk-after.png`, `/tmp/bme-redesign-qa/04-incoming-after.png`, and `/tmp/bme-redesign-qa/05-ai-after.png`.
+- Combined normalized comparison: `/tmp/bme-redesign-qa/09-before-after-comparison.png`.
+- Route and state: `http://127.0.0.1:8510/?scope=BME_CMW&lang=zh`, all suppliers, R12M ending at the latest source date.
+- Viewport: 1280 × 720 CSS px. English was also tested in the same viewport.
+
+**Comparison findings**
+
+- The filter is now a single compact toolbar. R12M, YTD, and Custom fit on one row with supplier selection, the resolved date range, and a secondary Reset action; the repeated “current scope” line is gone.
+- The fixed navigation now uses content width instead of filling the row. All seven anchors were exercised and landed on the intended sections.
+- Supplier and product risk are separate 35/65 cards. Product ranking is Top 8, horizontal, fixed-row, legend-free, and keeps full values and names in Hover without label collisions.
+- Incoming returns, rework components, and rework reasons are Top 5 horizontal charts in compact cards. Diagonal labels, the overlapping factory annotation, and the 920 px low-density figure are removed.
+- AI is reduced to `AI 汇总`, one generation button, result/status output, and no passive explanatory block.
+- Repeated “说明” buttons are icon triggers and repeated “本期结论” cards are compact result lines without redundant headings.
+
+**Interaction and regression evidence**
+
+- R12M resolved to `2025-08-19 — 2026-08-18`; YTD resolved to `2026-01-01 — 2026-08-18`; Custom exposed the date input and retained a valid range; switching back restored R12M.
+- Chinese and English routes retained readable navigation, filter controls, management cards, and section headings with no clipping in the tested desktop viewport.
+- Browser error/warning log after filter, language, and anchor interactions: 0 entries.
+- Python compilation passed; `tests.test_bme_quality` passed 8/8; `git diff --check` passed.
+
+**Known boundary**
+
+- The in-app browser runtime did not expose a viewport override capability, so the 720 px CSS breakpoint was inspected in code rather than captured as a second browser screenshot. The toolbar and navigation both retain explicit wrap/overflow behavior at 1100 px and 720 px.
+
+final result: passed
+
+---
+
 **Comparison Target**
 
 - Source visual truth: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-239fbfc2-61de-4a0e-a1a8-9c98777d2876.png`
