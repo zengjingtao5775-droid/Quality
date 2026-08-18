@@ -1075,7 +1075,7 @@ st.markdown(
         position: fixed;
         top: 8px;
         left: 282px;
-        right: 24px;
+        right: 220px;
         z-index: 90;
         display: flex;
         gap: 6px;
@@ -1089,6 +1089,14 @@ st.markdown(
         scrollbar-width: none;
     }
     body:has(.bme-anchor-nav) .block-container {padding-top: 4.8rem !important;}
+    /* Streamlit renders a transparent app header above fixed page content.
+       Let pointer events pass through its empty area so the visible BME
+       navigation is genuinely clickable, while preserving header controls. */
+    [data-testid="stHeader"] {pointer-events: none !important;}
+    [data-testid="stHeader"] button,
+    [data-testid="stHeader"] a,
+    [data-testid="stHeader"] [role="button"],
+    [data-testid="stHeader"] [role="link"] {pointer-events: auto !important;}
     .bme-anchor-nav::-webkit-scrollbar {display: none;}
     .bme-anchor-nav a {
         flex: 0 0 auto;
@@ -1101,6 +1109,17 @@ st.markdown(
         white-space: nowrap;
     }
     .bme-anchor-nav a:hover {background: #eef3ff; color: #173b8f !important;}
+    body:has(#bme-overview:target) a[href="#bme-overview"],
+    body:has(#bme-risk:target) a[href="#bme-risk"],
+    body:has(#bme-products:target) a[href="#bme-products"],
+    body:has(#bme-investigation:target) a[href="#bme-investigation"],
+    body:has(#bme-spc:target) a[href="#bme-spc"],
+    body:has(#bme-supplementary:target) a[href="#bme-supplementary"],
+    body:has(#bme-data-ai:target) a[href="#bme-data-ai"] {
+        background: #2855c5;
+        color: #ffffff !important;
+    }
+    #bme-overview {scroll-margin-top: 76px;}
     .bme-section-anchor {height: 1px; scroll-margin-top: 76px;}
     .bme-investigation-context {
         position: sticky;
@@ -1990,7 +2009,7 @@ st.markdown(
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .bme-management-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
-        .bme-anchor-nav {left: 220px; right: 16px; margin-bottom: 14px;}
+        .bme-anchor-nav {left: 220px; right: 150px; margin-bottom: 14px;}
         .bme-investigation-context {top: 3.35rem;}
         .st-key-bme_product_defect_filter [data-testid="stHorizontalBlock"] {flex-wrap: wrap !important;}
         .st-key-bme_product_defect_filter [data-testid="stColumn"] {
@@ -2005,7 +2024,7 @@ st.markdown(
         .hero-title {font-size: 1.8rem;}
         .hero {padding: 22px 20px; border-radius: 16px;}
         .bme-management-grid {grid-template-columns: 1fr;}
-        .bme-anchor-nav {left: 64px; right: 10px;}
+        .bme-anchor-nav {left: 64px; right: 72px;}
     }
     </style>
     """,
