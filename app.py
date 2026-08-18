@@ -1165,19 +1165,57 @@ st.markdown(
         font-weight: 720;
     }
     .bme-context-label {color: #667085; font-size: 0.875rem; font-weight: 780; text-transform: uppercase;}
-    .bme-sidebar-context {
-        margin: 10px 0 14px;
-        padding: 11px 12px;
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.13);
-        border: 1px solid rgba(255, 255, 255, 0.20);
-        color: #ffffff !important;
-        font-size: 0.875rem;
-        font-weight: 700;
-        line-height: 1.45;
-        overflow-wrap: anywhere;
+    .st-key-bme_top_filter {
+        margin: 0 0 18px;
     }
-    .bme-sidebar-context strong {display: block; margin-bottom: 4px; color: #ffffff !important;}
+    .st-key-bme_top_filter [data-testid="stExpander"] {
+        background: #ffffff;
+        border: 1px solid #dbe2ec;
+        border-radius: 10px;
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+        overflow: hidden;
+    }
+    .st-key-bme_top_filter [data-testid="stExpander"] > details > summary {
+        min-height: 48px;
+        padding: 0 16px;
+        color: #172033;
+        font-size: 0.96rem;
+        font-weight: 820;
+    }
+    .st-key-bme_top_filter [data-testid="stExpanderDetails"] {
+        padding: 2px 16px 15px;
+    }
+    .st-key-bme_top_filter [data-baseweb="select"] > div,
+    .st-key-bme_top_filter [data-testid="stDateInput"] input {
+        min-height: 46px;
+        border-color: #cfd6e2 !important;
+        border-radius: 8px !important;
+        background: #ffffff !important;
+    }
+    .st-key-bme_top_filter [data-baseweb="tag"] {
+        background: #364fc7 !important;
+        color: #ffffff !important;
+        border-radius: 6px !important;
+    }
+    .st-key-bme_top_filter [data-baseweb="tag"] *,
+    .st-key-bme_top_filter [data-baseweb="tag"] svg,
+    .st-key-bme_top_filter [data-baseweb="tag"] path {
+        color: #ffffff !important;
+        fill: #ffffff !important;
+    }
+    .st-key-bme_top_filter [data-testid="stButton"] button {
+        min-height: 46px;
+        margin-top: 28px;
+        border-color: #c7ced9;
+        color: #344054;
+        font-weight: 760;
+    }
+    .bme-filter-scope-note {
+        margin-top: 5px;
+        color: #667085;
+        font-size: 0.86rem;
+        font-weight: 650;
+    }
     .bme-coverage-warning {
         margin: 10px 0 14px;
         padding: 13px 15px;
@@ -2041,6 +2079,8 @@ st.markdown(
         body:has(.bme-anchor-nav)::before {left: 194px;}
         .bme-investigation-context {top: 3.35rem;}
         .st-key-bme_product_defect_filter [data-testid="stHorizontalBlock"] {flex-wrap: wrap !important;}
+        .st-key-bme_top_filter [data-testid="stHorizontalBlock"] {flex-wrap: wrap !important;}
+        .st-key-bme_top_filter [data-testid="stColumn"] {min-width: 220px !important;}
         .st-key-bme_product_defect_filter [data-testid="stColumn"] {
             flex: 1 1 100% !important;
             width: 100% !important;
@@ -2056,6 +2096,12 @@ st.markdown(
         .bme-management-grid {grid-template-columns: 1fr;}
         .bme-anchor-nav {left: 64px; right: 72px;}
         body:has(.bme-anchor-nav)::before {left: 0;}
+        .st-key-bme_top_filter [data-testid="stColumn"] {
+            flex: 1 1 100% !important;
+            width: 100% !important;
+            min-width: 0 !important;
+        }
+        .st-key-bme_top_filter [data-testid="stButton"] button {margin-top: 0;}
     }
     </style>
     """,
@@ -14535,26 +14581,50 @@ def render_bme_bike_quality_dashboard_v3(
     min_date = dated.min().date() if not dated.empty else today
     max_date = min(dated.max().date(), today) if not dated.empty else today
     default_start = max(min_date, (pd.Timestamp(max_date) - pd.DateOffset(years=1)).date())
-    st.sidebar.markdown("---")
-    with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
-        selected_suppliers = st.multiselect(t("供应商", "Supplier"), suppliers, default=suppliers, key="bme_v4_supplier")
-        selected_dates = st.date_input(t("日期范围", "Period"), value=(default_start, max_date), min_value=min_date, max_value=max_date, key="bme_v4_dates")
-        selected_date_caption = st.empty()
-    sidebar_context_slot = st.sidebar.empty()
-    start_date, end_date = default_start, max_date
-    if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
-        start_date, end_date = selected_dates
-    selected_date_caption.caption(
-        t(
-            f"当前范围：{start_date} → {end_date}",
-            f"Current period: {start_date} → {end_date}",
-        )
-    )
+    hero_slot = st.empty()
+
+    def reset_bme_top_filters() -> None:
+        st.session_state["bme_v4_supplier"] = suppliers
+        st.session_state["bme_v4_dates"] = (default_start, max_date)
+
+    with st.container(key="bme_top_filter"):
+        with st.expander(t("筛选当前分析范围", "Filter the current analysis scope"), expanded=True):
+            filter_cols = st.columns([1.25, 1.0, 0.32], gap="medium", vertical_alignment="bottom")
+            selected_suppliers = filter_cols[0].multiselect(
+                t("供应商", "Supplier"),
+                suppliers,
+                default=suppliers,
+                key="bme_v4_supplier",
+                placeholder=t("选择供应商", "Select suppliers"),
+            )
+            selected_dates = filter_cols[1].date_input(
+                t("日期范围", "Period"),
+                value=(default_start, max_date),
+                min_value=min_date,
+                max_value=max_date,
+                key="bme_v4_dates",
+            )
+            filter_cols[2].button(
+                t("重置", "Reset"),
+                key="bme_reset_top_filters",
+                use_container_width=True,
+                on_click=reset_bme_top_filters,
+            )
+            start_date, end_date = default_start, max_date
+            if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
+                start_date, end_date = selected_dates
+            st.markdown(
+                f"<div class='bme-filter-scope-note'>{html.escape(t('当前范围', 'Current scope'))}: "
+                f"{html.escape(' · '.join(selected_suppliers) if selected_suppliers else t('未选择供应商', 'No supplier selected'))} · "
+                f"{start_date} → {end_date}</div>",
+                unsafe_allow_html=True,
+            )
     supplier_chip = " · ".join(selected_suppliers) if selected_suppliers else t("未选择供应商", "No supplier selected")
-    st.markdown(
-        f"""<div id="bme-overview" class="hero bme-hero"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
-        unsafe_allow_html=True,
-    )
+    with hero_slot.container():
+        st.markdown(
+            f"""<div id="bme-overview" class="hero bme-hero"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{start_date} - {end_date}</span></div></div>""",
+            unsafe_allow_html=True,
+        )
     # Rendered after the calculations below, but anchored here so the manager
     # sees the decision summary before any detailed chart.
     management_summary_slot = st.empty()
@@ -15618,18 +15688,6 @@ def render_bme_bike_quality_dashboard_v3(
             """,
             unsafe_allow_html=True,
         )
-        sidebar_product = selected_product_display if len(selected_product_display) <= 34 else selected_product_display[:33] + "…"
-        with sidebar_context_slot.container():
-            st.markdown(
-                f"""
-                <div class="bme-sidebar-context">
-                  <strong>{html.escape(t('当前调查对象', 'Current investigation'))}</strong>
-                  {html.escape(selected_product_supplier)} · {html.escape(bme_display_text(selected_product_group))}<br>
-                  {html.escape(sidebar_product)}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
         product_defect_rows = product_issues[product_issues["product_key"].eq(selected_product_key)].copy()
         product_defect_total = float(product_defect_rows["defect_qty"].sum())
         defect_detail = product_defect_rows.copy()
@@ -19102,6 +19160,17 @@ def render_scope_nav(active_scope: str, active_page: str = "reporting") -> None:
         current_identity = (
             f"<div class='side-current-supplier'><span>{html.escape(scope_subtitle(active_scope))}</span></div>"
         )
+    current_page_card = (
+        ""
+        if active_scope == "BME_CMW"
+        else f"""
+        <div class="side-current">
+            <div class="side-current-kicker">{html.escape(t("当前页面", "Current Page"))}</div>
+            <div class="side-current-title">{html.escape(zx_page_display(active_page) if active_scope == 'ZX' else scope_display(active_scope))}</div>
+            {current_identity}
+        </div>
+        """
+    )
     st.sidebar.markdown(
         f"""
         <div class="side-brand">
@@ -19113,11 +19182,7 @@ def render_scope_nav(active_scope: str, active_page: str = "reporting") -> None:
         </div>
         <div class="side-section-title">{html.escape(t("业务看板", "Business Dashboard"))}</div>
         {visible_nav}
-        <div class="side-current">
-            <div class="side-current-kicker">{html.escape(t("当前页面", "Current Page"))}</div>
-            <div class="side-current-title">{html.escape(zx_page_display(active_page) if active_scope == 'ZX' else scope_display(active_scope))}</div>
-            {current_identity}
-        </div>
+        {current_page_card}
         """,
         unsafe_allow_html=True,
     )

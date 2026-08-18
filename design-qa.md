@@ -1,3 +1,70 @@
+**Comparison Target**
+
+- Source visual truth: `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-239fbfc2-61de-4a0e-a1a8-9c98777d2876.png`
+- Browser-rendered implementation: `/tmp/bme-top-filter-implementation.png`
+- Combined focused comparison: `/tmp/bme-filter-side-by-side.png`
+- Route and state: `http://127.0.0.1:8511/?scope=BME_CMW&lang=zh`, expanded top filter, all three suppliers selected, default one-year date range.
+- Viewport: 1280 x 720 CSS px, device scale factor 1.
+- Source pixels: 2746 x 416. Implementation pixels: 1280 x 720. For the focused comparison, the implementation filter region was cropped to 870 x 195 and both regions were normalized to 1100 px width.
+
+**Full-view Comparison Evidence**
+
+- The implementation keeps the existing BME page hierarchy and places one compact, full-width filter card directly below the dashboard header.
+- The sidebar now contains only the dashboard page choices and language switch for the BME route; the duplicate current-page card and analytical filters are absent.
+- The first screen retains the management summary immediately below the filter, so the new control surface does not displace the primary decision content excessively.
+
+**Focused Region Comparison Evidence**
+
+- The combined comparison confirms the reference pattern was adapted rather than copied: white enterprise card, thin neutral border, horizontal controls, clear reset action, and collapsible disclosure.
+- The BME version intentionally contains only Supplier and Period. Preset management, Add New, Save and Search, and the large reference filter inventory were excluded because they are not part of the current dashboard requirement.
+
+**Required Fidelity Surfaces**
+
+- Fonts and typography: existing Inter/PingFang system preserved; labels, values, disclosure title, and reset action remain readable at 1280 px with no truncation.
+- Spacing and layout rhythm: 46 px controls, aligned baseline, 16 px internal padding, 10 px radius, and 18 px section gap provide a compact but non-crowded filter band.
+- Colors and visual tokens: white surface, neutral border, Decathlon-blue selected tags, and neutral reset button match the dashboard design system without implying risk status.
+- Image quality and asset fidelity: no image or illustrative asset is present in either filter surface, so no raster/vector substitution was required.
+- Copy and content: bilingual labels are concise and complete; current supplier/date scope is repeated in a low-emphasis status line for clarity.
+
+**Findings**
+
+- No actionable P0, P1, or P2 differences remain.
+- [P3] The BME filter is intentionally less dense than the reference because only two analysis dimensions are currently reliable. Adding empty filter controls solely for visual similarity would reduce usability.
+
+**Comparison History**
+
+- Iteration 1: selected supplier tags inherited a red global style and the sidebar still showed a duplicate current-page card. Both were classified P2 because red could be confused with a risk state and the extra card contradicted the requested sidebar simplification.
+- Fixes: scoped the selected tags to Decathlon blue and suppressed the duplicate current-page card on the BME route.
+- Post-fix evidence: `/tmp/bme-top-filter-implementation.png` and `/tmp/bme-filter-side-by-side.png`. The final browser capture shows blue tags, a page/language-only BME sidebar, and no overflow or clipped copy.
+
+**Primary Interactions Tested**
+
+- Cleared all supplier selections and confirmed the scope changed to no supplier selected.
+- Used Reset and confirmed CMW, FSD, and TEKTRO were restored.
+- Switched Chinese to English and confirmed the filter labels, scope text, and reset action remained aligned and complete.
+- Clicked the Risk anchor and confirmed `#bme-risk` reached the correct section.
+- Browser error/warning log after interaction: 0 entries.
+
+**Implementation Checklist**
+
+- [x] Move Supplier and Period from the sidebar to the dashboard top.
+- [x] Keep the BME sidebar focused on page selection and language.
+- [x] Add clear scope feedback, Reset, collapse behavior, and responsive wrapping.
+- [x] Preserve bilingual copy and existing analytical logic.
+- [x] Verify the browser-rendered state and console.
+
+**Open Questions**
+
+- None for the current two-filter scope.
+
+**Follow-up Polish**
+
+- If additional reliable filter dimensions are introduced later, add them in the same card using the existing wrap behavior rather than returning filters to the sidebar.
+
+final result: passed
+
+---
+
 # BME Overflow Regression QA — 2026-08-12
 
 ## Evidence
