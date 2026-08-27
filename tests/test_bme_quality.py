@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from bme_quality import bme_events_to_alerts, load_bme_quality_events
+from bme_quality import (
+    bme_events_to_alerts,
+    load_bme_quality_events,
+    summarize_spc_process_risk,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +62,43 @@ class BmeQualityDataTest(unittest.TestCase):
         self.assertTrue(required.issubset(alerts.columns))
         self.assertFalse(alerts["status"].fillna("").eq("").any())
         self.assertTrue(alerts["status"].isin(["Open", "In progress", "Closed", "Status unavailable"]).all())
+
+
+class BmeSpcRiskSummaryTest(unittest.TestCase):
+    def test_imr_summary_separates_specification_breaches_from_spc_signals(self) -> None:
+        frame = pd.DataFrame({
+            "event_timestamp": pd.date_range("2026-01-01", periods=6, freq="D"),
+            "date": pd.date_range("2026-01-01", periods=6, freq="D"),
+            "source_row": range(2, 8),
+            "measured_value": [10.0, 10.1, 9.9, 10.0, 10.2, 12.0],
+            "spec_low": [9.0] * 6,
+            "spec_high": [11.0] * 6,
+            "data_quality_flag": [""] * 6,
+        })
+
+        summary = summarize_spc_process_risk("imr", frame)
+
+        self.assertTrue(summary["has_specification"])
+        self.assertEqual(summary["measurement_count"], 6)
+        self.assertEqual(summary["specification_breaches"], 1)
+        self.assertAlmostEqual(summary["specification_rate"], 1 / 6)
+        self.assertIn("signal_count", summary)
+
+    def test_stability_only_sequence_does_not_invent_product_specification(self) -> None:
+        frame = pd.DataFrame({
+            "event_timestamp": pd.date_range("2026-01-01", periods=6, freq="D"),
+            "date": pd.date_range("2026-01-01", periods=6, freq="D"),
+            "source_row": range(2, 8),
+            "measured_value": [10.0, 10.1, 9.9, 10.0, 10.2, 10.1],
+            "spec_low": [None] * 6,
+            "spec_high": [None] * 6,
+            "data_quality_flag": [""] * 6,
+        })
+
+        summary = summarize_spc_process_risk("imr_stability", frame)
+
+        self.assertFalse(summary["has_specification"])
+        self.assertEqual(summary["specification_breaches"], 0)
 
 
 if __name__ == "__main__":

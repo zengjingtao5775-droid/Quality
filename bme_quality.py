@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-18-v10"
+BME_QUALITY_LOGIC_VERSION = "2026-08-27-v11"
 
 
 EVENT_COLUMNS = [
@@ -292,6 +292,108 @@ def build_xbar_r_chart_data(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str
         if std > 0:
             limits["ppl"] = (center - 200.0) / (3 * std)
     return chart, limits
+
+
+def summarize_spc_process_risk(method: str, frame: pd.DataFrame) -> dict[str, object]:
+    """Summarize one SPC sequence without mixing process signals with specifications."""
+    summary: dict[str, object] = {
+        "measurement_count": 0,
+        "spc_observation_count": 0,
+        "signal_count": 0,
+        "signal_rate": 0.0,
+        "specification_breaches": 0,
+        "specification_rate": 0.0,
+        "has_specification": False,
+        "limits_available": False,
+        "stable": None,
+        "capability": None,
+        "attention_rate": 0.0,
+    }
+    if frame.empty:
+        return summary
+
+    if method.startswith("imr"):
+        chart, limits = build_imr_chart_data(frame)
+        valid_chart = chart[
+            ~chart.get(
+                "is_data_quality_suspect", pd.Series(False, index=chart.index)
+            ).fillna(False)
+        ].copy()
+        mr_signal = valid_chart.get(
+            "moving_range", pd.Series(np.nan, index=valid_chart.index)
+        ).gt(float(limits.get("mr_ucl", np.inf)))
+        signal = valid_chart.get(
+            "signal", pd.Series(False, index=valid_chart.index)
+        ).fillna(False) | mr_signal
+        measured = pd.to_numeric(
+            valid_chart.get("value", pd.Series(np.nan, index=valid_chart.index)),
+            errors="coerce",
+        )
+        low = pd.to_numeric(
+            valid_chart.get("spec_low", pd.Series(np.nan, index=valid_chart.index)),
+            errors="coerce",
+        )
+        high = pd.to_numeric(
+            valid_chart.get("spec_high", pd.Series(np.nan, index=valid_chart.index)),
+            errors="coerce",
+        )
+    elif method == "pchart":
+        chart, limits = build_p_chart_data(frame)
+        valid_chart = chart.copy()
+        signal = valid_chart.get(
+            "signal", pd.Series(False, index=valid_chart.index)
+        ).fillna(False)
+        measured = pd.Series(dtype=float)
+        low = pd.Series(dtype=float)
+        high = pd.Series(dtype=float)
+    else:
+        chart, limits = build_xbar_r_chart_data(frame)
+        valid_chart = chart.copy()
+        signal = valid_chart.get(
+            "signal", pd.Series(False, index=valid_chart.index)
+        ).fillna(False) | valid_chart.get(
+            "range_signal", pd.Series(False, index=valid_chart.index)
+        ).fillna(False)
+        measured = pd.to_numeric(
+            frame.get("measured_value", pd.Series(np.nan, index=frame.index)),
+            errors="coerce",
+        )
+        low = pd.to_numeric(
+            frame.get("spec_low", pd.Series(np.nan, index=frame.index)),
+            errors="coerce",
+        )
+        high = pd.to_numeric(
+            frame.get("spec_high", pd.Series(np.nan, index=frame.index)),
+            errors="coerce",
+        )
+
+    measurement_count = int(measured.notna().sum())
+    spc_observation_count = int(len(valid_chart))
+    signal_count = int(signal.sum())
+    has_specification = bool(low.notna().any() or high.notna().any())
+    outside_specification = (
+        (low.notna() & measured.lt(low))
+        | (high.notna() & measured.gt(high))
+    ) if measurement_count else pd.Series(dtype=bool)
+    specification_breaches = int(outside_specification.sum())
+    signal_rate = signal_count / spc_observation_count if spc_observation_count else 0.0
+    specification_rate = specification_breaches / measurement_count if measurement_count else 0.0
+    capability = limits.get("ppk", limits.get("ppl"))
+
+    summary.update({
+        "measurement_count": measurement_count,
+        "spc_observation_count": spc_observation_count,
+        "signal_count": signal_count,
+        "signal_rate": float(signal_rate),
+        "specification_breaches": specification_breaches,
+        "specification_rate": float(specification_rate),
+        "has_specification": has_specification,
+        "limits_available": "stable" in limits,
+        "stable": limits.get("stable"),
+        "capability": float(capability) if capability is not None else None,
+        "attention_rate": float(max(signal_rate, specification_rate)),
+    })
+    return summary
 
 
 def _finalize_event_flags(frame: pd.DataFrame) -> pd.DataFrame:

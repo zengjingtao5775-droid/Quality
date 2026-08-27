@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-18-v10"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-27-v11"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -51,6 +51,7 @@ build_cmw_product_clusters = _bme_quality.build_cmw_product_clusters
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
+summarize_spc_process_risk = _bme_quality.summarize_spc_process_risk
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -2293,7 +2294,7 @@ DASHBOARD_VISIBILITY = {
     "ZX": True,
     "ZX_V2": False,
     "BME_CMW": True,
-    "QUALITY_ALERT": True,
+    "QUALITY_ALERT": False,
     "SE_TENT": False,
 }
 DEFAULT_DASHBOARD_SCOPE = "ZX"
@@ -15933,38 +15934,21 @@ def render_bme_bike_quality_dashboard_v3(
             )
         st.info(t("当前筛选没有满足最小样本要求的 SPC 数据。", "No SPC source meets the minimum sample requirement under current filters."))
     else:
-        def spc_risk_key(option: tuple[str, pd.DataFrame]) -> tuple[float, float, float, float]:
-            option_method, option_data = option
-            if option_method.startswith("imr"):
-                option_chart, option_limits = build_imr_chart_data(option_data)
-                valid_option_data = option_data[
-                    option_data.get(
-                        "data_quality_flag", pd.Series("", index=option_data.index)
-                    ).fillna("").astype(str).eq("")
-                ]
-                specification_breaches = int(
-                    (
-                        valid_option_data["spec_low"].notna()
-                        & valid_option_data["measured_value"].lt(valid_option_data["spec_low"])
-                    ).sum()
-                    + (
-                        valid_option_data["spec_high"].notna()
-                        & valid_option_data["measured_value"].gt(valid_option_data["spec_high"])
-                    ).sum()
-                )
-            elif option_method == "pchart":
-                option_chart, option_limits = build_p_chart_data(option_data)
-                specification_breaches = 0
-            else:
-                option_chart, option_limits = build_xbar_r_chart_data(option_data)
-                specification_breaches = int(option_data["measured_value"].lt(200).sum())
-            signal_events = int(option_chart.get("signal", pd.Series(False, index=option_chart.index)).sum())
-            signal_events += int(option_chart.get("range_signal", pd.Series(False, index=option_chart.index)).sum())
-            stable = bool(option_limits.get("stable", True))
-            capability = float(option_limits.get("ppk", option_limits.get("ppl", 999.0)))
+        spc_risk_summaries = {
+            label: summarize_spc_process_risk(method, data)
+            for label, (method, data) in method_options.items()
+        }
+
+        def spc_risk_key(label: str) -> tuple[float, float, float, float]:
+            summary = spc_risk_summaries[label]
+            specification_breaches = int(summary["specification_breaches"])
+            signal_events = int(summary["signal_count"])
+            stable = summary["stable"]
+            stability_rank = 0.0 if stable is False else 1.0 if stable is True else 2.0
+            capability = float(summary["capability"]) if summary["capability"] is not None else 999.0
             return (
                 0.0 if specification_breaches else 1.0,
-                0.0 if not stable else 1.0,
+                stability_rank,
                 capability,
                 -float(signal_events),
             )
@@ -16023,7 +16007,7 @@ def render_bme_bike_quality_dashboard_v3(
 
         ranked_all_methods = sorted(
             method_options,
-            key=lambda label: (*spc_risk_key(method_options[label]), -len(method_options[label][1]), label),
+            key=lambda label: (*spc_risk_key(label), -len(method_options[label][1]), label),
         )
         linked_methods = [label for label in ranked_all_methods if matches_selected_product(label)]
         if linked_methods:
@@ -16046,16 +16030,145 @@ def render_bme_bike_quality_dashboard_v3(
             st.session_state["bme_v6_spc"] = ranked_methods[0]
         if st.session_state.get("bme_v6_spc") not in ranked_methods:
             st.session_state["bme_v6_spc"] = ranked_methods[0]
+
+        def compact_process_label(label: str) -> str:
+            parts = [part.strip() for part in str(label).split("·") if part.strip()]
+            compact = " · ".join(parts[:4])
+            return compact if len(compact) <= 72 else compact[:71] + "…"
+
+        overview_rows: list[dict[str, object]] = []
+        for label in ranked_methods:
+            summary = spc_risk_summaries[label]
+            specification_breaches = int(summary["specification_breaches"])
+            signal_count = int(summary["signal_count"])
+            if specification_breaches > 0:
+                risk_key = "specification"
+                risk_label = t("规格超限", "Outside Specification")
+            elif signal_count > 0 or summary["stable"] is False:
+                risk_key = "spc"
+                risk_label = t("SPC 需排查", "SPC Investigation")
+            else:
+                continue
+            capability = summary["capability"]
+            overview_rows.append({
+                "full_label": label,
+                "display_label": compact_process_label(label),
+                "risk_key": risk_key,
+                "risk_rank": 0 if risk_key == "specification" else 1,
+                "risk_label": risk_label,
+                "attention_rate": float(summary["attention_rate"]),
+                "signal_display": f"{signal_count:,} / {int(summary['spc_observation_count']):,} ({float(summary['signal_rate']):.1%})",
+                "specification_display": (
+                    f"{specification_breaches:,} / {int(summary['measurement_count']):,} ({float(summary['specification_rate']):.1%})"
+                    if summary["has_specification"]
+                    else t("无产品规格，仅判断过程稳定性", "No product specification; stability only")
+                ),
+                "capability_display": f"{float(capability):.2f}" if capability is not None else "N/A",
+            })
+
+        risk_overview = (
+            pd.DataFrame(overview_rows)
+            .sort_values(["risk_rank", "attention_rate"], ascending=[True, False])
+            .head(10)
+            .reset_index(drop=True)
+            if overview_rows
+            else pd.DataFrame()
+        )
+        st.markdown(f"#### {t('需要排查的部件 / 过程 Top 10', 'Components / Processes Requiring Investigation · Top 10')}")
+        st.caption(t(
+            "红色表示实测值超出源产品规格；橙色表示出现 SPC 异常规律，仅代表过程需要排查。点击任一条可打开下方详细控制图。",
+            "Red means measurements outside source product specifications. Orange means SPC patterns requiring process investigation. Select a bar to open its detailed control chart below.",
+        ))
+        if risk_overview.empty:
+            st.success(t(
+                "当前筛选范围未发现规格超限或 SPC 异常信号；仍可通过下方过程列表查看全部明细。",
+                "No specification breach or SPC signal was found under the current filters. Use the process selector below to review all details.",
+            ))
+        else:
+            risk_overview_chart_key = "bme_spc_risk_overview"
+
+            def sync_spc_from_overview() -> None:
+                event = st.session_state.get(risk_overview_chart_key, {})
+                points = event.get("selection", {}).get("points", []) if isinstance(event, dict) else []
+                if not points:
+                    return
+                customdata = points[0].get("customdata", [])
+                label = str(customdata[0]) if isinstance(customdata, (list, tuple)) and customdata else ""
+                if label in ranked_methods:
+                    st.session_state["bme_v6_spc"] = label
+
+            overview_fig = go.Figure(go.Bar(
+                x=risk_overview["attention_rate"],
+                y=risk_overview["display_label"],
+                orientation="h",
+                marker_color=risk_overview["risk_key"].map({
+                    "specification": BME_COLORS["alert"],
+                    "spc": BME_COLORS["fqc"],
+                }),
+                text=[
+                    t(f"需排查 · {rate:.1%}", f"Attention · {rate:.1%}")
+                    for rate in risk_overview["attention_rate"]
+                ],
+                textposition="outside",
+                cliponaxis=False,
+                customdata=np.column_stack([
+                    risk_overview["full_label"],
+                    risk_overview["risk_label"],
+                    risk_overview["signal_display"],
+                    risk_overview["specification_display"],
+                    risk_overview["capability_display"],
+                ]),
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    f"{t('风险类型', 'Risk type')}  %{{customdata[1]}}<br>"
+                    f"{t('SPC 异常点 / 有效观察', 'SPC signals / valid observations')}  %{{customdata[2]}}<br>"
+                    f"{t('规格超限 / 有效测量', 'Specification breaches / valid measurements')}  %{{customdata[3]}}<br>"
+                    f"Ppk / Ppl  %{{customdata[4]}}<extra></extra>"
+                ),
+            ))
+            selected_overview_points = risk_overview.index[
+                risk_overview["full_label"].eq(st.session_state.get("bme_v6_spc"))
+            ].tolist()
+            if selected_overview_points:
+                overview_fig.update_traces(
+                    selectedpoints=selected_overview_points,
+                    selected={"marker": {"opacity": 1.0}},
+                    unselected={"marker": {"opacity": 0.72}},
+                )
+            overview_fig.update_layout(
+                height=max(330, 54 * len(risk_overview) + 90),
+                margin=dict(l=20, r=145, t=12, b=38),
+                clickmode="event+select",
+                showlegend=False,
+            )
+            overview_fig.update_xaxes(
+                title_text=t(
+                    "最高异常占比（SPC 信号或规格超限）",
+                    "Highest exception share (SPC signal or specification breach)",
+                ),
+                tickformat=".0%",
+                rangemode="tozero",
+            )
+            overview_fig.update_yaxes(
+                title_text=None,
+                categoryorder="array",
+                categoryarray=risk_overview["display_label"].tolist()[::-1],
+            )
+            apply_bme_chart_style(overview_fig)
+            st.plotly_chart(
+                overview_fig,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key=risk_overview_chart_key,
+                on_select=sync_spc_from_overview,
+                selection_mode="points",
+            )
+
         with st.container(key="bme_spc_filter"):
             filter_label, filter_control = st.columns([0.13, 0.87], vertical_alignment="center")
             with filter_label:
                 st.markdown(f'<div class="bme-spc-filter-label">{html.escape(t("查看过程", "Process"))}</div>', unsafe_allow_html=True)
             with filter_control:
-                def compact_process_label(label: str) -> str:
-                    parts = [part.strip() for part in str(label).split("·") if part.strip()]
-                    compact = " · ".join(parts[:4])
-                    return compact if len(compact) <= 72 else compact[:71] + "…"
-
                 selected_method = st.selectbox(
                     t(
                         "选择同一产品的过程参数" if machine_scope_linked else "选择全厂过程（高风险优先）",
