@@ -8,6 +8,7 @@ import pandas as pd
 from bme_quality import (
     bme_events_to_alerts,
     build_spc_model_component_risk,
+    classify_torque_component_group,
     load_bme_quality_events,
     summarize_spc_process_risk,
 )
@@ -66,6 +67,13 @@ class BmeQualityDataTest(unittest.TestCase):
 
 
 class BmeSpcRiskSummaryTest(unittest.TestCase):
+    def test_torque_component_groups_preserve_functional_systems(self) -> None:
+        self.assertEqual(classify_torque_component_group("把立把横锁紧"), "cockpit")
+        self.assertEqual(classify_torque_component_group("碟刹转接座"), "brake")
+        self.assertEqual(classify_torque_component_group("曲柄BB螺丝"), "drivetrain")
+        self.assertEqual(classify_torque_component_group("前轮桶轴锁紧"), "chassis")
+        self.assertEqual(classify_torque_component_group("Unmapped fixture"), "other")
+
     def test_model_component_risk_identifies_cross_model_recurrence(self) -> None:
         rows = []
         for model_code, model_name, component, values in [

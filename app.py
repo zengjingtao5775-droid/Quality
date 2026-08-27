@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-27-v13"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-27-v14"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -54,6 +54,7 @@ load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
 summarize_spc_process_risk = _bme_quality.summarize_spc_process_risk
 build_spc_model_component_risk = _bme_quality.build_spc_model_component_risk
+classify_torque_component_group = _bme_quality.classify_torque_component_group
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -963,6 +964,105 @@ st.markdown(
     }
     .kpi-grid.bme-overall.bme-fsd-row {
         grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .kpi-grid.bme-overall.bme-risk-kpis {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+    }
+    .kpi-grid.bme-overall.bme-risk-kpis .kpi-card {
+        min-height: 96px;
+        padding: 13px 15px;
+        border-radius: 12px;
+        box-shadow: none;
+    }
+    .kpi-grid.bme-overall.bme-risk-kpis .kpi-card::before {height: 3px;}
+    .kpi-grid.bme-overall.bme-risk-kpis .kpi-label {margin-bottom: 6px;}
+    .kpi-grid.bme-overall.bme-risk-kpis .kpi-value {font-size: 1.55rem;}
+    .kpi-grid.bme-overall.bme-risk-kpis .kpi-note {margin-top: 7px;}
+    .st-key-bme_spc_risk_workspace {
+        background: #ffffff;
+        border: 1px solid #dfe5f2;
+        border-radius: 14px;
+        padding: 14px 16px 8px;
+        margin: 0 0 14px;
+        box-shadow: 0 10px 28px rgba(23, 59, 143, 0.06);
+        overflow: hidden;
+    }
+    .bme-risk-rail-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 2px 0 0;
+        padding: 0 2px 8px;
+        border-bottom: 2px solid #2f55c7;
+        color: #173b8f;
+        font-size: 0.98rem;
+        font-weight: 850;
+    }
+    .bme-risk-rail-heading span {
+        color: #98a2b3;
+        font-size: 0.72rem;
+        font-weight: 680;
+        letter-spacing: .02em;
+    }
+    .bme-risk-rail-subtitle {
+        margin: 10px 2px 0;
+        color: #344054;
+        font-size: 0.82rem;
+        font-weight: 800;
+    }
+    .bme-risk-matrix-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin: 1px 0 2px;
+        padding: 0 4px 8px;
+        border-bottom: 1px solid #e4e8f2;
+    }
+    .bme-risk-matrix-title {
+        color: #172033;
+        font-size: 0.92rem;
+        font-weight: 820;
+        white-space: nowrap;
+    }
+    .bme-risk-legend {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 12px;
+        flex-wrap: wrap;
+        color: #667085;
+        font-size: 0.73rem;
+        font-weight: 680;
+    }
+    .bme-risk-legend-item {display:flex; align-items:center; gap:5px; white-space:nowrap;}
+    .bme-risk-legend-swatch {
+        display:inline-block;
+        width:10px;
+        height:10px;
+        border-radius:3px;
+        background:#d98200;
+    }
+    .bme-risk-legend-swatch.specification {background:#c83c55;}
+    .bme-risk-legend-swatch.recurrence {
+        background:#ffffff;
+        border:2px solid #7382b8;
+        border-radius:50%;
+    }
+    .bme-risk-legend-swatch.selected {
+        width:12px;
+        height:12px;
+        background:#ffffff;
+        border:2px solid #2f55c7;
+    }
+    .bme-risk-footnote {
+        margin: -2px 4px 5px;
+        color: #667085;
+        font-size: 0.73rem;
+        line-height: 1.45;
     }
     .bme-kpi-row-label {
         margin: 18px 0 0;
@@ -2109,6 +2209,7 @@ st.markdown(
         .kpi-grid.bme-data-summary {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: repeat(2, minmax(0, 1fr));}
+        .kpi-grid.bme-overall.bme-risk-kpis {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .bme-management-grid {grid-template-columns: repeat(2, minmax(0, 1fr));}
         .bme-anchor-nav {max-width: 100%;}
         .bme-investigation-context {top: 3.35rem;}
@@ -2125,6 +2226,7 @@ st.markdown(
         .kpi-grid.bme-data-summary {grid-template-columns: 1fr;}
         .kpi-grid.bme-overall.bme-cmw-row,
         .kpi-grid.bme-overall.bme-fsd-row {grid-template-columns: 1fr;}
+        .kpi-grid.bme-overall.bme-risk-kpis {grid-template-columns: 1fr;}
         .hero-title {font-size: 1.8rem;}
         .hero {padding: 22px 20px; border-radius: 16px;}
         .bme-management-grid {grid-template-columns: 1fr;}
@@ -16221,8 +16323,8 @@ def render_bme_bike_quality_dashboard_v3(
         )
         st.markdown(f"#### {t('车型 × 扭力料件风险矩阵', 'Model × Torque Component Risk Matrix')}")
         st.caption(t(
-            "纵轴回答哪些 Model 有问题，横轴回答哪个料件的扭力有问题。红色=实测值超出源规格；橙色=SPC 异常规律；菱形=同一料件已在多个 Model 观察到风险。点击风险点打开下方控制图。",
-            "The y-axis shows which models have issues and the x-axis shows the torque component involved. Red = outside source specification; orange = SPC pattern; diamond = the same component has observed risk in multiple models. Select a point to open the control chart below.",
+            "左侧先排出需要优先关注的 Model 和料件；右侧按系统分组查看风险关系。红色=实测值超出源规格；橙色=SPC 异常规律；数字圆环=同一料件已在多个 Model 观察到风险。点击风险点打开下方控制图。",
+            "The left rail ranks models and components for attention; the grouped matrix on the right shows their relationship. Red = outside source specification; orange = SPC pattern; a numbered ring shows recurrence across models. Select a point to open the control chart below.",
         ))
         if cmw_risk_matrix.empty and risk_overview.empty:
             st.success(t(
@@ -16242,7 +16344,7 @@ def render_bme_bike_quality_dashboard_v3(
                 {"label": t("风险扭力料件", "Torque Components at Risk"), "value": f"{component_count:,}", "note": t("按源料件名称精确匹配", "Exact source component names"), "level": "medium"},
                 {"label": t("跨车型重复料件", "Cross-model Components"), "value": f"{recurring_component_count:,}", "note": t("已观察到，不代表未来预测", "Observed recurrence, not a forecast"), "level": "medium"},
                 {"label": t("机器标定风险预测", "Machine Calibration Risk"), "value": t("暂不可计算", "Unavailable"), "note": t("缺少 Machine ID 与标定记录", "Machine ID and calibration records missing"), "level": "medium"},
-            ], variant="bme-overall bme-cmw-row")
+            ], variant="bme-overall bme-risk-kpis")
 
             component_priority = (
                 cmw_risk_matrix.groupby("component", as_index=False)
@@ -16257,12 +16359,36 @@ def render_bme_bike_quality_dashboard_v3(
                     ascending=[True, False, False, False],
                 )
             )
-            component_order = component_priority.head(15)["component"].tolist()
+            priority_component_order = component_priority.head(15)["component"].tolist()
             matrix_view = cmw_risk_matrix[
-                cmw_risk_matrix["component"].isin(component_order)
+                cmw_risk_matrix["component"].isin(priority_component_order)
             ].copy().reset_index(drop=True)
+            group_definitions = {
+                "cockpit": t("操控 / 骑乘", "Cockpit / Contact"),
+                "brake": t("制动系统", "Braking"),
+                "drivetrain": t("传动系统", "Drivetrain"),
+                "chassis": t("轮组 / 车架", "Wheel / Chassis"),
+                "other": t("其他", "Other"),
+            }
+            group_order = list(group_definitions)
+            priority_position = {
+                component: position
+                for position, component in enumerate(priority_component_order)
+            }
+            component_groups = {
+                component: classify_torque_component_group(component)
+                for component in priority_component_order
+            }
+            component_order = sorted(
+                priority_component_order,
+                key=lambda component: (
+                    group_order.index(component_groups[component]),
+                    priority_position[component],
+                ),
+            )
+            matrix_view["component_group"] = matrix_view["component"].map(component_groups)
             model_priority = (
-                matrix_view.groupby(["model_code", "model_name"], as_index=False)
+                matrix_view.groupby(["model_code", "model_display"], as_index=False)
                 .agg(
                     risk_rank=("risk_rank", "min"),
                     specification_breaches=("specification_breaches", "sum"),
@@ -16274,7 +16400,7 @@ def render_bme_bike_quality_dashboard_v3(
                     ascending=[True, False, False, False],
                 )
             )
-            model_order = model_priority["model_name"].tolist()
+            model_order = model_priority["model_display"].tolist()
             matrix_view["risk_label"] = matrix_view["risk_key"].map({
                 "specification": t("规格超限", "Outside Specification"),
                 "spc": t("SPC 需排查", "SPC Investigation"),
@@ -16292,7 +16418,13 @@ def render_bme_bike_quality_dashboard_v3(
             matrix_view["capability_display"] = matrix_view["capability"].map(
                 lambda value: f"{float(value):.2f}" if pd.notna(value) else "N/A"
             )
-            matrix_view["marker_size"] = 15 + matrix_view["attention_rate"].clip(0, 1) * 32
+            matrix_view["marker_size"] = 12 + matrix_view["attention_rate"].clip(0, 1) * 8
+            matrix_view["matrix_x"] = matrix_view["component"].map(
+                {component: index for index, component in enumerate(component_order)}
+            )
+            matrix_view["matrix_y"] = matrix_view["model_display"].map(
+                {model: index for index, model in enumerate(model_order)}
+            )
             risk_overview_chart_key = "bme_spc_risk_overview"
 
             def sync_spc_from_overview() -> None:
@@ -16305,67 +16437,339 @@ def render_bme_bike_quality_dashboard_v3(
                 if label in ranked_methods:
                     st.session_state["bme_v6_spc"] = label
 
-            overview_fig = go.Figure(go.Scatter(
-                x=matrix_view["component"],
-                y=matrix_view["model_name"],
-                mode="markers",
-                marker={
-                    "size": matrix_view["marker_size"],
-                    "color": matrix_view["risk_key"].map({"specification": BME_COLORS["alert"], "spc": BME_COLORS["fqc"]}),
-                    "symbol": np.where(matrix_view["recurs_across_models"], "diamond", "circle"),
-                    "line": {"width": 1.3, "color": "rgba(255,255,255,.95)"},
-                    "opacity": 0.88,
-                },
-                customdata=np.column_stack([
-                    matrix_view["full_label"], matrix_view["risk_label"], matrix_view["model_code"],
-                    matrix_view["component"], matrix_view["signal_count"], matrix_view["signal_rate"],
-                    matrix_view["specification_breaches"], matrix_view["measurement_count"],
-                    matrix_view["specification_rate"], matrix_view["recurrence_display"],
-                    matrix_view["other_models_display"], matrix_view["capability_display"],
-                ]),
-                hovertemplate=(
-                    f"<b>Model  %{{y}}</b><br>"
-                    f"{t('整车料号', 'Model code')}  %{{customdata[2]}}<br>"
-                    f"{t('扭力料件', 'Torque component')}  %{{customdata[3]}}<br>"
-                    f"{t('风险类型', 'Risk type')}  %{{customdata[1]}}<br>"
-                    f"{t('SPC 异常点', 'SPC signals')}  %{{customdata[4]}} (%{{customdata[5]:.1%}})<br>"
-                    f"{t('规格超限', 'Specification breaches')}  %{{customdata[6]}} / %{{customdata[7]}} (%{{customdata[8]:.1%}})<br>"
-                    f"{t('跨车型观察', 'Cross-model observation')}  %{{customdata[9]}}<br>"
-                    f"{t('其他风险车型', 'Other models with risk')}  %{{customdata[10]}}<br>"
-                    f"Ppk  %{{customdata[11]}}<extra></extra>"
-                ),
-            ))
-            selected_overview_points = matrix_view.index[
-                matrix_view["full_label"].eq(st.session_state.get("bme_v6_spc"))
-            ].tolist()
-            if selected_overview_points:
-                overview_fig.update_traces(
-                    selectedpoints=selected_overview_points,
-                    selected={"marker": {"opacity": 1.0}},
-                    unselected={"marker": {"opacity": 0.72}},
+            def risk_customdata(frame: pd.DataFrame) -> np.ndarray:
+                return np.column_stack([
+                    frame["full_label"], frame["risk_label"], frame["model_code"],
+                    frame["component"], frame["signal_count"], frame["signal_rate"],
+                    frame["specification_breaches"], frame["measurement_count"],
+                    frame["specification_rate"], frame["recurrence_display"],
+                    frame["other_models_display"], frame["capability_display"],
+                    frame["model_display"],
+                ])
+
+            risk_hovertemplate = (
+                f"<b>Model  %{{customdata[12]}}</b><br>"
+                f"{t('整车料号', 'Model code')}  %{{customdata[2]}}<br>"
+                f"{t('扭力料件', 'Torque component')}  %{{customdata[3]}}<br>"
+                f"{t('风险类型', 'Risk type')}  %{{customdata[1]}}<br>"
+                f"{t('SPC 异常点', 'SPC signals')}  %{{customdata[4]}} (%{{customdata[5]:.1%}})<br>"
+                f"{t('规格超限', 'Specification breaches')}  %{{customdata[6]}} / %{{customdata[7]}} (%{{customdata[8]:.1%}})<br>"
+                f"{t('跨车型观察', 'Cross-model observation')}  %{{customdata[9]}}<br>"
+                f"{t('其他风险车型', 'Other models with risk')}  %{{customdata[10]}}<br>"
+                f"Ppk  %{{customdata[11]}}<extra></extra>"
+            )
+
+            def build_priority_rail(
+                rail_data: pd.DataFrame,
+                order: list[str],
+                *,
+                index_column: str,
+                count_column: str,
+                height: int,
+            ) -> go.Figure:
+                counts = (
+                    rail_data.groupby([index_column, "risk_key"])[count_column]
+                    .nunique()
+                    .unstack(fill_value=0)
+                    .reindex(index=order, fill_value=0)
                 )
+                specification = counts.get("specification", pd.Series(0, index=counts.index)).astype(int)
+                spc = counts.get("spc", pd.Series(0, index=counts.index)).astype(int)
+                figure = go.Figure()
+                figure.add_bar(
+                    x=specification,
+                    y=counts.index,
+                    orientation="h",
+                    name=t("规格超限", "Outside specification"),
+                    marker_color=BME_COLORS["alert"],
+                    text=np.where(specification.gt(0), specification.astype(str), ""),
+                    textposition="inside",
+                    insidetextanchor="middle",
+                    hovertemplate=f"<b>%{{y}}</b><br>{t('规格风险料件/车型', 'Specification-risk components/models')}  %{{x}}<extra></extra>",
+                )
+                figure.add_bar(
+                    x=spc,
+                    y=counts.index,
+                    orientation="h",
+                    name=t("SPC 需排查", "SPC investigation"),
+                    marker_color=BME_COLORS["fqc"],
+                    text=np.where(spc.gt(0), spc.astype(str), ""),
+                    textposition="inside",
+                    insidetextanchor="middle",
+                    hovertemplate=f"<b>%{{y}}</b><br>{t('SPC 风险料件/车型', 'SPC-risk components/models')}  %{{x}}<extra></extra>",
+                )
+                figure.update_layout(
+                    barmode="stack",
+                    height=height,
+                    margin=dict(l=4, r=8, t=4, b=10),
+                    showlegend=False,
+                    bargap=0.46,
+                    uniformtext_minsize=9,
+                    uniformtext_mode="hide",
+                )
+                figure.update_xaxes(visible=False, fixedrange=True)
+                figure.update_yaxes(
+                    categoryorder="array",
+                    categoryarray=order[::-1],
+                    fixedrange=True,
+                    gridcolor="rgba(0,0,0,0)",
+                    tickfont={"size": 11, "color": "#344054"},
+                )
+                apply_bme_chart_style(figure)
+                return figure
+
+            top_models = model_order[:5]
+            top_components = priority_component_order[:5]
+            model_rail_fig = build_priority_rail(
+                matrix_view,
+                top_models,
+                index_column="model_display",
+                count_column="component",
+                height=205,
+            )
+            component_rail_fig = build_priority_rail(
+                matrix_view,
+                top_components,
+                index_column="component",
+                count_column="model_code",
+                height=225,
+            )
+
+            overview_fig = go.Figure()
+            selected_label = st.session_state.get("bme_v6_spc")
+            selected_matrix_row = matrix_view[matrix_view["full_label"].eq(selected_label)]
+            if not selected_matrix_row.empty:
+                overview_fig.add_trace(go.Scatter(
+                    x=selected_matrix_row["matrix_x"],
+                    y=selected_matrix_row["matrix_y"],
+                    mode="markers",
+                    marker={
+                        "size": selected_matrix_row["marker_size"] + 11,
+                        "color": "rgba(255,255,255,0)",
+                        "symbol": "square-open",
+                        "line": {"color": BME_COLORS["primary"], "width": 2.8},
+                    },
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
+            for risk_key, risk_name, color in [
+                ("specification", t("规格超限", "Outside Specification"), BME_COLORS["alert"]),
+                ("spc", t("SPC 需排查", "SPC Investigation"), BME_COLORS["fqc"]),
+            ]:
+                trace_data = matrix_view[matrix_view["risk_key"].eq(risk_key)].copy()
+                if trace_data.empty:
+                    continue
+                selected_points = np.flatnonzero(
+                    trace_data["full_label"].eq(selected_label).to_numpy()
+                ).tolist()
+                overview_fig.add_trace(go.Scatter(
+                    x=trace_data["matrix_x"],
+                    y=trace_data["matrix_y"],
+                    mode="markers",
+                    name=risk_name,
+                    marker={
+                        "size": trace_data["marker_size"],
+                        "color": color,
+                        "symbol": "square",
+                        "line": {
+                            "width": np.where(trace_data["recurs_across_models"], 2.0, 1.0),
+                            "color": np.where(trace_data["recurs_across_models"], "#7382B8", "rgba(255,255,255,.95)"),
+                        },
+                        "opacity": 0.94,
+                    },
+                    customdata=risk_customdata(trace_data),
+                    hovertemplate=risk_hovertemplate,
+                    selectedpoints=selected_points,
+                    selected={"marker": {"opacity": 1.0, "size": 24}},
+                    unselected={"marker": {"opacity": 0.78}},
+                ))
+
+            recurring_points = (
+                matrix_view[matrix_view["recurs_across_models"]]
+                .sort_values(
+                    ["risk_rank", "attention_rate"],
+                    ascending=[True, False],
+                )
+                .drop_duplicates("component")
+                .copy()
+            )
+            if not recurring_points.empty:
+                overview_fig.add_trace(go.Scatter(
+                    x=recurring_points["matrix_x"] + 0.17,
+                    y=recurring_points["matrix_y"] - 0.20,
+                    mode="markers+text",
+                    name=t("跨车型重复", "Cross-model recurrence"),
+                    marker={
+                        "size": 15,
+                        "color": "#FFFFFF",
+                        "symbol": "circle",
+                        "line": {"width": 1.2, "color": "#9AA7C4"},
+                    },
+                    text=recurring_points["affected_model_count"].astype(int).astype(str),
+                    textposition="middle center",
+                    textfont={"size": 9, "color": "#475467"},
+                    customdata=risk_customdata(recurring_points),
+                    hovertemplate=risk_hovertemplate,
+                    showlegend=False,
+                ))
+
+            for row_index in range(len(model_order)):
+                if row_index % 2 == 0:
+                    overview_fig.add_hrect(
+                        y0=row_index - 0.5,
+                        y1=row_index + 0.5,
+                        fillcolor="#F7F9FD",
+                        line_width=0,
+                        layer="below",
+                    )
+
+            active_groups: list[tuple[str, list[int]]] = []
+            for group_key in group_order:
+                positions = [
+                    index
+                    for index, component in enumerate(component_order)
+                    if component_groups[component] == group_key
+                ]
+                if positions:
+                    active_groups.append((group_key, positions))
+            for group_index, (group_key, positions) in enumerate(active_groups):
+                start, end = min(positions), max(positions)
+                if group_index % 2 == 1:
+                    overview_fig.add_vrect(
+                        x0=start - 0.5,
+                        x1=end + 0.5,
+                        fillcolor="rgba(47,85,199,.025)",
+                        line_width=0,
+                        layer="below",
+                    )
+                overview_fig.add_annotation(
+                    x=(start + end) / 2,
+                    y=1.10,
+                    xref="x",
+                    yref="paper",
+                    text=f"<b>{group_definitions[group_key]} ({len(positions)})</b>",
+                    showarrow=False,
+                    font={"size": 12, "color": BME_COLORS["primary"]},
+                )
+                overview_fig.add_shape(
+                    type="line",
+                    x0=start - 0.42,
+                    x1=end + 0.42,
+                    y0=1.055,
+                    y1=1.055,
+                    xref="x",
+                    yref="paper",
+                    line={"color": "#AEBBEB", "width": 1.4},
+                )
+                if group_index < len(active_groups) - 1:
+                    overview_fig.add_vline(
+                        x=end + 0.5,
+                        line_width=1.1,
+                        line_color="#D3DAEA",
+                        layer="below",
+                    )
+
+            def wrap_component_label(value: str) -> str:
+                label = str(value)
+                replacements = {
+                    "坐垫与坐垫杆（螺母）": "坐垫 / 坐杆",
+                    "前叉竖管与把立（竖管两侧）": "前叉竖管 / 把立",
+                    "变把（指拨）锁紧螺丝": "变把（指拨）",
+                    "变把（转把）锁紧螺丝": "变把（转把）",
+                    "把立把横锁紧": "把立 / 把横",
+                    "曲柄BB螺丝": "曲柄 BB",
+                    "后变速器螺丝": "后变速器",
+                    "变速线锁紧": "变速线",
+                }
+                label = replacements.get(label, label)
+                if len(label) <= 7:
+                    return label
+                split_at = min(7, max(4, len(label) // 2))
+                return f"{label[:split_at]}<br>{label[split_at:]}"
+
             overview_fig.update_layout(
-                height=max(480, 54 * len(model_order) + 170),
-                margin=dict(l=20, r=25, t=20, b=150),
+                height=max(535, 43 * len(model_order) + 165),
+                margin=dict(l=8, r=8, t=78, b=145),
                 clickmode="event+select",
                 showlegend=False,
+                hovermode="closest",
             )
             overview_fig.update_xaxes(
                 title_text=t("扭力料件（风险优先 Top 15）", "Torque Component (Risk-priority Top 15)"),
-                categoryorder="array", categoryarray=component_order, tickangle=-35,
+                tickmode="array",
+                tickvals=list(range(len(component_order))),
+                ticktext=[wrap_component_label(component) for component in component_order],
+                tickangle=-28,
+                range=[-0.55, len(component_order) - 0.45],
+                fixedrange=True,
+                automargin=True,
             )
             overview_fig.update_yaxes(
-                title_text="Model", categoryorder="array", categoryarray=model_order[::-1], automargin=True,
+                title_text="",
+                tickmode="array",
+                tickvals=list(range(len(model_order))),
+                ticktext=model_order,
+                range=[len(model_order) - 0.45, -0.55],
+                fixedrange=True,
+                automargin=True,
             )
             apply_bme_chart_style(overview_fig)
-            st.plotly_chart(
-                overview_fig,
-                use_container_width=True,
-                config={"displayModeBar": False},
-                key=risk_overview_chart_key,
-                on_select=sync_spc_from_overview,
-                selection_mode="points",
-            )
+
+            with st.container(key="bme_spc_risk_workspace"):
+                priority_column, matrix_column = st.columns(
+                    [0.24, 0.76], gap="large", vertical_alignment="top"
+                )
+                with priority_column:
+                    st.markdown(
+                        f'<div class="bme-risk-rail-heading">{html.escape(t("优先关注", "Priority Rail"))}'
+                        f'<span>TOP 5</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f'<div class="bme-risk-rail-subtitle">{html.escape(t("高风险车型", "Models requiring attention"))}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.plotly_chart(
+                        model_rail_fig,
+                        use_container_width=True,
+                        config={"displayModeBar": False, "staticPlot": False},
+                        key="bme_spc_priority_models",
+                    )
+                    st.markdown(
+                        f'<div class="bme-risk-rail-subtitle">{html.escape(t("高风险扭力料件", "Torque components requiring attention"))}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.plotly_chart(
+                        component_rail_fig,
+                        use_container_width=True,
+                        config={"displayModeBar": False, "staticPlot": False},
+                        key="bme_spc_priority_components",
+                    )
+                with matrix_column:
+                    st.markdown(
+                        f'''<div class="bme-risk-matrix-heading">
+                          <div class="bme-risk-matrix-title">{html.escape(t("分组风险矩阵", "Grouped Risk Matrix"))}</div>
+                          <div class="bme-risk-legend">
+                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch specification"></i>{html.escape(t("规格超限", "Outside specification"))}</span>
+                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch"></i>{html.escape(t("SPC 需排查", "SPC investigation"))}</span>
+                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch recurrence"></i>{html.escape(t("跨车型重复", "Cross-model recurrence"))}</span>
+                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch selected"></i>{html.escape(t("已选中", "Selected"))}</span>
+                          </div>
+                        </div>''',
+                        unsafe_allow_html=True,
+                    )
+                    st.plotly_chart(
+                        overview_fig,
+                        use_container_width=True,
+                        config={"displayModeBar": False},
+                        key=risk_overview_chart_key,
+                        on_select=sync_spc_from_overview,
+                        selection_mode="points",
+                    )
+                    st.markdown(
+                        f'<div class="bme-risk-footnote">{html.escape(t("方块大小表示关注率；数字圆环表示该料件已出现风险的车型数量。空白单元格不等于零风险。", "Marker size reflects attention rate; the numbered ring shows the number of models with observed risk. A blank cell does not mean zero risk."))}</div>',
+                        unsafe_allow_html=True,
+                    )
             st.info(t(
                 "机器标定风险预测暂不可计算：当前源数据没有 Machine ID，无法判断跨车型异常是否来自同一台机器。未来需补充 Machine ID、设备型号、最近/下次标定日期、标定结果、工单、测量时间、扭力工具状态和维修记录，才能训练或设定机器失准预警。",
                 "Machine calibration risk is currently unavailable: the source has no Machine ID, so cross-model recurrence cannot be attributed to the same machine. Future prediction requires Machine ID, equipment model, last/next calibration date, calibration result, work order, measurement timestamp, torque-tool status, and maintenance history.",

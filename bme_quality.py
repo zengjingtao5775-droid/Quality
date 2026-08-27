@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-27-v13"
+BME_QUALITY_LOGIC_VERSION = "2026-08-27-v14"
 
 
 EVENT_COLUMNS = [
@@ -503,6 +503,36 @@ def build_spc_model_component_risk(
     risk["other_models"] = other_labels
     risk["recurs_across_models"] = risk["affected_model_count"].gt(1)
     return risk[columns]
+
+
+def classify_torque_component_group(component: object) -> str:
+    """Group source torque-component names for the matrix presentation.
+
+    The grouping changes only the visual column order. Source component names
+    remain exact and all risk/SPC calculations continue to use the source grain.
+    """
+    text = str(component or "").strip().lower()
+    if any(token in text for token in (
+        "碟刹", "v刹", "刹车", "刹把", "刹车块", "油管", "brake",
+    )):
+        return "brake"
+    if any(token in text for token in (
+        "bb", "曲柄", "飞轮", "变速", "指拨", "转把", "挡链", "crank",
+        "cassette", "derailleur", "drivetrain",
+    )):
+        return "drivetrain"
+    if any(token in text for token in (
+        "把立", "把横", "握把", "副把", "坐垫", "坐管", "坐杆", "saddle",
+        "seat", "stem", "handlebar", "grip",
+    )):
+        return "cockpit"
+    if any(token in text for token in (
+        "前叉", "后避震", "轮", "桶轴", "花鼓", "吊心", "吊耳", "快拆",
+        "挡泥板", "货架", "脚撑", "灯", "反光", "fork", "wheel", "hub",
+        "axle", "frame",
+    )):
+        return "chassis"
+    return "other"
 
 
 def _finalize_event_flags(frame: pd.DataFrame) -> pd.DataFrame:
