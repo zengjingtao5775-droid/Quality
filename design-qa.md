@@ -35,7 +35,7 @@
 1. P1: 15 horizontal component labels initially collided at the target viewport.
    - Fixed by using concise two-line display labels and a 10 px axis font while preserving exact source names in hover data.
 2. P1: long model names clipped in the 18% rail.
-   - Fixed by changing the rail/matrix split to 20/80 and enabling axis auto margins.
+   - Fixed by changing the rail/matrix split to 20/80, enabling axis auto margins, and shortening only rail display labels while retaining exact names in hover data.
 3. P2: the last one-column `其他` group competed with the wheel/chassis header.
    - Fixed by grouping the source `太阳花` component with wheel/chassis.
 4. P2: recurrence badges and independent KPI cards created visual noise.

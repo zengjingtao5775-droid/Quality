@@ -16552,6 +16552,24 @@ def render_bme_bike_quality_dashboard_v3(
                 spc = counts.get("spc", pd.Series(0, index=counts.index)).astype(int)
                 maximum_total = max(1, int((specification + spc).max()))
                 remainder = (maximum_total - specification - spc).clip(lower=0)
+                def priority_display_label(value: object) -> str:
+                    label = str(value)
+                    compact_model = label.upper().replace(" ", "")
+                    if "EXPL900HD" in compact_model:
+                        return "26” E900HD" if compact_model.startswith("26") else "E900HD"
+                    if "EXPL500" in compact_model:
+                        return "26” E500" if compact_model.startswith("26") else "E500"
+                    if "EXPL900" in compact_model:
+                        return "24” E900" if compact_model.startswith("24") else "E900"
+                    replacements = {
+                        "EXPL 100 MULTI": "EXPL 100",
+                        "坐垫与坐垫杆（螺母）": "坐垫 / 坐杆",
+                        "前叉竖管与把立（竖管两侧）": "前叉 / 把立",
+                        "变把（指拨）锁紧螺丝": "变把 / 指拨",
+                        "变把（转把）锁紧螺丝": "变把 / 转把",
+                    }
+                    label = replacements.get(label, label)
+                    return f"{label[:9]}…" if len(label) > 10 else label
                 figure = go.Figure()
                 figure.add_bar(
                     x=specification,
@@ -16589,6 +16607,9 @@ def render_bme_bike_quality_dashboard_v3(
                 figure.update_yaxes(
                     categoryorder="array",
                     categoryarray=order[::-1],
+                    tickmode="array",
+                    tickvals=order,
+                    ticktext=[priority_display_label(value) for value in order],
                     fixedrange=True,
                     gridcolor="rgba(0,0,0,0)",
                     tickfont={"size": 10, "color": "#475467"},
