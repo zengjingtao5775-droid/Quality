@@ -14932,68 +14932,61 @@ def render_bme_bike_quality_dashboard_v3(
         elif preset == "YTD":
             st.session_state["bme_v4_dates"] = (ytd_start, max_date)
 
-    def reset_bme_top_filters() -> None:
+    def reset_bme_sidebar_filters() -> None:
         st.session_state["bme_v4_supplier"] = suppliers
         st.session_state["bme_v4_period_preset"] = "R12M"
         st.session_state["bme_v4_period_control_zh"] = "R12M"
         st.session_state["bme_v4_period_control_en"] = "R12M"
         st.session_state["bme_v4_dates"] = (r12m_start, max_date)
 
-    with st.container(key="bme_top_filter"):
-        current_period = st.session_state.get("bme_v4_period_preset", "R12M")
-        with st.expander(t(f"筛选 · {current_period}", f"Filters · {current_period}"), expanded=True):
-            filter_cols = st.columns([1.15, 1.05, 1.05, 0.42], gap="small", vertical_alignment="bottom")
-            selected_suppliers_value = filter_cols[0].segmented_control(
-                t("供应商", "Supplier"),
-                suppliers,
-                default=suppliers,
-                key="bme_v4_supplier",
-                selection_mode="multi",
-                width="stretch",
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(t("**筛选条件**", "**Filters**"))
+    current_period = st.session_state.get("bme_v4_period_preset", "R12M")
+    with st.sidebar.expander(t("筛选", "Filters"), expanded=True):
+        selected_suppliers = st.multiselect(
+            t("供应商", "Supplier"),
+            suppliers,
+            default=suppliers,
+            key="bme_v4_supplier",
+        )
+        st.segmented_control(
+            t("日期周期", "Period"),
+            ["R12M", "YTD", "Custom"],
+            default=current_period,
+            key=period_control_key,
+            on_change=sync_bme_period_dates,
+            selection_mode="single",
+            format_func=lambda value: t("自定义", "Custom") if value == "Custom" else value,
+            width="stretch",
+        )
+        selected_period = st.session_state.get("bme_v4_period_preset", current_period)
+        if selected_period not in {"R12M", "YTD", "Custom"}:
+            selected_period = current_period
+        if selected_period == "Custom":
+            selected_dates = st.date_input(
+                t("自定义日期", "Custom dates"),
+                value=(r12m_start, max_date),
+                min_value=min_date,
+                max_value=max_date,
+                key="bme_v4_dates",
             )
-            selected_suppliers = list(
-                selected_suppliers_value
-                if selected_suppliers_value is not None
-                else (st.session_state.get("bme_v4_supplier", suppliers) or suppliers)
+        else:
+            selected_dates = st.session_state.get(
+                "bme_v4_dates",
+                (r12m_start, max_date) if selected_period == "R12M" else (ytd_start, max_date),
             )
-            filter_cols[1].segmented_control(
-                t("日期周期", "Period"),
-                ["R12M", "YTD", "Custom"],
-                default=current_period,
-                key=period_control_key,
-                on_change=sync_bme_period_dates,
-                width="stretch",
-            )
-            selected_period = st.session_state.get("bme_v4_period_preset", current_period)
-            if selected_period not in {"R12M", "YTD", "Custom"}:
-                selected_period = current_period
-            if selected_period == "Custom":
-                selected_dates = filter_cols[2].date_input(
-                    t("自定义日期", "Custom dates"),
-                    value=(r12m_start, max_date),
-                    min_value=min_date,
-                    max_value=max_date,
-                    key="bme_v4_dates",
-                )
-            else:
-                selected_dates = st.session_state.get(
-                    "bme_v4_dates",
-                    (r12m_start, max_date) if selected_period == "R12M" else (ytd_start, max_date),
-                )
-                period_start = r12m_start if selected_period == "R12M" else ytd_start
-                filter_cols[2].markdown(
-                    f"<div class='bme-filter-date-chip'>{period_start} — {max_date}</div>",
-                    unsafe_allow_html=True,
-                )
-            filter_cols[3].button(
-                t("重置", "Reset"),
-                key="bme_reset_top_filters",
-                use_container_width=True,
-                on_click=reset_bme_top_filters,
-            )
-            start_date, end_date = default_start, max_date
-            if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
-                start_date, end_date = selected_dates
+            period_start = r12m_start if selected_period == "R12M" else ytd_start
+            st.caption(t("当前日期范围", "Current date range"))
+            st.markdown(f"**{period_start} — {max_date}**")
+        st.button(
+            t("重置筛选", "Reset filters"),
+            key="bme_reset_sidebar_filters",
+            use_container_width=True,
+            on_click=reset_bme_sidebar_filters,
+        )
+        start_date, end_date = default_start, max_date
+        if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
+            start_date, end_date = selected_dates
     supplier_chip = " · ".join(selected_suppliers) if selected_suppliers else t("未选择供应商", "No supplier selected")
     with hero_slot.container():
         st.markdown(
