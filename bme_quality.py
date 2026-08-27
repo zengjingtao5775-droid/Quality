@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-27-v12"
+BME_QUALITY_LOGIC_VERSION = "2026-08-27-v13"
 
 
 EVENT_COLUMNS = [
@@ -394,6 +394,115 @@ def summarize_spc_process_risk(method: str, frame: pd.DataFrame) -> dict[str, ob
         "attention_rate": float(max(signal_rate, specification_rate)),
     })
     return summary
+
+
+def build_spc_model_component_risk(
+    frame: pd.DataFrame,
+    summaries: dict[str, dict[str, object]] | None = None,
+) -> pd.DataFrame:
+    """Map CMW torque risk by model and exact source component name.
+
+    Cross-model recurrence is observational: a component is marked recurring
+    only when the current data contains a risky homogeneous sequence for the
+    same exact source component name in more than one model. It is not a
+    prediction that the issue will occur in another model.
+    """
+    columns = [
+        "full_label", "model_code", "model_name", "model_display",
+        "component", "spec_low", "spec_high", "unit", "risk_key",
+        "risk_rank", "attention_rate", "measurement_count", "signal_count",
+        "signal_rate", "specification_breaches", "specification_rate",
+        "capability", "affected_model_count", "affected_models",
+        "other_models", "recurs_across_models",
+    ]
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict[str, object]] = []
+    group_columns = [
+        "model_item_code", "item_name", "process", "spec_low", "spec_high", "unit"
+    ]
+    for keys, group in frame.groupby(group_columns, dropna=False):
+        if len(group) < 5:
+            continue
+        model_code = str(keys[0]).strip() if pd.notna(keys[0]) else ""
+        model_name = str(keys[1]).strip() if pd.notna(keys[1]) else ""
+        model_display = model_name or model_code or "Unrecorded model"
+        component = str(keys[2]).strip() if pd.notna(keys[2]) else "Unrecorded component"
+        full_label = (
+            f"CMW · I-MR · {model_display} · {component} · "
+            f"{keys[3]}–{keys[4]} {keys[5]}"
+        )
+        summary = (
+            summaries[full_label]
+            if summaries is not None and full_label in summaries
+            else summarize_spc_process_risk("imr", group)
+        )
+        specification_breaches = int(summary["specification_breaches"])
+        signal_count = int(summary["signal_count"])
+        if specification_breaches > 0:
+            risk_key = "specification"
+            risk_rank = 0
+        elif signal_count > 0 or summary["stable"] is False:
+            risk_key = "spc"
+            risk_rank = 1
+        else:
+            continue
+        rows.append({
+            "full_label": full_label,
+            "model_code": model_code,
+            "model_name": model_name,
+            "model_display": model_display,
+            "component": component,
+            "spec_low": keys[3],
+            "spec_high": keys[4],
+            "unit": keys[5],
+            "risk_key": risk_key,
+            "risk_rank": risk_rank,
+            "attention_rate": float(summary["attention_rate"]),
+            "measurement_count": int(summary["measurement_count"]),
+            "signal_count": signal_count,
+            "signal_rate": float(summary["signal_rate"]),
+            "specification_breaches": specification_breaches,
+            "specification_rate": float(summary["specification_rate"]),
+            "capability": summary["capability"],
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    risk = pd.DataFrame(rows)
+    risk = risk.sort_values(
+        ["risk_rank", "attention_rate", "model_display", "component"],
+        ascending=[True, False, True, True],
+    ).reset_index(drop=True)
+
+    component_models: dict[str, list[tuple[str, str]]] = {}
+    for component, component_rows in risk.groupby("component", sort=False):
+        model_rows = (
+            component_rows.sort_values(
+                ["risk_rank", "attention_rate"], ascending=[True, False]
+            )[["model_code", "model_display"]]
+            .drop_duplicates("model_code")
+        )
+        component_models[str(component)] = [
+            (str(row.model_code), str(row.model_display))
+            for row in model_rows.itertuples(index=False)
+        ]
+
+    affected_counts: list[int] = []
+    affected_labels: list[str] = []
+    other_labels: list[str] = []
+    for row in risk.itertuples(index=False):
+        models = component_models[str(row.component)]
+        affected_counts.append(len(models))
+        affected_labels.append("、".join(label for _, label in models))
+        others = [label for code, label in models if code != str(row.model_code)]
+        other_labels.append("、".join(others))
+    risk["affected_model_count"] = affected_counts
+    risk["affected_models"] = affected_labels
+    risk["other_models"] = other_labels
+    risk["recurs_across_models"] = risk["affected_model_count"].gt(1)
+    return risk[columns]
 
 
 def _finalize_event_flags(frame: pd.DataFrame) -> pd.DataFrame:

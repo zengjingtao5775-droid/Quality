@@ -7,6 +7,7 @@ import pandas as pd
 
 from bme_quality import (
     bme_events_to_alerts,
+    build_spc_model_component_risk,
     load_bme_quality_events,
     summarize_spc_process_risk,
 )
@@ -65,6 +66,37 @@ class BmeQualityDataTest(unittest.TestCase):
 
 
 class BmeSpcRiskSummaryTest(unittest.TestCase):
+    def test_model_component_risk_identifies_cross_model_recurrence(self) -> None:
+        rows = []
+        for model_code, model_name, component, values in [
+            ("A", "MODEL A", "Stem bolts", [10.0, 10.1, 9.9, 10.0, 12.0, 10.1]),
+            ("B", "MODEL B", "Stem bolts", [10.0, 10.2, 9.8, 10.1, 11.5, 10.0]),
+            ("C", "MODEL C", "Crank bolt", [10.0, 10.1, 9.9, 10.0, 10.1, 10.0]),
+        ]:
+            for value in values:
+                rows.append({
+                    "model_item_code": model_code,
+                    "item_name": model_name,
+                    "process": component,
+                    "spec_low": 9.0,
+                    "spec_high": 11.0,
+                    "unit": "N.m",
+                    "event_timestamp": pd.Timestamp("2026-01-01") + pd.Timedelta(days=len(rows)),
+                    "date": pd.Timestamp("2026-01-01") + pd.Timedelta(days=len(rows)),
+                    "source_row": len(rows) + 2,
+                    "measured_value": value,
+                    "data_quality_flag": "",
+                })
+
+        risk = build_spc_model_component_risk(pd.DataFrame(rows))
+
+        stem = risk[risk["component"].eq("Stem bolts")]
+        self.assertEqual(set(stem["model_name"]), {"MODEL A", "MODEL B"})
+        self.assertTrue(stem["recurs_across_models"].all())
+        self.assertTrue(stem["affected_model_count"].eq(2).all())
+        self.assertEqual(stem.loc[stem["model_code"].eq("A"), "other_models"].iloc[0], "MODEL B")
+        self.assertNotIn("MODEL C", set(risk["model_name"]))
+
     def test_imr_summary_separates_specification_breaches_from_spc_signals(self) -> None:
         frame = pd.DataFrame({
             "event_timestamp": pd.date_range("2026-01-01", periods=6, freq="D"),

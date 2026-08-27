@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-27-v12"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-27-v13"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -53,6 +53,7 @@ calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
 summarize_spc_process_risk = _bme_quality.summarize_spc_process_risk
+build_spc_model_component_risk = _bme_quality.build_spc_model_component_risk
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -16145,11 +16146,18 @@ def render_bme_bike_quality_dashboard_v3(
         )
         linked_methods = [label for label in ranked_all_methods if matches_selected_product(label)]
         if linked_methods:
-            ranked_methods = linked_methods
+            # Keep the linked product first, while retaining the factory-wide
+            # process list so the matrix can open the same component in other
+            # models for comparison.
+            linked_method_set = set(linked_methods)
+            ranked_methods = linked_methods + [
+                label for label in ranked_all_methods if label not in linked_method_set
+            ]
             machine_scope_linked = True
-            machine_scope_note_cn = "当前控制图已与上方所选产品对应。"
-            machine_scope_note_en = "The control chart is linked to the product selected above."
+            machine_scope_note_cn = "默认过程已与上方所选产品对应；也可从风险矩阵打开其他车型作比较。"
+            machine_scope_note_en = "The default process is linked to the selected product; the risk matrix can also open another model for comparison."
         else:
+            linked_method_set = set()
             ranked_methods = ranked_all_methods
             machine_scope_note_cn = "当前控制图来自全厂 Machine Data，与上方所选款式未建立关联。"
             machine_scope_note_en = "The control chart uses factory-wide Machine Data and is not linked to the product selected above."
@@ -16208,17 +16216,83 @@ def render_bme_bike_quality_dashboard_v3(
             if overview_rows
             else pd.DataFrame()
         )
-        st.markdown(f"#### {t('需要排查的部件 / 过程 Top 10', 'Components / Processes Requiring Investigation · Top 10')}")
+        cmw_risk_matrix = build_spc_model_component_risk(
+            cmw_torque, spc_risk_summaries
+        )
+        st.markdown(f"#### {t('车型 × 扭力料件风险矩阵', 'Model × Torque Component Risk Matrix')}")
         st.caption(t(
-            "红色表示实测值超出源产品规格；橙色表示出现 SPC 异常规律，仅代表过程需要排查。点击任一条可打开下方详细控制图。",
-            "Red means measurements outside source product specifications. Orange means SPC patterns requiring process investigation. Select a bar to open its detailed control chart below.",
+            "纵轴回答哪些 Model 有问题，横轴回答哪个料件的扭力有问题。红色=实测值超出源规格；橙色=SPC 异常规律；菱形=同一料件已在多个 Model 观察到风险。点击风险点打开下方控制图。",
+            "The y-axis shows which models have issues and the x-axis shows the torque component involved. Red = outside source specification; orange = SPC pattern; diamond = the same component has observed risk in multiple models. Select a point to open the control chart below.",
         ))
-        if risk_overview.empty:
+        if cmw_risk_matrix.empty and risk_overview.empty:
             st.success(t(
                 "当前筛选范围未发现规格超限或 SPC 异常信号；仍可通过下方过程列表查看全部明细。",
                 "No specification breach or SPC signal was found under the current filters. Use the process selector below to review all details.",
             ))
-        else:
+        elif not cmw_risk_matrix.empty:
+            model_count = int(cmw_risk_matrix["model_code"].nunique())
+            component_count = int(cmw_risk_matrix["component"].nunique())
+            recurring_component_count = int(
+                cmw_risk_matrix.loc[
+                    cmw_risk_matrix["recurs_across_models"], "component"
+                ].nunique()
+            )
+            render_kpi_cards([
+                {"label": t("风险车型", "Models with Risk"), "value": f"{model_count:,}", "note": t("有规格超限或 SPC 异常", "Specification breach or SPC signal"), "level": "high"},
+                {"label": t("风险扭力料件", "Torque Components at Risk"), "value": f"{component_count:,}", "note": t("按源料件名称精确匹配", "Exact source component names"), "level": "medium"},
+                {"label": t("跨车型重复料件", "Cross-model Components"), "value": f"{recurring_component_count:,}", "note": t("已观察到，不代表未来预测", "Observed recurrence, not a forecast"), "level": "medium"},
+                {"label": t("机器标定风险预测", "Machine Calibration Risk"), "value": t("暂不可计算", "Unavailable"), "note": t("缺少 Machine ID 与标定记录", "Machine ID and calibration records missing"), "level": "medium"},
+            ], variant="bme-overall bme-cmw-row")
+
+            component_priority = (
+                cmw_risk_matrix.groupby("component", as_index=False)
+                .agg(
+                    risk_rank=("risk_rank", "min"),
+                    affected_models=("affected_model_count", "max"),
+                    specification_breaches=("specification_breaches", "sum"),
+                    max_attention=("attention_rate", "max"),
+                )
+                .sort_values(
+                    ["risk_rank", "specification_breaches", "affected_models", "max_attention"],
+                    ascending=[True, False, False, False],
+                )
+            )
+            component_order = component_priority.head(15)["component"].tolist()
+            matrix_view = cmw_risk_matrix[
+                cmw_risk_matrix["component"].isin(component_order)
+            ].copy().reset_index(drop=True)
+            model_priority = (
+                matrix_view.groupby(["model_code", "model_name"], as_index=False)
+                .agg(
+                    risk_rank=("risk_rank", "min"),
+                    specification_breaches=("specification_breaches", "sum"),
+                    risk_components=("component", "nunique"),
+                    max_attention=("attention_rate", "max"),
+                )
+                .sort_values(
+                    ["risk_rank", "specification_breaches", "risk_components", "max_attention"],
+                    ascending=[True, False, False, False],
+                )
+            )
+            model_order = model_priority["model_name"].tolist()
+            matrix_view["risk_label"] = matrix_view["risk_key"].map({
+                "specification": t("规格超限", "Outside Specification"),
+                "spc": t("SPC 需排查", "SPC Investigation"),
+            })
+            matrix_view["recurrence_display"] = np.where(
+                matrix_view["recurs_across_models"],
+                matrix_view["affected_model_count"].map(
+                    lambda count: t(f"已在 {int(count)} 个 Model 观察到", f"Observed in {int(count)} models")
+                ),
+                t("当前仅在该 Model 观察到", "Currently observed only in this model"),
+            )
+            matrix_view["other_models_display"] = matrix_view["other_models"].replace(
+                "", t("当前未观察到其他 Model", "No other model currently observed")
+            )
+            matrix_view["capability_display"] = matrix_view["capability"].map(
+                lambda value: f"{float(value):.2f}" if pd.notna(value) else "N/A"
+            )
+            matrix_view["marker_size"] = 15 + matrix_view["attention_rate"].clip(0, 1) * 32
             risk_overview_chart_key = "bme_spc_risk_overview"
 
             def sync_spc_from_overview() -> None:
@@ -16231,37 +16305,38 @@ def render_bme_bike_quality_dashboard_v3(
                 if label in ranked_methods:
                     st.session_state["bme_v6_spc"] = label
 
-            overview_fig = go.Figure(go.Bar(
-                x=risk_overview["attention_rate"],
-                y=risk_overview["display_label"],
-                orientation="h",
-                marker_color=risk_overview["risk_key"].map({
-                    "specification": BME_COLORS["alert"],
-                    "spc": BME_COLORS["fqc"],
-                }),
-                text=[
-                    t(f"需排查 · {rate:.1%}", f"Attention · {rate:.1%}")
-                    for rate in risk_overview["attention_rate"]
-                ],
-                textposition="outside",
-                cliponaxis=False,
+            overview_fig = go.Figure(go.Scatter(
+                x=matrix_view["component"],
+                y=matrix_view["model_name"],
+                mode="markers",
+                marker={
+                    "size": matrix_view["marker_size"],
+                    "color": matrix_view["risk_key"].map({"specification": BME_COLORS["alert"], "spc": BME_COLORS["fqc"]}),
+                    "symbol": np.where(matrix_view["recurs_across_models"], "diamond", "circle"),
+                    "line": {"width": 1.3, "color": "rgba(255,255,255,.95)"},
+                    "opacity": 0.88,
+                },
                 customdata=np.column_stack([
-                    risk_overview["full_label"],
-                    risk_overview["risk_label"],
-                    risk_overview["signal_display"],
-                    risk_overview["specification_display"],
-                    risk_overview["capability_display"],
+                    matrix_view["full_label"], matrix_view["risk_label"], matrix_view["model_code"],
+                    matrix_view["component"], matrix_view["signal_count"], matrix_view["signal_rate"],
+                    matrix_view["specification_breaches"], matrix_view["measurement_count"],
+                    matrix_view["specification_rate"], matrix_view["recurrence_display"],
+                    matrix_view["other_models_display"], matrix_view["capability_display"],
                 ]),
                 hovertemplate=(
-                    "<b>%{customdata[0]}</b><br>"
+                    f"<b>Model  %{{y}}</b><br>"
+                    f"{t('整车料号', 'Model code')}  %{{customdata[2]}}<br>"
+                    f"{t('扭力料件', 'Torque component')}  %{{customdata[3]}}<br>"
                     f"{t('风险类型', 'Risk type')}  %{{customdata[1]}}<br>"
-                    f"{t('SPC 异常点 / 有效观察', 'SPC signals / valid observations')}  %{{customdata[2]}}<br>"
-                    f"{t('规格超限 / 有效测量', 'Specification breaches / valid measurements')}  %{{customdata[3]}}<br>"
-                    f"Ppk / Ppl  %{{customdata[4]}}<extra></extra>"
+                    f"{t('SPC 异常点', 'SPC signals')}  %{{customdata[4]}} (%{{customdata[5]:.1%}})<br>"
+                    f"{t('规格超限', 'Specification breaches')}  %{{customdata[6]}} / %{{customdata[7]}} (%{{customdata[8]:.1%}})<br>"
+                    f"{t('跨车型观察', 'Cross-model observation')}  %{{customdata[9]}}<br>"
+                    f"{t('其他风险车型', 'Other models with risk')}  %{{customdata[10]}}<br>"
+                    f"Ppk  %{{customdata[11]}}<extra></extra>"
                 ),
             ))
-            selected_overview_points = risk_overview.index[
-                risk_overview["full_label"].eq(st.session_state.get("bme_v6_spc"))
+            selected_overview_points = matrix_view.index[
+                matrix_view["full_label"].eq(st.session_state.get("bme_v6_spc"))
             ].tolist()
             if selected_overview_points:
                 overview_fig.update_traces(
@@ -16270,23 +16345,17 @@ def render_bme_bike_quality_dashboard_v3(
                     unselected={"marker": {"opacity": 0.72}},
                 )
             overview_fig.update_layout(
-                height=max(330, 54 * len(risk_overview) + 90),
-                margin=dict(l=20, r=145, t=12, b=38),
+                height=max(480, 54 * len(model_order) + 170),
+                margin=dict(l=20, r=25, t=20, b=150),
                 clickmode="event+select",
                 showlegend=False,
             )
             overview_fig.update_xaxes(
-                title_text=t(
-                    "最高异常占比（SPC 信号或规格超限）",
-                    "Highest exception share (SPC signal or specification breach)",
-                ),
-                tickformat=".0%",
-                rangemode="tozero",
+                title_text=t("扭力料件（风险优先 Top 15）", "Torque Component (Risk-priority Top 15)"),
+                categoryorder="array", categoryarray=component_order, tickangle=-35,
             )
             overview_fig.update_yaxes(
-                title_text=None,
-                categoryorder="array",
-                categoryarray=risk_overview["display_label"].tolist()[::-1],
+                title_text="Model", categoryorder="array", categoryarray=model_order[::-1], automargin=True,
             )
             apply_bme_chart_style(overview_fig)
             st.plotly_chart(
@@ -16297,6 +16366,29 @@ def render_bme_bike_quality_dashboard_v3(
                 on_select=sync_spc_from_overview,
                 selection_mode="points",
             )
+            st.info(t(
+                "机器标定风险预测暂不可计算：当前源数据没有 Machine ID，无法判断跨车型异常是否来自同一台机器。未来需补充 Machine ID、设备型号、最近/下次标定日期、标定结果、工单、测量时间、扭力工具状态和维修记录，才能训练或设定机器失准预警。",
+                "Machine calibration risk is currently unavailable: the source has no Machine ID, so cross-model recurrence cannot be attributed to the same machine. Future prediction requires Machine ID, equipment model, last/next calibration date, calibration result, work order, measurement timestamp, torque-tool status, and maintenance history.",
+            ))
+            if "TEKTRO" in selected_suppliers:
+                st.caption(t(
+                    "该矩阵只展示 CMW 扭力料件。TEKTRO 当前源数据不是同一套车型 × 扭力料件结构，仍保留在下方过程列表和 SPC 明细中。",
+                    "This matrix covers CMW torque components only. TEKTRO does not currently use the same model × torque-component structure and remains available in the process selector and SPC detail below.",
+                ))
+        else:
+            st.info(t(
+                "当前筛选没有 CMW 车型 × 扭力料件数据；下面保留其他 Machine Data 过程的风险排序。",
+                "No CMW model × torque-component data is available under the current filter; the other Machine Data processes remain ranked below.",
+            ))
+            if not risk_overview.empty:
+                dataframe_with_format(
+                    risk_overview[["display_label", "risk_label", "signal_display", "specification_display", "capability_display"]].rename(columns={
+                        "display_label": t("过程", "Process"), "risk_label": t("风险类型", "Risk Type"),
+                        "signal_display": t("SPC 异常", "SPC Signals"), "specification_display": t("规格超限", "Specification Breaches"),
+                        "capability_display": "Ppk / Ppl",
+                    }),
+                    height=330,
+                )
 
         with st.container(key="bme_spc_filter"):
             filter_label, filter_control = st.columns([0.13, 0.87], vertical_alignment="center")
@@ -16305,8 +16397,8 @@ def render_bme_bike_quality_dashboard_v3(
             with filter_control:
                 selected_method = st.selectbox(
                     t(
-                        "选择同一产品的过程参数" if machine_scope_linked else "选择全厂过程（高风险优先）",
-                        "Select a process parameter for the same product" if machine_scope_linked else "Select a factory process (high risk first)",
+                        "选择过程（所选产品优先，可跨车型比较）" if linked_methods else "选择全厂过程（高风险优先）",
+                        "Select a process (selected product first; cross-model comparison available)" if linked_methods else "Select a factory process (high risk first)",
                     ),
                     ranked_methods,
                     key="bme_v6_spc",
@@ -16315,6 +16407,14 @@ def render_bme_bike_quality_dashboard_v3(
                 )
                 if selected_method:
                     st.caption(t("完整过程：", "Full process (source text as recorded): ") + selected_method)
+        if selected_method:
+            machine_scope_linked = selected_method in linked_method_set
+            if machine_scope_linked:
+                machine_scope_note_cn = "当前控制图已与上方所选产品对应。"
+                machine_scope_note_en = "The current control chart is linked to the product selected above."
+            else:
+                machine_scope_note_cn = "当前控制图来自全厂 Machine Data，与上方所选款式未建立关联。"
+                machine_scope_note_en = "The current control chart uses factory-wide Machine Data and is not linked to the product selected above."
         if not selected_method:
             method = ""
             data = pd.DataFrame()
