@@ -1281,22 +1281,28 @@ st.markdown(
         white-space: nowrap;
     }
     .bme-anchor-nav a:hover {background: #eef3ff; color: #173b8f !important;}
-    body:has(#bme-overview:target) a[href="#bme-overview"],
-    body:has(#bme-risk:target) a[href="#bme-risk"],
-    body:has(#bme-products:target) a[href="#bme-products"],
-    body:has(#bme-investigation:target) a[href="#bme-investigation"],
-    body:has(#bme-spc:target) a[href="#bme-spc"],
-    body:has(#bme-supplementary:target) a[href="#bme-supplementary"],
-    body:has(#bme-data-ai:target) a[href="#bme-data-ai"] {
+    body:has(#bme-data-map:target) a[href="#bme-data-map"],
+    body:has(#bme-problem-cards:target) a[href="#bme-problem-cards"],
+    body:has(#bme-spc:target) a[href="#bme-spc"] {
         background: #2855c5;
         color: #ffffff !important;
     }
-    body:not(:has(.bme-section-anchor:target)) .bme-anchor-nav a[href="#bme-overview"] {
+    body:not(:has(.bme-section-anchor:target)) .bme-anchor-nav a[href="#bme-data-map"] {
         background: #2855c5;
         color: #ffffff !important;
     }
     #bme-overview {scroll-margin-top: 64px;}
     .bme-section-anchor {height: 1px; scroll-margin-top: 64px;}
+    /* BME's current product scope contains three modules only. The risk and
+       product investigation calculations remain available to the SPC logic,
+       but their prior UI is removed from the page between the two anchors. */
+    body:has(.bme-three-module-scope)
+    div[data-testid="stElementContainer"]:has(#bme-risk),
+    body:has(.bme-three-module-scope)
+    div[data-testid="stElementContainer"]:has(#bme-risk)
+      ~ *:not(div[data-testid="stElementContainer"]:has(#bme-spc)):not(div[data-testid="stElementContainer"]:has(#bme-spc) ~ *) {
+        display: none !important;
+    }
     .bme-investigation-context {
         position: sticky;
         top: 3.7rem;
@@ -14900,14 +14906,11 @@ def render_bme_bike_quality_dashboard_v3(
     st.markdown(
         f"""
         <nav class="bme-anchor-nav" aria-label="{html.escape(t('本页调查导航', 'Investigation navigation'))}">
-          <a href="#bme-overview">{html.escape(t('概览', 'Overview'))}</a>
-          <a href="#bme-risk">{html.escape(t('风险', 'Risk'))}</a>
-          <a href="#bme-products">{html.escape(t('重点产品', 'Priority products'))}</a>
-          <a href="#bme-investigation">{html.escape(t('问题下钻', 'Problem drill-down'))}</a>
+          <a href="#bme-data-map">Data Map</a>
+          <a href="#bme-problem-cards">Problem Card</a>
           <a href="#bme-spc">SPC</a>
-          <a href="#bme-supplementary">{html.escape(t('来料与返工', 'Incoming & rework'))}</a>
-          <a href="#bme-data-ai">{html.escape(t('数据与 AI', 'Data & AI'))}</a>
         </nav>
+        <div class="bme-three-module-scope" aria-hidden="true"></div>
         """,
         unsafe_allow_html=True,
     )
@@ -14997,6 +15000,14 @@ def render_bme_bike_quality_dashboard_v3(
             f"""<div id="bme-overview" class="hero bme-hero"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{html.escape(selected_period)} · {start_date} — {end_date}</span></div></div>""",
             unsafe_allow_html=True,
         )
+
+    st.markdown('<div id="bme-data-map" class="bme-section-anchor"></div>', unsafe_allow_html=True)
+    st.header(t("数据地图", "Data Map"))
+    with st.expander(t("数据源覆盖", "Data-source coverage"), expanded=True):
+        # Source coverage is fixed. Analysis filters must never turn an
+        # unselected source into a false "not connected" status.
+        _render_bme_data_map(events, customer_nc, fsd_orders)
+
     # Rendered after the calculations below, but anchored here so the manager
     # sees the decision summary before any detailed chart.
     management_summary_slot = st.empty()
@@ -15190,9 +15201,10 @@ def render_bme_bike_quality_dashboard_v3(
             "note": t("最近完整月：", "Latest complete month: ") + trend["trend_note"],
         }
 
+    st.markdown('<div id="bme-problem-cards" class="bme-section-anchor"></div>', unsafe_allow_html=True)
     render_chart_heading(
-        "工厂整体质量",
-        "Factory Quality",
+        "问题卡",
+        "Problem Cards",
         "先看所选期间的工厂整体质量结果和最近两个完整月的变化。",
         "Review selected-period factory quality results and the latest two-month change.",
         "卡片大数字明确标记为所选期间累计结果；下方显示范围内最近两个完整自然月。PPM 表示每一百万件中的问题数量。",
@@ -15283,6 +15295,7 @@ def render_bme_bike_quality_dashboard_v3(
             """,
             unsafe_allow_html=True,
         )
+    management_summary_slot.empty()
 
     st.markdown('<div id="bme-risk" class="bme-section-anchor"></div>', unsafe_allow_html=True)
     risk_title_cols = st.columns([0.94, 0.06], vertical_alignment="center")
@@ -16190,6 +16203,13 @@ def render_bme_bike_quality_dashboard_v3(
             else:
                 st.plotly_chart(defect_fig, use_container_width=True, config={"displayModeBar": False})
 
+    # Problem drill-down is no longer a visible BME module. Keep SPC in a
+    # factory-wide context instead of inheriting an invisible product choice.
+    selected_product_key = ""
+    selected_product_supplier = ""
+    selected_product_display = ""
+    has_product_context = False
+
     st.markdown('<div id="bme-spc" class="bme-section-anchor"></div>', unsafe_allow_html=True)
     st.header(t("Machine Data（CMW / TEKTRO）", "Machine Data (CMW / TEKTRO)"))
     spc_heading_slot = st.empty()
@@ -16319,12 +16339,13 @@ def render_bme_bike_quality_dashboard_v3(
         else:
             linked_method_set = set()
             ranked_methods = ranked_all_methods
-            machine_scope_note_cn = "当前控制图来自全厂 Machine Data，与上方所选款式未建立关联。"
-            machine_scope_note_en = "The control chart uses factory-wide Machine Data and is not linked to the product selected above."
-            st.warning(t(
-                f"{selected_product_display or '所选产品'} 暂无可确认对应的 Machine Data；下面显示全厂高风险过程，不代表该款式。",
-                f"No reliably linked Machine Data is available for {selected_product_display or 'the selected product'}. The factory-wide high-risk process below does not represent that product.",
-            ))
+            machine_scope_note_cn = "当前控制图来自全厂 Machine Data，并按过程风险优先展示。"
+            machine_scope_note_en = "The control chart uses factory-wide Machine Data and prioritizes higher-risk processes."
+            if has_product_context:
+                st.warning(t(
+                    f"{selected_product_display or '所选产品'} 暂无可确认对应的 Machine Data；下面显示全厂高风险过程，不代表该款式。",
+                    f"No reliably linked Machine Data is available for {selected_product_display or 'the selected product'}. The factory-wide high-risk process below does not represent that product.",
+                ))
 
         focus_signature = f"{selected_product_key or 'ALL'}|{'linked' if machine_scope_linked else 'factory'}"
         if st.session_state.get("bme_v6_spc_focus") != focus_signature:
@@ -16879,8 +16900,8 @@ def render_bme_bike_quality_dashboard_v3(
                 machine_scope_note_cn = "当前控制图已与上方所选产品对应。"
                 machine_scope_note_en = "The current control chart is linked to the product selected above."
             else:
-                machine_scope_note_cn = "当前控制图来自全厂 Machine Data，与上方所选款式未建立关联。"
-                machine_scope_note_en = "The current control chart uses factory-wide Machine Data and is not linked to the product selected above."
+                machine_scope_note_cn = "当前控制图来自全厂 Machine Data，并按过程风险优先展示。"
+                machine_scope_note_en = "The current control chart uses factory-wide Machine Data and prioritizes higher-risk processes."
         if not selected_method:
             method = ""
             data = pd.DataFrame()
@@ -16916,8 +16937,8 @@ def render_bme_bike_quality_dashboard_v3(
         if method:
             spc_logic_cn = f"{machine_scope_note_cn}{spc_logic_cn}"
             spc_logic_en = f"{machine_scope_note_en} {spc_logic_en}"
-        scope_conclusion_cn = "" if machine_scope_linked else "本图为全厂高风险过程，不代表上方所选款式。"
-        scope_conclusion_en = "" if machine_scope_linked else "This is a factory-wide high-risk process and does not represent the product selected above. "
+        scope_conclusion_cn = "" if machine_scope_linked or not has_product_context else "本图为全厂高风险过程，不代表上方所选款式。"
+        scope_conclusion_en = "" if machine_scope_linked or not has_product_context else "This is a factory-wide high-risk process and does not represent the product selected above. "
         with spc_heading_slot.container():
             render_chart_heading(
                 "SPC（统计过程控制）",
@@ -17128,10 +17149,14 @@ def render_bme_bike_quality_dashboard_v3(
         measured_max = float(parameter_view["measured_value"].max())
         limits_available = parameter_view["spec_low"].notna().any() or parameter_view["spec_high"].notna().any()
         render_bme_chart_conclusion(
-            f"{'' if machine_scope_linked else '本图为全厂高风险过程，不代表上方所选款式。'}本期 {len(parameter_view):,} 个实测点，范围 {measured_min:,.2f}–{measured_max:,.2f}{'；已与源规格对比' if limits_available else '；源数据没有规格，只能查看变化'}。",
-            f"{'' if machine_scope_linked else 'This is a factory-wide high-risk process and does not represent the product selected above. '}This period has {len(parameter_view):,} measurements ranging from {measured_min:,.2f} to {measured_max:,.2f}{'; source specifications are shown' if limits_available else '; source specifications are unavailable, so only the trend is shown'}.",
+            f"{'' if machine_scope_linked or not has_product_context else '本图为全厂高风险过程，不代表上方所选款式。'}本期 {len(parameter_view):,} 个实测点，范围 {measured_min:,.2f}–{measured_max:,.2f}{'；已与源规格对比' if limits_available else '；源数据没有规格，只能查看变化'}。",
+            f"{'' if machine_scope_linked or not has_product_context else 'This is a factory-wide high-risk process and does not represent the product selected above. '}This period has {len(parameter_view):,} measurements ranging from {measured_min:,.2f} to {measured_max:,.2f}{'; source specifications are shown' if limits_available else '; source specifications are unavailable, so only the trend is shown'}.",
         )
         st.plotly_chart(parameter_fig, use_container_width=True, config={"displayModeBar": False})
+
+    # The current BME product ends after SPC. Historical supplementary and AI
+    # sections stay in source for possible future reuse but are not rendered.
+    return
 
     st.markdown('<div id="bme-supplementary" class="bme-section-anchor"></div>', unsafe_allow_html=True)
     st.header(t("来料与返工", "Incoming and Rework"))
