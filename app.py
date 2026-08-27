@@ -12747,13 +12747,10 @@ def render_community_cockpit(
                 "process": t("工序", "Process"),
                 "worker": t("工人", "Worker"),
                 "material": t("原辅料", "Material"),
-                "third_party_qc": t("三方 QC 效率", "Third-party QC Efficiency"),
-                "five_m_one_e": t("人机料法环", "5M1E"),
-                "defect_severity": t("缺陷等级", "Defect Severity"),
                 "ai": t("AI 总结报告", "AI Summary Report"),
             }
             analysis_key = f"zx_more_analysis_{language_query_code()}"
-            if st.session_state.get(analysis_key) == "customer":
+            if st.session_state.get(analysis_key) not in analysis_labels:
                 st.session_state[analysis_key] = "process"
             selected_analysis = st.segmented_control(
                 t("分析模块", "Analysis Module"),
@@ -12773,19 +12770,6 @@ def render_community_cockpit(
             elif selected_analysis == "material":
                 st.markdown(f"**{t('原辅料风险', 'Material Risk')}**")
                 render_material_focus(incoming_df, source_label, compact=False)
-            elif selected_analysis == "third_party_qc":
-                st.markdown(
-                    f"**{t('Gloves 三方 QC 验货频率与效率', 'Gloves Third-party QC Frequency and Efficiency')}**"
-                )
-                render_third_party_qc_efficiency()
-            elif selected_analysis == "five_m_one_e":
-                st.markdown(f"**{t('ZX 人机料法环原因结构', 'ZX 5M1E Cause Mix')}**")
-                render_zx_5m1e_analysis()
-            elif selected_analysis == "defect_severity":
-                st.markdown(
-                    f"**{t('ZX Critical / Major / Minor 问题结构', 'ZX Critical / Major / Minor Issue Mix')}**"
-                )
-                render_zx_defect_severity_analysis()
             elif selected_analysis == "ai":
                 report_language = st.segmented_control(
                     t("报告语言", "Report Language"),
