@@ -16842,19 +16842,6 @@ def render_bme_bike_quality_dashboard_v3(
                         on_select=sync_spc_from_overview,
                         selection_mode="points",
                     )
-                    st.markdown(
-                        f'<div class="bme-risk-footnote">{html.escape(t("方块大小表示关注率；深色轮廓表示同一料件已在多个车型观察到风险；悬停查看数量。空白单元格不等于零风险。", "Marker size reflects attention rate; a dark outline marks a component observed across models; hover for exact counts. A blank cell does not mean zero risk."))}</div>',
-                        unsafe_allow_html=True,
-                    )
-            st.info(t(
-                "机器标定风险预测暂不可计算：当前源数据没有 Machine ID，无法判断跨车型异常是否来自同一台机器。未来需补充 Machine ID、设备型号、最近/下次标定日期、标定结果、工单、测量时间、扭力工具状态和维修记录，才能训练或设定机器失准预警。",
-                "Machine calibration risk is currently unavailable: the source has no Machine ID, so cross-model recurrence cannot be attributed to the same machine. Future prediction requires Machine ID, equipment model, last/next calibration date, calibration result, work order, measurement timestamp, torque-tool status, and maintenance history.",
-            ))
-            if "TEKTRO" in selected_suppliers:
-                st.caption(t(
-                    "该矩阵只展示 CMW 扭力料件。TEKTRO 当前源数据不是同一套车型 × 扭力料件结构，仍保留在下方过程列表和 SPC 明细中。",
-                    "This matrix covers CMW torque components only. TEKTRO does not currently use the same model × torque-component structure and remains available in the process selector and SPC detail below.",
-                ))
         else:
             st.markdown(f"#### {t('车型 × 扭力料件风险矩阵', 'Model × Torque Component Risk Matrix')}")
             st.info(t(
@@ -16886,8 +16873,6 @@ def render_bme_bike_quality_dashboard_v3(
                     label_visibility="collapsed",
                     format_func=compact_process_label,
                 )
-                if selected_method:
-                    st.caption(t("完整过程：", "Full process (source text as recorded): ") + selected_method)
         if selected_method:
             machine_scope_linked = selected_method in linked_method_set
             if machine_scope_linked:
