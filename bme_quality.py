@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-27-v11"
+BME_QUALITY_LOGIC_VERSION = "2026-08-27-v12"
 
 
 EVENT_COLUMNS = [
@@ -1003,6 +1003,68 @@ def build_bme_relative_risk_scores_for_selection(
         products[products["supplier"].isin(selected)].copy(),
         suppliers[suppliers["supplier"].isin(selected)].copy(),
     )
+
+
+def build_bme_priority_product_clusters(events: pd.DataFrame) -> pd.DataFrame:
+    """Cluster BME products that already have auditable issue evidence.
+
+    The relative-risk axis comes from ``build_bme_relative_risk_scores`` and
+    therefore keeps supplier, product-family and quality-gate peer baselines
+    separate. The exposure axis is the issue-volume percentile inside the same
+    supplier/product-family peer group. K-means is applied only after those
+    axes have been normalized to 0-100, so the chart can group unlike source
+    grains without pretending they are one lifecycle product.
+    """
+    columns = [
+        "supplier", "product_key", "product_label", "product_group",
+        "cluster_label", "risk_score", "exposure_axis", "defect_qty",
+        "inspected_qty", "affected_gates", "available_gates", "latest_date",
+        "confidence", "baseline",
+    ]
+    products, _ = build_bme_relative_risk_scores(events)
+    if products.empty:
+        return pd.DataFrame(columns=columns)
+
+    clustered = products.copy()
+    peer = ["supplier", "product_group"]
+    clustered["exposure_axis"] = clustered.groupby(peer, dropna=False)[
+        "defect_qty"
+    ].transform(_relative_percentile)
+    clustered["exposure_axis"] = clustered["exposure_axis"].fillna(50.0)
+
+    points = clustered[["exposure_axis", "risk_score"]].fillna(0).to_numpy(dtype=float)
+    raw_labels = _deterministic_kmeans_labels(points, cluster_count=3)
+    cluster_priority = (
+        pd.DataFrame(
+            {
+                "cluster_id": raw_labels,
+                "risk_score": clustered["risk_score"].to_numpy(dtype=float),
+            }
+        )
+        .groupby("cluster_id")["risk_score"]
+        .mean()
+        .sort_values()
+    )
+    ordered = cluster_priority.index.astype(int).tolist()
+    label_sets = {
+        1: ["Priority improvement"],
+        2: ["Attention", "Priority improvement"],
+        3: ["Monitor", "Attention", "Priority improvement"],
+    }
+    names = label_sets[len(ordered)]
+    name_map = {cluster_id: names[position] for position, cluster_id in enumerate(ordered)}
+    clustered["cluster_label"] = [name_map[int(value)] for value in raw_labels]
+
+    inspected = pd.to_numeric(clustered["inspected_qty"], errors="coerce")
+    clustered["confidence"] = np.select(
+        [inspected.ge(30), inspected.gt(0)],
+        ["High", "Medium"],
+        default="Low",
+    )
+    clustered["exposure_axis"] = clustered["exposure_axis"].round(1)
+    return clustered[columns].sort_values(
+        ["risk_score", "defect_qty"], ascending=False
+    ).reset_index(drop=True)
 
 
 def _deterministic_kmeans_labels(

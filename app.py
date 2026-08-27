@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-27-v11"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-27-v12"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -47,6 +47,7 @@ build_bme_issue_pareto = _bme_quality.build_bme_issue_pareto
 build_bme_product_master = _bme_quality.build_bme_product_master
 build_bme_relative_risk_scores = _bme_quality.build_bme_relative_risk_scores
 build_bme_relative_risk_scores_for_selection = _bme_quality.build_bme_relative_risk_scores_for_selection
+build_bme_priority_product_clusters = _bme_quality.build_bme_priority_product_clusters
 build_cmw_product_clusters = _bme_quality.build_cmw_product_clusters
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
@@ -14429,6 +14430,138 @@ def _render_bme_bike_quality_dashboard_v3_legacy(events: pd.DataFrame) -> None:
             )
 
 
+def render_bme_priority_product_cluster_overview(
+    events: pd.DataFrame,
+    selected_suppliers: list[str],
+) -> pd.DataFrame:
+    """Render the visible BME-wide clustering view for priority products."""
+    clusters = build_bme_priority_product_clusters(events)
+    selected = {str(value) for value in selected_suppliers}
+    clusters = clusters[clusters["supplier"].isin(selected)].copy()
+    st.subheader(t("重点风险产品聚类", "Priority Product Risk Clustering"))
+    render_chart_heading(
+        "风险与暴露度聚类",
+        "Risk and Exposure Clustering",
+        "把当前期间已有问题证据的产品分成优先改善、重点关注和持续观察三组。",
+        "Group products with issue evidence in the current period into Priority improvement, Attention, and Monitor clusters.",
+        "横轴是同供应商、同产品族内的问题量暴露度；纵轴是已经按供应商、产品族和质量环节建立可比基线的相对风险分。",
+        "The horizontal axis is issue-volume exposure within supplier and product-family peers. The vertical axis is the relative risk score already normalized by supplier, family, and quality gate.",
+        "K-means 只对标准化后的 0–100 轴进行分组。不同供应商和不同检验环节仍保留各自源产品标识；图用于安排调查顺序，不是缺陷概率、放行标准或根因结论。",
+        "K-means groups only the normalized 0-100 axes. Source-native product identifiers remain separate across suppliers and quality gates. The chart prioritizes investigation and is not a defect probability, release standard, or root-cause conclusion.",
+        "BME IQC + PQC + FQC",
+        "bme_priority_product_cluster_v1",
+    )
+    if clusters.empty:
+        st.info(t(
+            "当前筛选没有可用于重点风险产品聚类的问题数据。",
+            "No issue data is available for priority-product clustering under the current filters.",
+        ))
+        return clusters
+
+    cluster_local = {
+        "Monitor": t("持续观察", "Monitor"),
+        "Attention": t("重点关注", "Attention"),
+        "Priority improvement": t("优先改善", "Priority improvement"),
+    }
+    confidence_local = {
+        "High": t("高", "High"),
+        "Medium": t("中", "Medium"),
+        "Low": t("低", "Low"),
+    }
+    clusters["cluster_display"] = clusters["cluster_label"].map(cluster_local)
+    clusters["confidence_display"] = clusters["confidence"].map(confidence_local)
+    priority_count = int(clusters["cluster_label"].eq("Priority improvement").sum())
+    attention_count = int(clusters["cluster_label"].eq("Attention").sum())
+    no_denominator_count = int(pd.to_numeric(clusters["inspected_qty"], errors="coerce").fillna(0).le(0).sum())
+    render_kpi_cards([
+        {
+            "label": t("风险产品", "Risk Products"),
+            "value": f"{len(clusters):,}",
+            "note": t("仅包含已有问题证据的产品", "Products with issue evidence only"),
+            "level": "medium",
+        },
+        {
+            "label": t("优先改善", "Priority Improvement"),
+            "value": f"{priority_count:,}",
+            "note": t("聚类中的最高优先组", "Highest-priority cluster"),
+            "level": "high",
+        },
+        {
+            "label": t("重点关注", "Attention"),
+            "value": f"{attention_count:,}",
+            "note": t("下一层调查对象", "Next investigation tier"),
+            "level": "medium",
+        },
+        {
+            "label": t("缺少分母", "Missing Denominator"),
+            "value": f"{no_denominator_count:,}",
+            "note": t("只按问题数量排序", "Issue-volume ranking only"),
+            "level": "medium" if no_denominator_count else "low",
+        },
+    ], variant="bme-overall bme-cmw-row")
+
+    plot_view = clusters.head(40).copy()
+    plot_view["bubble_size"] = pd.to_numeric(plot_view["defect_qty"], errors="coerce").fillna(0).clip(lower=1)
+    plot_view["product_label_display"] = plot_view["product_label"].map(bme_display_text)
+    plot_view["product_group_display"] = plot_view["product_group"].map(bme_display_text)
+    fig = px.scatter(
+        plot_view,
+        x="exposure_axis",
+        y="risk_score",
+        size="bubble_size",
+        color="cluster_display",
+        hover_name="product_label_display",
+        hover_data={
+            "supplier": True,
+            "product_group_display": True,
+            "cluster_display": True,
+            "risk_score": ":.1f",
+            "exposure_axis": ":.1f",
+            "defect_qty": ":,.0f",
+            "inspected_qty": ":,.0f",
+            "affected_gates": True,
+            "confidence_display": True,
+            "bubble_size": False,
+        },
+        labels={
+            "exposure_axis": t("问题量暴露度（同类百分位）", "Issue Exposure (peer percentile)"),
+            "risk_score": t("相对风险分", "Relative Risk Score"),
+            "cluster_display": t("聚类", "Cluster"),
+            "supplier": t("供应商", "Supplier"),
+            "product_group_display": t("产品族 / 质量环节", "Family / Quality Gate"),
+            "defect_qty": t("问题数量", "Issue Quantity"),
+            "inspected_qty": t("检验数量", "Inspected Quantity"),
+            "affected_gates": t("出现问题环节", "Affected Gates"),
+            "confidence_display": t("置信度", "Confidence"),
+        },
+        color_discrete_map={
+            t("持续观察", "Monitor"): "#8A94A6",
+            t("重点关注", "Attention"): BME_COLORS["fqc"],
+            t("优先改善", "Priority improvement"): BME_COLORS["alert"],
+        },
+        size_max=34,
+    )
+    fig.update_traces(
+        marker={"line": {"width": 1.5, "color": "rgba(255,255,255,.9)"}},
+    )
+    fig.add_hline(y=50, line_dash="dot", line_color="#cbd5e1")
+    fig.add_vline(x=50, line_dash="dot", line_color="#cbd5e1")
+    fig.update_xaxes(range=[-4, 106], dtick=20)
+    fig.update_yaxes(range=[-4, 112], dtick=20)
+    fig.update_layout(
+        height=500,
+        margin=dict(l=20, r=20, t=36, b=30),
+        legend=dict(orientation="h", y=1.14, x=0),
+    )
+    apply_bme_chart_style(fig)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.caption(t(
+        f"圆点大小表示问题数量；悬停查看完整产品和数据口径。图中展示相对风险最高的 {len(plot_view)} 个产品；当前筛选共有 {len(clusters):,} 个带问题证据的产品。",
+        f"Bubble size represents issue quantity; hover for the full product and data basis. The chart shows the {len(plot_view)} highest relative-risk products out of {len(clusters):,} products with issue evidence in the current filter.",
+    ))
+    return clusters
+
+
 def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     """Render the CMW gate-aware product clustering block below Data Map."""
     clusters = build_cmw_product_clusters(events)
@@ -15082,7 +15215,7 @@ def render_bme_bike_quality_dashboard_v3(
         ))
 
     if "CMW" in selected_suppliers:
-        with st.expander(t("QPS 深入分析：CMW 产品风险聚类", "QPS deep dive: CMW product risk clustering"), expanded=False):
+        with st.expander(t("QPS 深入分析：CMW 环节聚类明细", "QPS deep dive: CMW gate-level clustering detail"), expanded=False):
             render_cmw_product_cluster_analysis(cmw_cluster_view)
 
     st.markdown(
@@ -15116,6 +15249,7 @@ def render_bme_bike_quality_dashboard_v3(
     )
     st.markdown('<div id="bme-products" class="bme-section-anchor"></div>', unsafe_allow_html=True)
     st.header(t("重点产品", "Priority Products"))
+    render_bme_priority_product_cluster_overview(period_events, selected_suppliers)
     selected_product_key = ""
     selected_product_label = ""
     selected_product_display = ""

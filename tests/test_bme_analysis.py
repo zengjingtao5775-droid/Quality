@@ -9,6 +9,7 @@ import pandas as pd
 from bme_quality import (
     build_bme_issue_pareto,
     build_bme_product_master,
+    build_bme_priority_product_clusters,
     build_bme_relative_risk_scores,
     build_bme_relative_risk_scores_for_selection,
     build_cmw_product_clusters,
@@ -68,6 +69,37 @@ class BmeAnalysisFormulaTest(unittest.TestCase):
         )
         self.assertEqual(float(cmw_only.iloc[0]["risk_score"]), all_cmw_score)
         self.assertEqual(cmw_only["supplier"].tolist(), ["CMW"])
+
+    def test_bme_priority_clusters_keep_peer_risk_and_issue_only_scope(self) -> None:
+        events = pd.DataFrame([
+            {
+                "supplier": supplier,
+                "stage": "PQC",
+                "model_item_code": code,
+                "item_name": code,
+                "family": "Bike",
+                "source_row": index,
+                "date": pd.Timestamp("2026-01-01"),
+                "inspected_qty": inspected,
+                "defect_qty": defects,
+                "is_alert": defects > 0,
+            }
+            for index, (supplier, code, inspected, defects) in enumerate([
+                ("CMW", "CMW-A", 100, 12),
+                ("CMW", "CMW-B", 100, 3),
+                ("CMW", "CMW-C", 100, 0),
+                ("FSD", "FSD-A", 80, 8),
+                ("FSD", "FSD-B", 80, 1),
+            ])
+        ])
+        products, _ = build_bme_relative_risk_scores(events)
+        clusters = build_bme_priority_product_clusters(events)
+        self.assertEqual(set(clusters["product_key"]), set(products["product_key"]))
+        self.assertNotIn("CMW|CMW-C", set(clusters["product_key"]))
+        self.assertTrue(clusters["risk_score"].between(0, 100).all())
+        self.assertTrue(clusters["exposure_axis"].between(0, 100).all())
+        self.assertIn("Priority improvement", set(clusters["cluster_label"]))
+        self.assertTrue(clusters["confidence"].eq("High").all())
 
     def test_measured_only_gate_without_judgement_is_not_zero_risk(self) -> None:
         events = pd.DataFrame([
