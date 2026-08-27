@@ -72,6 +72,7 @@ class BmeSpcRiskSummaryTest(unittest.TestCase):
         self.assertEqual(classify_torque_component_group("碟刹转接座"), "brake")
         self.assertEqual(classify_torque_component_group("曲柄BB螺丝"), "drivetrain")
         self.assertEqual(classify_torque_component_group("前轮桶轴锁紧"), "chassis")
+        self.assertEqual(classify_torque_component_group("太阳花锁紧盖"), "chassis")
         self.assertEqual(classify_torque_component_group("Unmapped fixture"), "other")
 
     def test_model_component_risk_identifies_cross_model_recurrence(self) -> None:

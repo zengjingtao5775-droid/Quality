@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-27-v14"
+BME_QUALITY_LOGIC_VERSION = "2026-08-27-v15"
 
 
 EVENT_COLUMNS = [
@@ -527,7 +527,7 @@ def classify_torque_component_group(component: object) -> str:
     )):
         return "cockpit"
     if any(token in text for token in (
-        "前叉", "后避震", "轮", "桶轴", "花鼓", "吊心", "吊耳", "快拆",
+        "前叉", "后避震", "轮", "桶轴", "花鼓", "太阳花", "吊心", "吊耳", "快拆",
         "挡泥板", "货架", "脚撑", "灯", "反光", "fork", "wheel", "hub",
         "axle", "frame",
     )):

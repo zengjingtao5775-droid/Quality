@@ -3,48 +3,43 @@
 ## Comparison target
 
 - Source visual truth:
-  - `/Users/eric/.codex/generated_images/01a01402-fe53-79e1-b16c-4e55c64e6cb2/exec-8dd04210-4749-4623-b623-d08a28a4e2b4.png` — option 3 priority rail
-  - `/Users/eric/.codex/generated_images/01a01402-fe53-79e1-b16c-4e55c64e6cb2/exec-a9ea3e78-b8c3-49ea-bd33-d58d1205ab5c.png` — option 2 grouped matrix
-- Normalized hybrid target: `/tmp/bme-risk-hybrid-source-target.png`
-- Implementation screenshot: `/tmp/bme-risk-hybrid-selected.png`
-- Combined comparison evidence: `/tmp/bme-risk-hybrid-comparison.png`
-- Source pixels: 1942 × 809 for each ideation image.
-- Implementation state: BME_CMW, Chinese, R12M, matrix point selected; existing Streamlit navigation and sidebar retained.
-- Browser viewport used for interaction verification: 1560 × 1000 CSS px, device scale factor 1. A focused crop was normalized for the comparison board because the source consists of two independently generated concepts rather than one exact application frame.
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-31944100-21c1-4968-9bc2-a84339d475c4.png` — option 3 priority rail
+  - `/var/folders/fz/602qzjrn7s5g1k93jp4dk9dh0000gn/T/codex-clipboard-3b69d172-611e-438b-8faa-fde1ee8ef4fa.png` — option 2 grouped matrix
+- Implementation screenshot: `/tmp/bme-risk-fullqa.png`
+- Combined comparison evidence: `/tmp/bme-risk-comparison.png`
+- Implementation state: BME_CMW, Chinese, R12M, matrix point selected; the existing Streamlit navigation and sidebar are retained.
+- Browser viewport: 1574 × 914 CSS px, matching the supplied reference width closely.
 
 ## Findings
 
 - No actionable P0, P1, or P2 mismatch remains.
-- Information architecture: the implementation keeps option 3's left-side Top 5 priority rail and option 2's right-side grouped model × component matrix. The existing product title, KPI context, filter, and SPC drill-down remain outside the visual comparison crop.
-- Fonts and typography: Inter with PingFang SC / Microsoft YaHei fallbacks matches the dashboard system; hierarchy, weights, wrapping, and shortened display labels remain readable. Exact source component names remain in hover content.
-- Spacing and layout rhythm: the 24/76 rail-to-matrix split, restrained card border, compact headings, grouped column separators, and alternating matrix rows match the selected direction within the existing 1280 px application content constraint.
-- Colors and visual tokens: Decathlon blue, specification red, SPC amber, cool-slate grid/borders, recurrence outline, and selected-state blue follow the source direction and existing BME tokens.
-- Image quality and assets: the selected design contains no product imagery, logos, decorative raster assets, or custom illustrations requiring generation. The visible marks are data-driven Plotly visualizations and native UI text.
-- Copy and content: `优先关注`, grouped system names, risk legend, machine-calibration unavailability, and the warning that blank cells are not zero risk are present. No prediction score or unsupported result was introduced.
-- Intentional source deviation: empty reference cells are not rendered as “normal” circles because missing or absent risk evidence must not be presented as confirmed zero risk.
+- Information architecture: option 3's left Top 5 priority rail is combined with option 2's right grouped model × component matrix. The title and four real-data KPIs are now one integrated header instead of five visually separate blocks.
+- Layout: the rail/matrix split is 20/80. The matrix is the main visual, while the rail remains wide enough to show full model names at the target viewport.
+- Density: recurrence number circles were removed from the matrix. A dark outline preserves cross-model recurrence, and exact counts remain in hover detail.
+- Typography: horizontal two-line component labels use a smaller axis font and no longer collide. Exact source component names remain unchanged in data and hover content.
+- Grouping: `太阳花锁紧盖` is classified with wheel/chassis components, removing the visually awkward one-column `其他` group and matching the selected reference's functional grouping.
+- Visual rhythm: borders, shadows, row bands, group bands, and grid lines are lighter. Priority bars are thin continuous stacks with a neutral remainder instead of dense in-bar numbers.
+- Colors: specification red, SPC amber, recurrence slate outline, and selected blue remain distinct and consistent with the existing BME palette.
+- Data boundary: no unsupported prediction score was added. Machine calibration risk remains unavailable without Machine ID and calibration history.
+- Intentional source deviation: blank matrix cells are not rendered as confirmed-normal circles because missing risk evidence is not equivalent to verified zero risk.
 
 ## Interaction and console evidence
 
-- Clicked a different risk point in the grouped matrix.
-- The process selector changed from `CMW · I-MR · 26''EXPL900HD · BB右碗` to `CMW · I-MR · 24"EXPL900 · 变把（指拨）锁紧螺丝`, confirming the existing SPC drill-down remains functional.
-- Browser console errors/warnings: none.
-- Streamlit AppTest: `exceptions=0`; both `优先关注` and `分组风险矩阵` rendered.
+- The grouped matrix rendered 84 clickable risk points.
+- Clicking a different point changed the process selector from `CMW · I-MR · RCR FP · 坐垫与坐垫杆（螺母）` to `CMW · I-MR · RCR FP · 膨胀吊心`, confirming click-to-SPC drill-down.
+- Browser console errors: none.
+- Streamlit AppTest: `exceptions=0`; the matrix title and Plotly charts rendered.
 
-## Comparison history
+## Fix history
 
-1. Initial implementation evidence: `/tmp/bme-risk-hybrid-implementation-v2.png`.
-   - P2: a recurrence number badge appeared on every recurring cell, making the dense matrix noisy.
-   - P2: long source component labels competed with the grouped headers.
-2. Fixes applied:
-   - capped marker-size scaling;
-   - limited the recurrence count badge to one highest-priority point per component while retaining recurrence outlines on all relevant points;
-   - shortened only the visible axis labels while preserving exact source names in hover details.
-3. Post-fix evidence: `/tmp/bme-risk-hybrid-selected.png` and `/tmp/bme-risk-hybrid-comparison.png`.
-   - The rail and matrix are visually separated, group headers remain readable, risk colors stay dominant, and recurrence no longer overwhelms the relationship view.
-
-## Follow-up polish
-
-- P3: on very wide screens, a future BME-only content-width token could give the matrix more horizontal breathing room without changing other dashboard pages.
+1. P1: 15 horizontal component labels initially collided at the target viewport.
+   - Fixed by using concise two-line display labels and a 10 px axis font while preserving exact source names in hover data.
+2. P1: long model names clipped in the 18% rail.
+   - Fixed by changing the rail/matrix split to 20/80 and enabling axis auto margins.
+3. P2: the last one-column `其他` group competed with the wheel/chassis header.
+   - Fixed by grouping the source `太阳花` component with wheel/chassis.
+4. P2: recurrence badges and independent KPI cards created visual noise.
+   - Fixed by replacing badges with outlines and replacing cards with a compact summary strip.
 
 ## Implementation checklist
 
@@ -53,6 +48,6 @@
 - [x] Specification/SPC/recurrence/selected semantics are distinct.
 - [x] Click-to-SPC detail remains functional.
 - [x] Machine prediction remains unavailable without Machine ID and calibration history.
-- [x] Browser, console, AppTest, unit tests, compile, and diff checks completed.
+- [x] Browser comparison, console check, AppTest, unit tests, compile, and diff checks completed.
 
 final result: passed
