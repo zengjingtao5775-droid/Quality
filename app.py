@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-27-v15"
+_BME_QUALITY_LOGIC_VERSION = "2026-08-28-v16"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -55,6 +55,7 @@ load_bme_quality_events = _bme_quality.load_bme_quality_events
 summarize_spc_process_risk = _bme_quality.summarize_spc_process_risk
 build_spc_model_component_risk = _bme_quality.build_spc_model_component_risk
 classify_torque_component_group = _bme_quality.classify_torque_component_group
+torque_component_display_name = _bme_quality.torque_component_display_name
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -16359,6 +16360,10 @@ def render_bme_bike_quality_dashboard_v3(
 
         def compact_process_label(label: str) -> str:
             parts = [part.strip() for part in str(label).split("·") if part.strip()]
+            if len(parts) >= 4 and parts[0] == "CMW":
+                parts[3] = torque_component_display_name(
+                    parts[3], "zh" if st.session_state.lang == "中文" else "en"
+                )
             compact = " · ".join(parts[:4])
             return compact if len(compact) <= 72 else compact[:71] + "…"
 
@@ -16537,9 +16542,14 @@ def render_bme_bike_quality_dashboard_v3(
                     st.session_state["bme_v6_spc"] = label
 
             def risk_customdata(frame: pd.DataFrame) -> np.ndarray:
+                component_display = frame["component"].map(
+                    lambda value: torque_component_display_name(
+                        value, "zh" if st.session_state.lang == "中文" else "en"
+                    )
+                )
                 return np.column_stack([
                     frame["full_label"], frame["risk_label"], frame["model_code"],
-                    frame["component"], frame["signal_count"], frame["signal_rate"],
+                    component_display, frame["signal_count"], frame["signal_rate"],
                     frame["specification_breaches"], frame["measurement_count"],
                     frame["specification_rate"], frame["recurrence_display"],
                     frame["other_models_display"], frame["capability_display"],
@@ -16578,6 +16588,11 @@ def render_bme_bike_quality_dashboard_v3(
                 remainder = (maximum_total - specification - spc).clip(lower=0)
                 def priority_display_label(value: object) -> str:
                     label = str(value)
+                    if index_column == "component":
+                        label = torque_component_display_name(
+                            label, "zh" if st.session_state.lang == "中文" else "en"
+                        )
+                        return f"{label[:20]}…" if len(label) > 21 else label
                     compact_model = label.upper().replace(" ", "")
                     if "EXPL900HD" in compact_model:
                         return "26” E900HD" if compact_model.startswith("26") else "E900HD"
@@ -16585,13 +16600,7 @@ def render_bme_bike_quality_dashboard_v3(
                         return "26” E500" if compact_model.startswith("26") else "E500"
                     if "EXPL900" in compact_model:
                         return "24” E900" if compact_model.startswith("24") else "E900"
-                    replacements = {
-                        "EXPL 100 MULTI": "EXPL 100",
-                        "坐垫与坐垫杆（螺母）": "坐垫 / 坐杆",
-                        "前叉竖管与把立（竖管两侧）": "前叉 / 把立",
-                        "变把（指拨）锁紧螺丝": "变把 / 指拨",
-                        "变把（转把）锁紧螺丝": "变把 / 转把",
-                    }
+                    replacements = {"EXPL 100 MULTI": "EXPL 100"}
                     label = replacements.get(label, label)
                     return f"{label[:9]}…" if len(label) > 10 else label
                 figure = go.Figure()
@@ -16764,22 +16773,14 @@ def render_bme_bike_quality_dashboard_v3(
                     )
 
             def wrap_component_label(value: str) -> str:
-                label = str(value)
-                replacements = {
-                    "坐垫与坐垫杆（螺母）": "坐垫 / 坐杆",
-                    "前叉竖管与把立（竖管两侧）": "前叉 / 把立",
-                    "变把（指拨）锁紧螺丝": "变把 / 指拨",
-                    "变把（转把）锁紧螺丝": "变把 / 转把",
-                    "把立把横锁紧": "把立 / 把横",
-                    "曲柄BB螺丝": "曲柄 BB",
-                    "后变速器螺丝": "后变速器",
-                    "变速线锁紧": "变速线",
-                    "碟刹转接座": "碟刹转接",
-                    "太阳花锁紧盖": "太阳花盖",
-                }
-                label = replacements.get(label, label)
+                language_code = "zh" if st.session_state.lang == "中文" else "en"
+                label = torque_component_display_name(value, language_code)
                 if " / " in label:
                     return label.replace(" / ", "<br>")
+                if language_code == "en" and len(label) > 16 and " " in label:
+                    words = label.split()
+                    split_at = max(1, len(words) // 2)
+                    return " ".join(words[:split_at]) + "<br>" + " ".join(words[split_at:])
                 if len(label) <= 6:
                     return label
                 split_at = min(5, max(3, len(label) // 2))

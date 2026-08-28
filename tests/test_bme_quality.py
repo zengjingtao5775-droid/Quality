@@ -11,6 +11,7 @@ from bme_quality import (
     classify_torque_component_group,
     load_bme_quality_events,
     summarize_spc_process_risk,
+    torque_component_display_name,
 )
 
 
@@ -67,6 +68,13 @@ class BmeQualityDataTest(unittest.TestCase):
 
 
 class BmeSpcRiskSummaryTest(unittest.TestCase):
+    def test_torque_component_display_names_are_localized_only_for_presentation(self) -> None:
+        source = "坐垫与坐垫杆（螺母）"
+        self.assertEqual(torque_component_display_name(source, "zh"), "坐垫 / 坐杆")
+        self.assertEqual(torque_component_display_name(source, "en"), "Saddle / Seatpost")
+        self.assertEqual(torque_component_display_name("曲柄BB螺丝", "en"), "Crank / BB")
+        self.assertEqual(torque_component_display_name("Unmapped fixture", "en"), "Unmapped fixture")
+
     def test_torque_component_groups_preserve_functional_systems(self) -> None:
         self.assertEqual(classify_torque_component_group("把立把横锁紧"), "cockpit")
         self.assertEqual(classify_torque_component_group("碟刹转接座"), "brake")

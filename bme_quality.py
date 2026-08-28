@@ -7,7 +7,58 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-08-27-v15"
+BME_QUALITY_LOGIC_VERSION = "2026-08-28-v16"
+
+
+# Presentation-only labels for CMW torque components. Source values remain
+# unchanged everywhere in the data model and SPC calculations.
+TORQUE_COMPONENT_DISPLAY_LABELS: dict[str, tuple[str, str]] = {
+    "BB右碗": ("BB右碗", "Right BB Cup"),
+    "BB左轴（钢碗）": ("BB左轴 / 钢碗", "Left BB Axle / Steel Cup"),
+    "Shimnao一体式曲柄腿 固定螺丝": ("一体曲柄固定螺丝", "Integrated Crank Bolt"),
+    "公路变速刹把": ("公路变速 / 刹把", "Road Shift / Brake Lever"),
+    "刹把": ("刹把", "Brake Lever"),
+    "刹车油管锁紧": ("刹车油管", "Brake Hose Fitting"),
+    "刹车线": ("刹车线", "Brake Cable"),
+    "前叉与竖管（竖管两侧）": ("前叉 / 竖管", "Fork / Steerer"),
+    "前叉竖管与把立（竖管两侧）": ("前叉 / 把立", "Fork / Stem"),
+    "前变速器螺丝": ("前变速器", "Front Derailleur"),
+    "前轮桶轴锁紧": ("前轮桶轴", "Front Thru-Axle"),
+    "前轮锁紧": ("前轮锁紧", "Front Wheel Fastener"),
+    "勾爪吊耳": ("勾爪吊耳", "Derailleur Hanger"),
+    "卡式飞轮": ("卡式飞轮", "Cassette"),
+    "变把（指拨）锁紧螺丝": ("变把 / 指拨", "Trigger Shifter"),
+    "变把（转把）锁紧螺丝": ("变把 / 转把", "Twist Shifter"),
+    "变速线锁紧": ("变速线", "Shift Cable"),
+    "后变速器螺丝": ("后变速器", "Rear Derailleur"),
+    "后轮桶轴锁紧": ("后轮桶轴", "Rear Thru-Axle"),
+    "后轮锁紧": ("后轮锁紧", "Rear Wheel Fastener"),
+    "坐垫与坐垫杆（螺母）": ("坐垫 / 坐杆", "Saddle / Seatpost"),
+    "坐管夹": ("坐管夹", "Seatpost Clamp"),
+    "太阳花锁紧盖": ("太阳花盖", "Star Nut Cap"),
+    "快拆锁紧": ("快拆锁紧", "Quick Release"),
+    "把立把横锁紧": ("把立 / 把横", "Stem / Handlebar"),
+    "旋式飞轮": ("旋式飞轮", "Freewheel"),
+    "曲柄BB螺丝": ("曲柄 BB", "Crank / BB"),
+    "曲柄BB螺丝（曲柄锁紧塑料盖）": ("曲柄预紧盖", "Crank Preload Cap"),
+    "曲柄螺丝（曲柄锁紧螺丝）": ("曲柄锁紧螺丝", "Crank Fixing Bolt"),
+    "碟刹器": ("碟刹器", "Brake Caliper"),
+    "碟刹片": ("碟刹片", "Brake Rotor"),
+    "碟刹转接座": ("碟刹转接", "Brake Adapter"),
+    "碟刹转接座（前）": ("前碟刹转接", "Front Brake Adapter"),
+    "碟刹转接座（后）": ("后碟刹转接", "Rear Brake Adapter"),
+    "脚撑": ("脚撑", "Kickstand"),
+    "膨胀吊心": ("膨胀吊心", "Expander Plug"),
+}
+
+
+def torque_component_display_name(component: object, language: str = "zh") -> str:
+    """Return a localized display label without changing the source value."""
+    source_label = str(component or "").strip()
+    labels = TORQUE_COMPONENT_DISPLAY_LABELS.get(source_label)
+    if not labels:
+        return source_label
+    return labels[0] if str(language).lower().startswith("zh") else labels[1]
 
 
 EVENT_COLUMNS = [
