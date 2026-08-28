@@ -16919,13 +16919,13 @@ def render_bme_bike_quality_dashboard_v3(
             spc_logic_cn = "不会把其他产品的机器数据自动放到所选产品下面。"
             spc_logic_en = "Machine data from another product is never shown as if it belonged to the selected product."
         elif method == "imr":
-            spc_read_cn = "上半图看每次扭力实测值：蓝点是实测值，青色 CL 是过程平均值，灰色 UCL/LCL 是统计控制限，橙色 USL/LSL 是产品规格上下限。下半图 MR 看相邻两次测量变化有多大。只有红点表示需要调查的异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
-            spc_read_en = "The upper chart shows each measured torque value: blue points are measurements, the teal CL is the process average, grey UCL/LCL lines are statistical control limits, and orange USL/LSL lines are product specifications. The lower MR chart shows change between consecutive measurements. Only red points indicate patterns requiring investigation. A red point alone does not mean the product must be rejected."
+            spc_read_cn = "图中显示每次扭力实测值：蓝点是实测值，青色 CL 是过程平均值，灰色 UCL/LCL 是统计控制限，橙色 USL/LSL 是产品规格上下限。只有红点表示需要调查的异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
+            spc_read_en = "The chart shows each measured torque value: blue points are measurements, the teal CL is the process average, grey UCL/LCL lines are statistical control limits, and orange USL/LSL lines are product specifications. Only red points indicate patterns requiring investigation. A red point alone does not mean the product must be rejected."
             spc_logic_cn = "同一车型、产品描述、工序、规格和单位形成同质序列；I-MR 控制限为均值 ± 2.66×平均移动极差，并检查超出 3σ、连续 8 点同侧和连续 6 点单调趋势。疑似录入错误保留在源数据中，但不参与图表、SPC 信号、规格超限、稳定性和默认排序。只有过程稳定、样本不少于 25 且规格完整时才显示 Ppk。"
             spc_logic_en = "A homogeneous sequence uses the same model, product description, process, specification, and unit. I-MR limits are mean ± 2.66×average moving range, with 3σ, eight-on-one-side, and six-point-trend rules. Suspected data-entry errors remain in the source data but are excluded from the chart, SPC signals, specification breaches, stability, and ranking. Ppk is shown only for a stable process with at least 25 observations and complete specifications."
         elif method == "imr_stability":
-            spc_read_cn = "上半图看每次实测值是否围绕平均值稳定波动，下半图看相邻两次测量的变化。红点表示过程出现了不寻常的变化，需要回查工单、设备、人员和物料批次。因为源数据没有规格线，这张图只能判断过程是否稳定，不能判断产品是否合格。"
-            spc_read_en = "The upper chart shows whether measurements vary consistently around the average, and the lower chart shows changes between consecutive measurements. Red points require investigation. Because source specifications are unavailable, this chart assesses stability only and cannot judge product conformity."
+            spc_read_cn = "图中显示每次实测值是否围绕平均值稳定波动。红点表示过程出现了不寻常的变化，需要回查工单、设备、人员和物料批次。因为源数据没有规格线，这张图只能判断过程是否稳定，不能判断产品是否合格。"
+            spc_read_en = "The chart shows whether measurements vary consistently around the average. Red points require investigation. Because source specifications are unavailable, this chart assesses stability only and cannot judge product conformity."
             spc_logic_cn = "同一 TEKTRO 型号、油管长度和订单形成一个 I-MR 序列。源数据没有规格，因此只判断过程稳定性，不判 NG，也不计算能力指数。"
             spc_logic_en = "One I-MR sequence uses the same TEKTRO model, hose length, and order. Source specifications are unavailable, so the chart assesses stability only without NG decisions or capability indices."
         elif method == "pchart":
@@ -16976,26 +16976,14 @@ def render_bme_bike_quality_dashboard_v3(
                 f"{t('备注', 'Comments')}  %{{customdata[2]}}<br>"
                 f"SPC  %{{customdata[3]}}<extra></extra>"
             )
-            fig = make_subplots(
-                rows=2,
-                cols=1,
-                shared_xaxes=True,
-                vertical_spacing=.12,
-                row_heights=[.68, .32],
-                subplot_titles=[measured_label, t("相邻两次变化", "Consecutive Change")],
-            )
+            fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=chart_plot["spc_time"], y=chart_plot["value"], mode="lines+markers", name=t("实测值", "Measured"),
                 marker=dict(color=np.where(chart_plot["spc_event_signal"], BME_COLORS["alert"], BME_COLORS["primary"])),
                 line=dict(color=BME_COLORS["primary"]),
                 customdata=np.column_stack([chart_plot["trace_number"], chart_plot["unit"].fillna(""), chart_plot["comments"], chart_plot["spc_signal_label"]]),
                 hovertemplate=hover_template,
-            ), row=1, col=1)
-            fig.add_trace(go.Scatter(
-                x=chart_plot["spc_time"], y=chart_plot["moving_range"], mode="lines+markers", name=t("移动极差", "Moving Range"),
-                line=dict(color=BME_COLORS["pqc"]), marker=dict(color=np.where(chart_plot["mr_signal"], BME_COLORS["alert"], BME_COLORS["pqc"])),
-                hovertemplate=f"{time_label}  %{{x|%Y-%m-%d %H:%M}}<br>{t('相邻两次变化', 'Consecutive Change')}  %{{y:.2f}}<extra></extra>"
-            ), row=2, col=1)
+            ))
             if limits:
                 line_specs = [
                     (limits["center"], "CL", BME_COLORS["machine"], "solid", "bottom left"),
@@ -17003,16 +16991,13 @@ def render_bme_bike_quality_dashboard_v3(
                     (limits["lcl"], "LCL", BME_COLORS["control"], "dot", "bottom left"),
                 ]
                 for value, name, color, dash, position in line_specs:
-                    fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, annotation_position=position, row=1, col=1)
-                fig.add_hline(y=limits["mr_ucl"], line_color=BME_COLORS["control"], line_dash="dot", annotation_text="MR UCL", annotation_position="top left", row=2, col=1)
+                    fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, annotation_position=position)
             if method == "imr":
-                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL", annotation_position="top right", row=1, col=1)
-                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL", annotation_position="bottom right", row=1, col=1)
-            fig.update_xaxes(title_text=time_label, tickangle=0, row=2, col=1)
-            fig.update_xaxes(tickangle=0, row=1, col=1)
-            fig.update_yaxes(title_text=None, tickangle=0, row=1, col=1)
-            fig.update_yaxes(title_text=None, tickangle=0, row=2, col=1)
-            fig.update_layout(height=570, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
+                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL", annotation_position="top right")
+                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL", annotation_position="bottom right")
+            fig.update_xaxes(title_text=time_label, tickangle=0)
+            fig.update_yaxes(title_text=None, tickangle=0)
+            fig.update_layout(height=430, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
             apply_bme_chart_style(fig)
             if limits:
                 signal_count = int(chart_plot["spc_event_signal"].sum())
