@@ -908,11 +908,6 @@ st.markdown(
         font-weight: 650;
         box-shadow: none;
     }
-    .hero.bme-hero {
-        padding: 16px 22px 15px;
-        margin-bottom: 10px;
-    }
-    .hero.bme-hero .hero-meta {margin-top: 10px;}
     .kpi-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
@@ -14990,13 +14985,21 @@ def render_bme_bike_quality_dashboard_v3(
     supplier_chip = " · ".join(selected_suppliers) if selected_suppliers else t("未选择供应商", "No supplier selected")
     with hero_slot.container():
         st.markdown(
-            f"""<div id="bme-overview" class="hero bme-hero"><h1 class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</h1><div class="hero-meta"><span class="hero-chip">{html.escape(supplier_chip)}</span><span class="hero-chip">{html.escape(selected_period)} · {start_date} — {end_date}</span></div></div>""",
+            f"""
+            <div id="bme-overview" class="hero">
+              <div class="hero-kicker">{html.escape(t('NEA 质量管理平台', 'NEA QUALITY PLATFORM（POC）'))}</div>
+              <div class="hero-title">{html.escape(t('BME Alert 看板', 'BME Alert Dashboard'))}</div>
+              <div class="hero-meta">
+                <span class="hero-chip">{html.escape(t('供应商', 'Suppliers'))}: {html.escape(supplier_chip)}</span>
+                <span class="hero-chip">{html.escape(t('数据周期', 'Data period'))}: {html.escape(selected_period)} · {start_date} - {end_date}</span>
+              </div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
     st.markdown('<div id="bme-data-map" class="bme-section-anchor"></div>', unsafe_allow_html=True)
-    st.header(t("数据地图", "Data Map"))
-    with st.expander(t("数据源覆盖", "Data-source coverage"), expanded=True):
+    with st.expander(t("数据地图", "Data Map"), expanded=False):
         # Source coverage is fixed. Analysis filters must never turn an
         # unselected source into a false "not connected" status.
         _render_bme_data_map(events, customer_nc, fsd_orders)
@@ -15195,19 +15198,26 @@ def render_bme_bike_quality_dashboard_v3(
         }
 
     st.markdown('<div id="bme-problem-cards" class="bme-section-anchor"></div>', unsafe_allow_html=True)
-    render_chart_heading(
-        "问题卡",
-        "Problem Cards",
-        "先看所选期间的工厂整体质量结果和最近两个完整月的变化。",
-        "Review selected-period factory quality results and the latest two-month change.",
-        "卡片大数字明确标记为所选期间累计结果；下方显示范围内最近两个完整自然月。PPM 表示每一百万件中的问题数量。",
-        "Headline values are explicitly labeled as selected-period results; the line below shows the latest two complete calendar months inside that period. PPM is issues per million units.",
-        "FSD 客诉 PPM 使用 Component Box 问题数量和已关联的 FSD 订单量；来料退货 PPM 使用 CMW IQC 的退货数量和来料数量；FSD 检验 NC 率使用 AQL / DKL 的 NC 数量÷检验数量；CMW FQC 使用每100台检验量中的问题点数，不解释为不合格车辆占比。Component Box 没有唯一记录 ID，当前保留全部源行，不自动去重。没有正式目标值时，卡片颜色不表示风险等级。",
-        "FSD complaint PPM uses Component Box issue quantities and linked FSD order quantities; incoming return PPM uses CMW IQC return and incoming quantities; FSD inspection NC rate uses AQL/DKL NC quantity divided by inspected quantity; CMW FQC uses defect points per 100 inspected units and is not a failed-bike rate. Component Box has no unique record ID, so all source rows are retained. Card color does not imply risk without a formal target.",
-        "BME Database + Component Box",
-        "bme_v6_kpi_info",
-        heading_level=2,
-    )
+    _, kpi_info_col = st.columns([0.90, 0.10])
+    with kpi_info_col:
+        render_readme_popover(
+            t("说明", "Info"),
+            t("工厂整体质量指标", "Factory Quality KPIs"),
+            t(
+                "先看所选期间的工厂整体质量结果和最近两个完整月的变化。",
+                "Review selected-period factory quality results and the latest two-month change.",
+            ),
+            t(
+                "卡片大数字是所选期间累计结果；下方显示范围内最近两个完整自然月。PPM 表示每一百万件中的问题数量。",
+                "Headline values are selected-period totals; the line below shows the latest two complete calendar months. PPM is issues per million units.",
+            ),
+            t(
+                "FSD 客诉 PPM 使用 Component Box 问题数量和已关联订单量；来料退货 PPM 使用 CMW IQC；FSD 检验 NC 率使用 AQL / DKL；CMW FQC 使用每100台检验量中的问题点数。没有正式目标值时，卡片颜色不表示风险等级。",
+                "FSD complaint PPM uses Component Box issues and linked orders; incoming return PPM uses CMW IQC; FSD inspection NC rate uses AQL/DKL; CMW FQC uses defect points per 100 inspected units. Card color does not imply risk without a formal target.",
+            ),
+            "BME Database + Component Box",
+            use_container_width=False,
+        )
     cmw_kpi_cards: list[dict[str, str]] = []
     if "CMW" in selected_suppliers:
         cmw_kpi_cards.extend([
