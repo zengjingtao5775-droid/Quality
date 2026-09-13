@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-08-28-v16"
+_BME_QUALITY_LOGIC_VERSION = "2026-09-13-v17-fg-gates"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -52,6 +52,7 @@ build_cmw_product_clusters = _bme_quality.build_cmw_product_clusters
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
+load_fg_quality_analysis = _bme_quality.load_fg_quality_analysis
 summarize_spc_process_risk = _bme_quality.summarize_spc_process_risk
 build_spc_model_component_risk = _bme_quality.build_spc_model_component_risk
 classify_torque_component_group = _bme_quality.classify_torque_component_group
@@ -1118,6 +1119,127 @@ st.markdown(
         font-size: 1rem;
         font-weight: 800;
         line-height: 1.3;
+    }
+    .bme-fg-heading {
+        margin: 26px 0 4px;
+        color: #172033;
+        font-size: clamp(1.22rem, 1.8vw, 1.55rem);
+        font-weight: 860;
+        line-height: 1.25;
+        letter-spacing: -.02em;
+    }
+    .bme-fg-subheading {
+        margin: 0 0 14px;
+        color: #667085;
+        font-size: .86rem;
+        line-height: 1.5;
+    }
+    .st-key-bme_fg_iqc,
+    .st-key-bme_fg_pqc,
+    .st-key-bme_fg_fqc {
+        min-height: 690px;
+        padding: 15px 15px 8px;
+        border: 1px solid #dbe2ec;
+        border-top: 4px solid #2855c5;
+        border-radius: 10px;
+        background: #ffffff;
+        box-shadow: 0 5px 16px rgba(15, 23, 42, .055);
+    }
+    .bme-fg-stage-title {
+        color: #172033;
+        font-size: 1.18rem;
+        font-weight: 860;
+        line-height: 1.25;
+        text-align: center;
+    }
+    .bme-fg-stage-scope {
+        margin: 4px 0 12px;
+        color: #7a8498;
+        font-size: .72rem;
+        font-weight: 650;
+        line-height: 1.35;
+        text-align: center;
+    }
+    .bme-fg-metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+    .bme-fg-metrics.one {grid-template-columns: minmax(0, 1fr);}
+    .bme-fg-metric {
+        padding: 10px 11px;
+        background: #f7f9fc;
+        border: 1px solid #e4e8ef;
+        border-radius: 8px;
+    }
+    .bme-fg-metric-label {
+        color: #667085;
+        font-size: .68rem;
+        font-weight: 750;
+        line-height: 1.25;
+    }
+    .bme-fg-metric-value {
+        margin-top: 4px;
+        color: #173b8f;
+        font-size: 1.34rem;
+        font-weight: 880;
+        line-height: 1;
+    }
+    .bme-fg-chart-label {
+        margin: 4px 0 1px;
+        color: #344054;
+        font-size: .78rem;
+        font-weight: 820;
+        line-height: 1.3;
+    }
+    .bme-fg-pareto-list {
+        margin: -3px 0 12px;
+        border-top: 1px solid #e8ebf2;
+    }
+    .bme-fg-pareto-row {
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 7px;
+        padding: 6px 1px;
+        border-bottom: 1px solid #eef1f5;
+        color: #475467;
+        font-size: .68rem;
+        line-height: 1.35;
+    }
+    .bme-fg-pareto-rank {
+        color: #2855c5;
+        font-weight: 850;
+    }
+    .bme-fg-pareto-name {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    .bme-fg-pareto-qty {
+        color: #172033;
+        font-variant-numeric: tabular-nums;
+        font-weight: 820;
+        white-space: nowrap;
+    }
+    .bme-fg-data-note {
+        min-height: 36px;
+        margin: 2px 0 5px;
+        color: #7a8498;
+        font-size: .67rem;
+        line-height: 1.4;
+    }
+    @media (max-width: 1000px) {
+        div[data-testid="stHorizontalBlock"]:has(.st-key-bme_fg_iqc) {
+            flex-direction: column;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.st-key-bme_fg_iqc) > div[data-testid="stColumn"] {
+            width: 100%;
+            flex: 1 1 100%;
+        }
+        .st-key-bme_fg_iqc,
+        .st-key-bme_fg_pqc,
+        .st-key-bme_fg_fqc {min-height: 0;}
     }
     .st-key-bme_spc_filter {
         background: rgba(255, 255, 255, 0.96);
@@ -13957,6 +14079,216 @@ def load_bme_customer_quality_cached(
     return load_bme_customer_quality(ROOT)
 
 
+@st.cache_data(show_spinner=False)
+def load_fg_quality_analysis_cached(
+    fingerprint: tuple[tuple[str, int, int], ...],
+    logic_version: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    _ = fingerprint, logic_version
+    return load_fg_quality_analysis(ROOT)
+
+
+def render_fg_quality_gate_analysis(
+    summary: pd.DataFrame,
+    pareto: pd.DataFrame,
+    selected_suppliers: list[str],
+    start_date: dt.date,
+    end_date: dt.date,
+) -> None:
+    st.markdown(
+        f'<div class="bme-fg-heading">{html.escape(t("成品质量环节分析", "Finished Goods Quality Gate Analysis"))}</div>'
+        f'<div class="bme-fg-subheading">{html.escape(t("按照 FG IQC、FG PQC、FG FQC 查看问题率趋势与问题结构。", "Review defect-rate trends and issue structure across FG IQC, FG PQC, and FG FQC."))}</div>',
+        unsafe_allow_html=True,
+    )
+    stage_columns = st.columns(3, gap="medium")
+    stage_meta = {
+        "IQC": {"key": "bme_fg_iqc", "title": "FG IQC", "scope_cn": "FSD + CMW · 来料", "scope_en": "FSD + CMW · Incoming"},
+        "PQC": {"key": "bme_fg_pqc", "title": "FG PQC", "scope_cn": "CMW · 制程", "scope_en": "CMW · Process"},
+        "FQC": {"key": "bme_fg_fqc", "title": "FG FQC", "scope_cn": "FSD + CMW · 成品", "scope_en": "FSD + CMW · Final"},
+    }
+
+    def rate_text(value: float) -> str:
+        return f"{value:.2%}" if pd.notna(value) else "—"
+
+    for column, stage in zip(stage_columns, ["IQC", "PQC", "FQC"]):
+        meta = stage_meta[stage]
+        with column:
+            with st.container(border=True, key=meta["key"]):
+                st.markdown(
+                    f'<div class="bme-fg-stage-title">{meta["title"]}</div>'
+                    f'<div class="bme-fg-stage-scope">{html.escape(t(meta["scope_cn"], meta["scope_en"]))}</div>',
+                    unsafe_allow_html=True,
+                )
+                stage_summary = summary[
+                    summary["stage"].eq(stage)
+                    & summary["supplier"].isin(selected_suppliers)
+                    & summary["date"].notna()
+                    & summary["date"].dt.date.between(start_date, end_date)
+                ].copy()
+                stage_pareto = pareto[
+                    pareto["stage"].eq(stage)
+                    & pareto["supplier"].isin(selected_suppliers)
+                    & pareto["date"].notna()
+                    & pareto["date"].dt.date.between(start_date, end_date)
+                ].copy()
+                if stage_summary.empty:
+                    st.info(t("当前筛选没有该环节数据。", "No data is available for this gate under the current filters."))
+                    continue
+
+                po_total = float(stage_summary["po_qty"].sum(min_count=1))
+                defect_total = float(stage_summary["defect_qty"].sum(min_count=1))
+                defect_rate = defect_total / po_total if po_total > 0 else np.nan
+                rework_rows = stage_summary[stage_summary["rework_available"]].copy()
+                rework_rate = np.nan
+                if not rework_rows.empty:
+                    rework_denominator = float(rework_rows["po_qty"].sum(min_count=1))
+                    rework_total = float(rework_rows["rework_qty"].sum(min_count=1))
+                    rework_rate = rework_total / rework_denominator if rework_denominator > 0 else np.nan
+
+                metric_items = [(t("问题率", "Defect rate"), rate_text(defect_rate))]
+                if stage != "IQC":
+                    metric_items.append((t("返工率", "Rework rate"), rate_text(rework_rate)))
+                metric_html = "".join(
+                    f'<div class="bme-fg-metric"><div class="bme-fg-metric-label">{html.escape(label)}</div>'
+                    f'<div class="bme-fg-metric-value">{html.escape(value)}</div></div>'
+                    for label, value in metric_items
+                )
+                metric_class = "bme-fg-metrics one" if len(metric_items) == 1 else "bme-fg-metrics"
+                st.markdown(f'<div class="{metric_class}">{metric_html}</div>', unsafe_allow_html=True)
+
+                st.markdown(f'<div class="bme-fg-chart-label">{html.escape(t("月度趋势", "Monthly trend"))}</div>', unsafe_allow_html=True)
+                monthly = stage_summary.assign(month=stage_summary["date"].dt.to_period("M")).groupby("month").agg(
+                    po_qty=("po_qty", "sum"), defect_qty=("defect_qty", "sum")
+                )
+                monthly["defect_rate"] = monthly["defect_qty"].div(monthly["po_qty"].replace(0, np.nan))
+                trend = pd.DataFrame({
+                    "month": monthly.index.to_timestamp(),
+                    t("问题率", "Defect rate"): monthly["defect_rate"].values,
+                })
+                if not rework_rows.empty:
+                    rework_monthly = rework_rows.assign(month=rework_rows["date"].dt.to_period("M")).groupby("month").agg(
+                        po_qty=("po_qty", "sum"), rework_qty=("rework_qty", "sum")
+                    )
+                    rework_monthly["rework_rate"] = rework_monthly["rework_qty"].div(rework_monthly["po_qty"].replace(0, np.nan))
+                    trend = trend.merge(
+                        pd.DataFrame({
+                            "month": rework_monthly.index.to_timestamp(),
+                            t("返工率", "Rework rate"): rework_monthly["rework_rate"].values,
+                        }), on="month", how="left",
+                    )
+                trend_long = trend.melt(id_vars="month", var_name="metric", value_name="rate").dropna(subset=["rate"])
+                trend_fig = px.line(
+                    trend_long, x="month", y="rate", color="metric", markers=True,
+                    color_discrete_map={t("问题率", "Defect rate"): "#2855c5", t("返工率", "Rework rate"): "#d98200"},
+                    labels={"month": t("月份", "Month"), "rate": t("比例", "Rate"), "metric": ""},
+                )
+                apply_bme_chart_style(trend_fig, height=225, showlegend=len(trend_long["metric"].unique()) > 1)
+                trend_fig.update_layout(margin=dict(l=8, r=8, t=25, b=25), legend=dict(orientation="h", y=1.12, x=0))
+                trend_fig.update_xaxes(
+                    title_text=None,
+                    tickformat="%b",
+                    dtick="M1",
+                    tickangle=0,
+                    automargin=True,
+                    tickfont=dict(size=10 if stage == "FQC" else 11),
+                )
+                trend_fig.update_yaxes(title_text=None, tickformat=".2%", rangemode="tozero")
+                st.plotly_chart(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"fg_trend_{stage}")
+
+                category_type = (
+                    stage_pareto["category_type"].mode().iloc[0]
+                    if not stage_pareto.empty and not stage_pareto["category_type"].mode().empty
+                    else "defect"
+                )
+                pareto_title = t("受影响产品族 Pareto", "Affected product family Pareto") if category_type == "product_family" else t("问题 Pareto", "Defect Pareto")
+                st.markdown(f'<div class="bme-fg-chart-label">{html.escape(pareto_title)}</div>', unsafe_allow_html=True)
+                ranked = (
+                    stage_pareto[
+                        stage_pareto["defect_name"].astype(str).str.strip().ne("")
+                        & stage_pareto["defect_qty"].fillna(0).gt(0)
+                    ]
+                    .groupby("defect_name", as_index=False)["defect_qty"].sum()
+                    .sort_values("defect_qty", ascending=False)
+                    .head(5)
+                )
+                if ranked.empty:
+                    st.info(t("源数据没有可排名的问题名称。", "The source does not contain rankable defect names."))
+                else:
+                    ranked = ranked.reset_index(drop=True)
+                    ranked["rank_label"] = [str(rank) for rank in range(1, len(ranked) + 1)]
+                    ranked["cumulative"] = ranked["defect_qty"].cumsum() / ranked["defect_qty"].sum()
+                    pareto_fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    pareto_fig.add_trace(
+                        go.Bar(
+                            x=ranked["rank_label"], y=ranked["defect_qty"], name=t("数量", "Quantity"),
+                            marker_color="#4f6edb", text=ranked["defect_qty"], texttemplate="%{text:,.0f}", textposition="outside",
+                            cliponaxis=False,
+                            customdata=ranked[["defect_name"]],
+                            hovertemplate=t("问题：%{customdata[0]}<br>数量：%{y:,.0f}<extra></extra>", "Issue: %{customdata[0]}<br>Quantity: %{y:,.0f}<extra></extra>"),
+                        ), secondary_y=False,
+                    )
+                    pareto_fig.add_trace(
+                        go.Scatter(
+                            x=ranked["rank_label"], y=ranked["cumulative"], name=t("累计占比", "Cumulative share"),
+                            mode="lines+markers", line=dict(color="#d98200", width=2), marker=dict(size=6),
+                            hovertemplate="%{y:.1%}<extra></extra>",
+                        ), secondary_y=True,
+                    )
+                    apply_bme_chart_style(pareto_fig, height=245, showlegend=False)
+                    pareto_fig.update_layout(margin=dict(l=8, r=8, t=28, b=30), bargap=.28)
+                    pareto_fig.update_xaxes(
+                        title_text=None,
+                        tickangle=0,
+                        automargin=True,
+                        tickfont=dict(size=10),
+                        tickmode="array",
+                        tickvals=ranked["rank_label"].tolist(),
+                        ticktext=ranked["rank_label"].tolist(),
+                        ticklabelstep=1,
+                        nticks=len(ranked),
+                    )
+                    max_defect_qty = float(ranked["defect_qty"].max())
+                    pareto_fig.update_yaxes(
+                        title_text=None,
+                        range=[0, max_defect_qty * 1.16],
+                        secondary_y=False,
+                    )
+                    pareto_fig.update_yaxes(title_text=None, tickformat=".0%", range=[0, 1.08], secondary_y=True)
+                    st.plotly_chart(pareto_fig, use_container_width=True, config={"displayModeBar": False}, key=f"fg_pareto_{stage}")
+                    pareto_rows = []
+                    for row_index, row in ranked.iterrows():
+                        full_name = re.sub(r"\s+", " ", str(row["defect_name"])).strip()
+                        display_name = re.sub(r"^\s*\d+[.、]\s*", "", full_name)
+                        pareto_rows.append(
+                            '<div class="bme-fg-pareto-row">'
+                            f'<span class="bme-fg-pareto-rank">#{row_index + 1}</span>'
+                            f'<span class="bme-fg-pareto-name" title="{html.escape(full_name, quote=True)}">{html.escape(display_name)}</span>'
+                            f'<span class="bme-fg-pareto-qty">{float(row["defect_qty"]):,.0f}</span>'
+                            '</div>'
+                        )
+                    st.markdown(
+                        f'<div class="bme-fg-pareto-list">{"".join(pareto_rows)}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                if stage == "IQC":
+                    note = t(
+                        "问题率 = 源不良数量 ÷ 源 PO/来料数量。FSD 源为异常记录表，不能解释为全部来料总体不良率。",
+                        "Defect rate = source defect quantity / source PO or incoming quantity. The FSD source is an exception log, not the full incoming population.",
+                    )
+                elif stage == "PQC":
+                    note = t(
+                        "源文件只有月度拒收数量、生产数量和产品族，没有结构化返工数量或具体 defect name。",
+                        "The source contains monthly rejected quantity, production quantity, and product family, but no structured reworked quantity or specific defect name.",
+                    )
+                else:
+                    note = t(
+                        "返工数量仅统计处理措施明确标记 Rework/返工的源不良数量。",
+                        "Reworked quantity includes only source defect quantities explicitly marked Rework.",
+                    )
+                st.markdown(f'<div class="bme-fg-data-note">{html.escape(note)}</div>', unsafe_allow_html=True)
+
+
 def render_bme_supplier_risk_charts(alerts: pd.DataFrame) -> None:
     st.subheader(t("供应商风险", "Supplier Risk"))
     left, right = st.columns(2, gap="small")
@@ -15241,6 +15573,13 @@ def render_bme_bike_quality_dashboard_v3(
         render_kpi_cards(fsd_kpi_cards, variant="bme-overall bme-fsd-row")
     if "FSD" in selected_suppliers and pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
+
+    fg_summary, fg_pareto = load_fg_quality_analysis_cached(
+        bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION
+    )
+    render_fg_quality_gate_analysis(
+        fg_summary, fg_pareto, selected_suppliers, start_date, end_date
+    )
 
     # Supplier selection controls visibility only. Scores retain the complete
     # period peer pool so the same supplier does not move when peers are hidden.

@@ -10,6 +10,7 @@ from bme_quality import (
     build_spc_model_component_risk,
     classify_torque_component_group,
     load_bme_quality_events,
+    load_fg_quality_analysis,
     summarize_spc_process_risk,
     torque_component_display_name,
 )
@@ -65,6 +66,34 @@ class BmeQualityDataTest(unittest.TestCase):
         self.assertTrue(required.issubset(alerts.columns))
         self.assertFalse(alerts["status"].fillna("").eq("").any())
         self.assertTrue(alerts["status"].isin(["Open", "In progress", "Closed", "Status unavailable"]).all())
+
+
+class FinishedGoodsGateAnalysisTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.summary, cls.pareto = load_fg_quality_analysis(ROOT)
+
+    def test_user_classified_finished_goods_folders_are_loaded(self) -> None:
+        self.assertEqual(set(self.summary["stage"]), {"IQC", "PQC", "FQC"})
+        self.assertTrue(self.summary["source_file"].str.contains(r"BME Database/FG (?:IQC|PQC|FQC)/", regex=True).all())
+        self.assertTrue(self.summary.loc[self.summary["po_qty"].notna(), "po_qty"].gt(0).all())
+
+    def test_pqc_missing_rework_quantity_remains_unavailable(self) -> None:
+        pqc = self.summary[self.summary["stage"].eq("PQC")]
+        self.assertGreater(len(pqc), 0)
+        self.assertFalse(pqc["rework_available"].any())
+        self.assertTrue(pqc["rework_qty"].isna().all())
+
+    def test_pqc_pareto_is_labeled_as_product_family_not_defect_name(self) -> None:
+        pqc = self.pareto[self.pareto["stage"].eq("PQC")]
+        self.assertGreater(len(pqc), 0)
+        self.assertTrue(pqc["category_type"].eq("product_family").all())
+
+    def test_fqc_rework_is_only_counted_from_explicit_actions(self) -> None:
+        fqc = self.summary[self.summary["stage"].eq("FQC")]
+        self.assertGreater(len(fqc), 0)
+        self.assertTrue(fqc["rework_available"].all())
+        self.assertTrue(fqc["rework_qty"].fillna(0).le(fqc["defect_qty"].fillna(0)).all())
 
 
 class BmeSpcRiskSummaryTest(unittest.TestCase):
