@@ -14322,7 +14322,7 @@ def render_fsd_iv_cluster_analysis(
         "FSD Cluster Analysis",
         "识别哪些 FSD 型号族同时存在工厂 FQC 问题和客户端 Intern Voice 问题。",
         "Identify FSD families with both factory FQC defects and client-side Intern Voice issues.",
-        "越靠右表示 FQC 问题率越高，越靠上表示 IV 问题单越多；右上区域应优先调查。",
+        "越靠右表示 FQC 不良率越高，越靠上表示 IV 问题单越多；右上区域应优先调查。",
         "Farther right means a higher FQC defect rate; higher means more IV cases. Investigate the upper-right area first.",
         "仅对标准化名称族精确匹配的对象做 K-means 聚类；未匹配型号不按 IV=0 处理，也不进入聚类。",
         "K-means uses exact normalized name-family matches only. Unmatched families are not treated as IV=0 and are excluded.",
@@ -14400,7 +14400,7 @@ def render_fsd_iv_cluster_analysis(
         hovertemplate=(
             "<b>%{customdata[0]} · %{fullData.name}</b><br>"
             "━━━━━━━━━━━━━━━━━━━━<br>"
-            + t("FQC问题率", "FQC defect rate") + ": %{x:.2%}<br>"
+            + t("FQC不良率", "FQC defect rate") + ": %{x:.2%}<br>"
             + t("IV问题单", "IV cases") + ": %{y:.0f}<br>"
             + t("检验数量", "Inspected qty") + ": %{customdata[1]:,.0f}<br>"
             + t("不良数量", "NC qty") + ": %{customdata[2]:,.0f}<br>"
@@ -14413,7 +14413,7 @@ def render_fsd_iv_cluster_analysis(
     x_mid = float(matched["defect_rate"].median())
     y_mid = float(matched["iv_cases"].median())
     fig.update_xaxes(
-        title=t("FQC 问题率", "FQC Defect Rate"),
+        title=t("FQC 不良率", "FQC Defect Rate"),
         tickformat=".1%",
         range=[-max(x_max * 0.06, 0.0015), max(x_max * 1.16, 0.01)],
         constrain="domain",
