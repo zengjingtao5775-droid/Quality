@@ -8990,6 +8990,7 @@ def plot_chart(
     cc_customdata_index: int | None = None,
     enable_box_zoom: bool = False,
     localize_values: bool = True,
+    stretch_width: bool = False,
 ):
     st.session_state["_plot_chart_counter"] = int(st.session_state.get("_plot_chart_counter", 0)) + 1
     prepared_fig = clean_plotly_hover(fig)
@@ -9026,6 +9027,8 @@ def plot_chart(
             "on_select": lambda: _sync_cc_focus_from_chart(chart_key, cc_customdata_index),
             "selection_mode": "points",
         }
+    if stretch_width:
+        chart_kwargs["use_container_width"] = True
     st.plotly_chart(
         chart_layout(prepared_fig, height),
         config=chart_config,
@@ -14338,15 +14341,15 @@ def render_fsd_iv_cluster_analysis(
 
     matched = analysis[analysis["iv_cases"].notna()].copy()
     cluster_labels = {
-        "Priority improvement": t("优先改善", "Priority improvement"),
-        "Attention": t("重点关注", "Attention"),
-        "Monitor": t("持续观察", "Monitor"),
+        "Priority improvement": t("高风险", "High Risk"),
+        "Attention": t("中风险", "Medium Risk"),
+        "Monitor": t("低风险", "Low Risk"),
     }
     matched["cluster_display"] = matched["cluster_label"].map(cluster_labels).fillna(matched["cluster_label"])
     risk_options = [
-        t("优先改善", "Priority improvement"),
-        t("重点关注", "Attention"),
-        t("持续观察", "Monitor"),
+        t("高风险", "High Risk"),
+        t("中风险", "Medium Risk"),
+        t("低风险", "Low Risk"),
     ]
     with st.container(key="fsd_cluster_control"):
         coverage_col, filter_col = st.columns([0.43, 0.57], vertical_alignment="center")
@@ -14384,9 +14387,9 @@ def render_fsd_iv_cluster_analysis(
         text="fsd_model",
         custom_data=["fsd_model", "inspected_qty", "nc_qty", "iv_model_names", "priority_score"],
         color_discrete_map={
-            t("优先改善", "Priority improvement"): "#C83C55",
-            t("重点关注", "Attention"): "#D98200",
-            t("持续观察", "Monitor"): "#168A83",
+            t("高风险", "High Risk"): "#E85D68",
+            t("中风险", "Medium Risk"): "#F0A94A",
+            t("低风险", "Low Risk"): "#2AA876",
         },
     )
     fig.update_traces(
@@ -14432,6 +14435,13 @@ def render_fsd_iv_cluster_analysis(
     )
     fig.update_layout(
         legend_title_text=t("聚类", "Cluster"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.04,
+            xanchor="center",
+            x=0.5,
+        ),
         transition=dict(duration=420, easing="cubic-in-out"),
         hoverlabel=dict(
             bgcolor="#f8faff", bordercolor="#8795e8",
@@ -14440,58 +14450,13 @@ def render_fsd_iv_cluster_analysis(
         ),
     )
     with st.container(key="fsd_cluster_chart"):
-        plot_chart(fig, 620, key="fsd_iv_cluster_plot", enable_box_zoom=True)
-
-    display = matched.copy()
-    display["defect_rate"] = display["defect_rate"] * 100
-    display["cluster_label"] = display["cluster_display"]
-    display = display.rename(columns={
-        "fsd_model": t("FSD型号族", "FSD Family"),
-        "item_codes": t("FQC物料号", "FQC Item Codes"),
-        "inspected_qty": t("检验数量", "Inspected Qty"),
-        "nc_qty": t("不良数量", "NC Qty"),
-        "defect_rate": t("FQC问题率", "FQC Defect Rate"),
-        "iv_model_codes": t("IV型号编码", "IV Model Codes"),
-        "iv_cases": t("IV问题单", "IV Cases"),
-        "cluster_label": t("聚类", "Cluster"),
-        "priority_score": t("调查优先分", "Priority Score"),
-    })
-    table_columns = [
-        t("FSD型号族", "FSD Family"), t("FQC物料号", "FQC Item Codes"),
-        t("检验数量", "Inspected Qty"), t("不良数量", "NC Qty"),
-        t("FQC问题率", "FQC Defect Rate"), t("IV型号编码", "IV Model Codes"),
-        t("IV问题单", "IV Cases"), t("聚类", "Cluster"),
-        t("调查优先分", "Priority Score"),
-    ]
-    with st.expander(t(f"查看聚类明细（{len(display)}）", f"View cluster details ({len(display)})")):
-        st.dataframe(
-            display[table_columns], hide_index=True, width="stretch",
-            column_config={
-                t("FQC问题率", "FQC Defect Rate"): st.column_config.NumberColumn(format="%.2f%%"),
-                t("调查优先分", "Priority Score"): st.column_config.NumberColumn(format="%.1f"),
-            },
+        plot_chart(
+            fig,
+            560,
+            key="fsd_iv_cluster_plot",
+            enable_box_zoom=True,
+            stretch_width=True,
         )
-    unmatched = analysis[analysis["iv_cases"].isna()].copy()
-    if not unmatched.empty:
-        with st.expander(t(f"未匹配型号族（{len(unmatched)}）", f"Unmatched families ({len(unmatched)})")):
-            st.caption(t("这些型号保留为数据缺口，不进入聚类。", "These families remain data gaps and are excluded from clustering."))
-            unmatched["defect_rate"] = unmatched["defect_rate"] * 100
-            st.dataframe(
-                unmatched[["fsd_model", "item_codes", "fqc_records", "inspected_qty", "nc_qty", "defect_rate"]]
-                .rename(columns={
-                    "fsd_model": t("FSD型号族", "FSD Family"),
-                    "item_codes": t("FQC物料号", "FQC Item Codes"),
-                    "fqc_records": t("FQC记录", "FQC Rows"),
-                    "inspected_qty": t("检验数量", "Inspected Qty"),
-                    "nc_qty": t("不良数量", "NC Qty"),
-                    "defect_rate": t("FQC问题率", "FQC Defect Rate"),
-                }),
-                hide_index=True,
-                width="stretch",
-                column_config={
-                    t("FQC问题率", "FQC Defect Rate"): st.column_config.NumberColumn(format="%.2f%%"),
-                },
-            )
 
 
 def render_bme_supplier_risk_charts(alerts: pd.DataFrame) -> None:
