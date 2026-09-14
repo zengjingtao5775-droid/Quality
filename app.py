@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-09-13-v17-fg-gates"
+_BME_QUALITY_LOGIC_VERSION = "2026-09-14-v18-fsd-iv-cluster"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -49,10 +49,12 @@ build_bme_relative_risk_scores = _bme_quality.build_bme_relative_risk_scores
 build_bme_relative_risk_scores_for_selection = _bme_quality.build_bme_relative_risk_scores_for_selection
 build_bme_priority_product_clusters = _bme_quality.build_bme_priority_product_clusters
 build_cmw_product_clusters = _bme_quality.build_cmw_product_clusters
+build_fsd_iv_cluster_analysis = _bme_quality.build_fsd_iv_cluster_analysis
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
 load_fg_quality_analysis = _bme_quality.load_fg_quality_analysis
+load_fsd_iv_cluster_inputs = _bme_quality.load_fsd_iv_cluster_inputs
 summarize_spc_process_risk = _bme_quality.summarize_spc_process_risk
 build_spc_model_component_risk = _bme_quality.build_spc_model_component_risk
 classify_torque_component_group = _bme_quality.classify_torque_component_group
@@ -14088,6 +14090,15 @@ def load_fg_quality_analysis_cached(
     return load_fg_quality_analysis(ROOT)
 
 
+@st.cache_data(show_spinner=False)
+def load_fsd_iv_cluster_inputs_cached(
+    fingerprint: tuple[tuple[str, int, int], ...],
+    logic_version: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    _ = fingerprint, logic_version
+    return load_fsd_iv_cluster_inputs(ROOT)
+
+
 def render_fg_quality_gate_analysis(
     summary: pd.DataFrame,
     pareto: pd.DataFrame,
@@ -14287,6 +14298,152 @@ def render_fg_quality_gate_analysis(
                         "Reworked quantity includes only source defect quantities explicitly marked Rework.",
                     )
                 st.markdown(f'<div class="bme-fg-data-note">{html.escape(note)}</div>', unsafe_allow_html=True)
+
+
+def render_fsd_iv_cluster_analysis(
+    analysis: pd.DataFrame,
+    meta: dict[str, object],
+) -> None:
+    """Render the preliminary FSD FQC × Intern Voice cluster analysis."""
+    st.markdown(
+        f'<div class="bme-fg-heading">{html.escape(t("FSD 聚类分析", "FSD Cluster Analysis"))}</div>'
+        f'<div class="bme-fg-subheading">{html.escape(t("X轴：FQC问题率 · Y轴：Intern Voice问题单数", "X-axis: FQC defect rate · Y-axis: Intern Voice cases"))}</div>',
+        unsafe_allow_html=True,
+    )
+    fqc_families = int(meta.get("fqc_families", 0) or 0)
+    fqc_rows = int(meta.get("fqc_rows", 0) or 0)
+    iv_models = int(meta.get("iv_models", 0) or 0)
+    matched_families = int(meta.get("matched_families", 0) or 0)
+    matched_fqc_rows = int(meta.get("matched_fqc_rows", 0) or 0)
+    matched_iv_models = int(meta.get("matched_iv_models", 0) or 0)
+    metric_columns = st.columns(3, gap="small")
+    metric_columns[0].metric(
+        t("已匹配 FSD 型号族", "Matched FSD families"),
+        f"{matched_families}/{fqc_families}",
+    )
+    metric_columns[1].metric(
+        t("FQC记录覆盖", "FQC row coverage"),
+        f"{matched_fqc_rows}/{fqc_rows}",
+    )
+    metric_columns[2].metric(
+        t("IV型号覆盖", "IV model coverage"),
+        f"{matched_iv_models}/{iv_models}",
+    )
+    st.warning(
+        t(
+            "试算：两份源文件没有共同产品编码，目前只使用标准化后的名称族精确匹配；未匹配型号不会按 IV=0 计算。聚类仅用于确定调查顺序。",
+            "Trial analysis: the sources have no shared product code. Only exact normalized name-family matches are used; unmatched models are not treated as IV=0. Clusters only prioritize investigation.",
+        )
+    )
+    if analysis.empty or analysis["iv_cases"].notna().sum() == 0:
+        st.info(t("当前筛选期间没有可聚类的已匹配数据。", "No matched data is available for clustering in this period."))
+        return
+
+    matched = analysis[analysis["iv_cases"].notna()].copy()
+    cluster_labels = {
+        "Priority improvement": t("优先改善", "Priority improvement"),
+        "Attention": t("重点关注", "Attention"),
+        "Monitor": t("持续观察", "Monitor"),
+    }
+    matched["cluster_display"] = matched["cluster_label"].map(cluster_labels).fillna(matched["cluster_label"])
+    fig = px.scatter(
+        matched,
+        x="defect_rate",
+        y="iv_cases",
+        color="cluster_display",
+        size="inspected_qty",
+        text="fsd_model",
+        custom_data=["fsd_model", "inspected_qty", "nc_qty", "iv_model_names", "priority_score"],
+        color_discrete_map={
+            t("优先改善", "Priority improvement"): "#C83C55",
+            t("重点关注", "Attention"): "#D98200",
+            t("持续观察", "Monitor"): "#168A83",
+        },
+        size_max=34,
+    )
+    fig.update_traces(
+        textposition="top center",
+        cliponaxis=False,
+        marker={"line": {"width": 1.5, "color": "#FFFFFF"}},
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>"
+            + t("FQC问题率", "FQC defect rate") + ": %{x:.2%}<br>"
+            + t("IV问题单", "IV cases") + ": %{y:.0f}<br>"
+            + t("检验数量", "Inspected qty") + ": %{customdata[1]:,.0f}<br>"
+            + t("不良数量", "NC qty") + ": %{customdata[2]:,.0f}<br>"
+            + t("IV型号", "IV models") + ": %{customdata[3]}<br>"
+            + t("调查优先分", "Priority score") + ": %{customdata[4]:.1f}<extra></extra>"
+        ),
+    )
+    x_max = float(matched["defect_rate"].max()) if not matched.empty else 0
+    y_max = float(matched["iv_cases"].max()) if not matched.empty else 0
+    fig.update_xaxes(
+        title=t("FQC 问题率", "FQC Defect Rate"),
+        tickformat=".1%",
+        range=[-max(x_max * 0.08, 0.002), max(x_max * 1.20, 0.01)],
+    )
+    fig.update_yaxes(
+        title=t("Intern Voice 问题单数", "Intern Voice Cases"),
+        range=[-max(y_max * 0.06, 1), max(y_max * 1.18, 5)],
+        rangemode="tozero",
+    )
+    fig.update_layout(
+        height=480,
+        margin=dict(l=30, r=30, t=55, b=30),
+        legend_title_text=t("聚类", "Cluster"),
+    )
+    apply_bme_chart_style(fig, height=480, showlegend=True)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key="fsd_iv_cluster")
+
+    display = matched.copy()
+    display["defect_rate"] = display["defect_rate"] * 100
+    display["cluster_label"] = display["cluster_display"]
+    display = display.rename(columns={
+        "fsd_model": t("FSD型号族", "FSD Family"),
+        "item_codes": t("FQC物料号", "FQC Item Codes"),
+        "inspected_qty": t("检验数量", "Inspected Qty"),
+        "nc_qty": t("不良数量", "NC Qty"),
+        "defect_rate": t("FQC问题率", "FQC Defect Rate"),
+        "iv_model_codes": t("IV型号编码", "IV Model Codes"),
+        "iv_cases": t("IV问题单", "IV Cases"),
+        "cluster_label": t("聚类", "Cluster"),
+        "priority_score": t("调查优先分", "Priority Score"),
+    })
+    table_columns = [
+        t("FSD型号族", "FSD Family"), t("FQC物料号", "FQC Item Codes"),
+        t("检验数量", "Inspected Qty"), t("不良数量", "NC Qty"),
+        t("FQC问题率", "FQC Defect Rate"), t("IV型号编码", "IV Model Codes"),
+        t("IV问题单", "IV Cases"), t("聚类", "Cluster"),
+        t("调查优先分", "Priority Score"),
+    ]
+    st.dataframe(
+        display[table_columns], hide_index=True, width="stretch",
+        column_config={
+            t("FQC问题率", "FQC Defect Rate"): st.column_config.NumberColumn(format="%.2f%%"),
+            t("调查优先分", "Priority Score"): st.column_config.NumberColumn(format="%.1f"),
+        },
+    )
+    unmatched = analysis[analysis["iv_cases"].isna()].copy()
+    if not unmatched.empty:
+        with st.expander(t(f"未匹配型号族（{len(unmatched)}）", f"Unmatched families ({len(unmatched)})")):
+            st.caption(t("这些型号保留为数据缺口，不进入聚类。", "These families remain data gaps and are excluded from clustering."))
+            unmatched["defect_rate"] = unmatched["defect_rate"] * 100
+            st.dataframe(
+                unmatched[["fsd_model", "item_codes", "fqc_records", "inspected_qty", "nc_qty", "defect_rate"]]
+                .rename(columns={
+                    "fsd_model": t("FSD型号族", "FSD Family"),
+                    "item_codes": t("FQC物料号", "FQC Item Codes"),
+                    "fqc_records": t("FQC记录", "FQC Rows"),
+                    "inspected_qty": t("检验数量", "Inspected Qty"),
+                    "nc_qty": t("不良数量", "NC Qty"),
+                    "defect_rate": t("FQC问题率", "FQC Defect Rate"),
+                }),
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    t("FQC问题率", "FQC Defect Rate"): st.column_config.NumberColumn(format="%.2f%%"),
+                },
+            )
 
 
 def render_bme_supplier_risk_charts(alerts: pd.DataFrame) -> None:
@@ -15580,6 +15737,14 @@ def render_bme_bike_quality_dashboard_v3(
     render_fg_quality_gate_analysis(
         fg_summary, fg_pareto, selected_suppliers, start_date, end_date
     )
+    if "FSD" in selected_suppliers:
+        fsd_cluster_fqc, fsd_cluster_iv = load_fsd_iv_cluster_inputs_cached(
+            bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION
+        )
+        fsd_cluster_analysis, fsd_cluster_meta = build_fsd_iv_cluster_analysis(
+            fsd_cluster_fqc, fsd_cluster_iv, start_date, end_date
+        )
+        render_fsd_iv_cluster_analysis(fsd_cluster_analysis, fsd_cluster_meta)
 
     # Supplier selection controls visibility only. Scores retain the complete
     # period peer pool so the same supplier does not move when peers are hidden.

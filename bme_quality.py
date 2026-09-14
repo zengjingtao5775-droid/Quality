@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-09-13-v17-fg-gates"
+BME_QUALITY_LOGIC_VERSION = "2026-09-14-v18-fsd-iv-cluster"
 
 
 # Presentation-only labels for CMW torque components. Source values remain
@@ -1510,6 +1510,205 @@ def _deterministic_kmeans_labels(
         labels = next_labels
         centroids = next_centroids
     return labels
+
+
+def _fsd_cluster_family(value: object) -> str:
+    """Return the audited FQC name family before size/dimension suffixes."""
+    text = str(value or "").strip().upper().replace("，", ",")
+    text = text.split(",", 1)[0]
+    text = re.sub(r"\s+\d{3}\s*MM\s*$", "", text)
+    text = text.replace("'", "").replace("#", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    compact = _fsd_cluster_match_key(text)
+    canonical_labels = {
+        "24ST900": "24ST900",
+        "26ST900": "26ST900",
+        "26EXPL500": "26 EXPL500",
+        "EXPL140": "EXPL 140",
+    }
+    if compact in canonical_labels:
+        return canonical_labels[compact]
+    return text
+
+
+def _fsd_cluster_match_key(value: object) -> str:
+    """Normalize punctuation only; this is not a fuzzy product-name match."""
+    return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+
+
+def _joined_unique(values: pd.Series) -> str:
+    cleaned = {
+        str(value).strip()
+        for value in values
+        if pd.notna(value) and str(value).strip() not in {"", "nan", "None"}
+    }
+    return ", ".join(sorted(cleaned))
+
+
+def load_fsd_iv_cluster_inputs(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load the isolated FSD FQC and Intern Voice sources for clustering."""
+    base = root / "BME Database" / "FSD Cluster"
+    fqc_path = base / "FSD P2 data input.xlsx"
+    iv_path = base / "2026 四家 (1).xlsx"
+    if not fqc_path.exists() or not iv_path.exists():
+        return pd.DataFrame(), pd.DataFrame()
+
+    raw_fqc = _clean_columns(_read_excel(fqc_path, sheet_name="Factory FQC 2nd version"))
+    fqc = pd.DataFrame({
+        "date": _iso_week_date(_col(raw_fqc, "Year"), _col(raw_fqc, "Week")),
+        "supplier": _text(_col(raw_fqc, "PartsSupplier", "供应商")),
+        "model_name": _text(_col(raw_fqc, "Name(formularlinkwithDATABASE)车种名", "车种名")),
+        "item_code": _text(_col(raw_fqc, "ItemforFrameforkonly")),
+        "inspected_qty": _number(_col(raw_fqc, "InspectedQty", "检验数量"), None),
+        "nc_qty": _number(_col(raw_fqc, "NCQty", "不良数量"), None),
+        "source_row": raw_fqc.index + 2,
+    })
+    fqc["family"] = fqc["model_name"].map(_fsd_cluster_family)
+    fqc = fqc[
+        fqc["supplier"].str.contains("FSD", case=False, na=False)
+        & fqc["date"].notna()
+        & fqc["family"].ne("")
+        & fqc["inspected_qty"].gt(0)
+        & fqc["nc_qty"].ge(0)
+    ].reset_index(drop=True)
+
+    raw_iv = _clean_columns(_read_excel(iv_path, sheet_name="Sheet1"))
+    vendor_code = pd.to_numeric(_col(raw_iv, "VENDORCODE"), errors="coerce")
+    vendor_name = _text(_col(raw_iv, "VENDORNAME"))
+    iv = pd.DataFrame({
+        "date": pd.to_datetime(_col(raw_iv, "CREATEDDATE"), errors="coerce"),
+        "feedback_no": _text(_col(raw_iv, "FEEDBACKNo.")),
+        "model_code": _text(_col(raw_iv, "MODELCODE")),
+        "model_name": _text(_col(raw_iv, "MODELNAME")),
+        "iv_qty": _number(_col(raw_iv, "PRODUCTQUANTITY"), 0),
+        "source_row": raw_iv.index + 2,
+    })
+    is_fsd = vendor_code.eq(61839) | vendor_name.str.contains("FUJI|FSD", case=False, na=False)
+    iv = iv[is_fsd & iv["date"].notna() & iv["model_name"].ne("")].reset_index(drop=True)
+    return fqc, iv
+
+
+def build_fsd_iv_cluster_analysis(
+    fqc: pd.DataFrame,
+    iv: pd.DataFrame,
+    start_date: object | None = None,
+    end_date: object | None = None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Build a preliminary FQC defect-rate × IV-case cluster analysis.
+
+    The two sources have no shared product code. Only exact normalized FQC
+    name-family containment is used, with the longest family winning. Unmatched
+    families remain unavailable on the IV axis and never become zero.
+    """
+    columns = [
+        "fsd_model", "item_codes", "fqc_records", "inspected_qty", "nc_qty",
+        "defect_rate", "iv_model_codes", "iv_model_names", "iv_models",
+        "iv_cases", "iv_qty", "match_status", "cluster_label", "priority_score",
+    ]
+    fqc_period = fqc.copy()
+    iv_period = iv.copy()
+    if start_date is not None:
+        start_ts = pd.Timestamp(start_date)
+        fqc_period = fqc_period[pd.to_datetime(fqc_period["date"], errors="coerce").ge(start_ts)]
+        iv_period = iv_period[pd.to_datetime(iv_period["date"], errors="coerce").ge(start_ts)]
+    if end_date is not None:
+        end_ts = pd.Timestamp(end_date)
+        fqc_period = fqc_period[pd.to_datetime(fqc_period["date"], errors="coerce").le(end_ts)]
+        iv_period = iv_period[pd.to_datetime(iv_period["date"], errors="coerce").le(end_ts)]
+
+    meta: dict[str, object] = {
+        "fqc_rows": len(fqc_period),
+        "fqc_families": int(fqc_period.get("family", pd.Series(dtype="object")).nunique()),
+        "iv_rows": len(iv_period),
+        "iv_models": int(iv_period.get("model_code", pd.Series(dtype="object")).nunique()),
+        "matched_families": 0,
+        "matched_fqc_rows": 0,
+        "matched_iv_models": 0,
+    }
+    if fqc_period.empty:
+        return pd.DataFrame(columns=columns), meta
+
+    grouped = fqc_period.groupby("family", as_index=False).agg(
+        item_codes=("item_code", _joined_unique),
+        fqc_records=("source_row", "size"),
+        inspected_qty=("inspected_qty", "sum"),
+        nc_qty=("nc_qty", "sum"),
+    ).rename(columns={"family": "fsd_model"})
+    grouped["defect_rate"] = grouped["nc_qty"].div(grouped["inspected_qty"].replace(0, np.nan))
+
+    family_keys = [
+        (family, _fsd_cluster_match_key(family))
+        for family in grouped["fsd_model"].tolist()
+    ]
+    family_keys = sorted(
+        [(family, key) for family, key in family_keys if len(key) >= 5],
+        key=lambda item: len(item[1]),
+        reverse=True,
+    )
+    iv_period = iv_period.copy()
+    iv_period["match_family"] = iv_period["model_name"].map(
+        lambda name: next(
+            (family for family, key in family_keys if key in _fsd_cluster_match_key(name)),
+            None,
+        )
+    )
+    matched_iv = iv_period[iv_period["match_family"].notna()].copy()
+    if matched_iv.empty:
+        grouped["iv_model_codes"] = pd.NA
+        grouped["iv_model_names"] = pd.NA
+        grouped["iv_models"] = np.nan
+        grouped["iv_cases"] = np.nan
+        grouped["iv_qty"] = np.nan
+    else:
+        iv_grouped = matched_iv.groupby("match_family", as_index=False).agg(
+            iv_model_codes=("model_code", _joined_unique),
+            iv_model_names=("model_name", lambda values: " | ".join(sorted(set(values)))),
+            iv_models=("model_code", "nunique"),
+            iv_cases=("feedback_no", "nunique"),
+            iv_qty=("iv_qty", "sum"),
+        ).rename(columns={"match_family": "fsd_model"})
+        grouped = grouped.merge(iv_grouped, on="fsd_model", how="left")
+
+    grouped["match_status"] = np.where(grouped["iv_cases"].notna(), "Matched by name family", "Unmatched")
+    grouped["cluster_label"] = pd.NA
+    grouped["priority_score"] = np.nan
+    matched_mask = grouped["iv_cases"].notna()
+    matched = grouped.loc[matched_mask].copy()
+    if not matched.empty:
+        def minmax(series: pd.Series) -> pd.Series:
+            numeric = pd.to_numeric(series, errors="coerce")
+            span = numeric.max() - numeric.min()
+            return pd.Series(0.5, index=series.index) if not span else (numeric - numeric.min()) / span
+
+        matched["priority_score"] = (
+            50 * minmax(matched["defect_rate"]) + 50 * minmax(matched["iv_cases"])
+        ).round(1)
+        points = matched[["defect_rate", "iv_cases"]].to_numpy(dtype=float)
+        raw_labels = _deterministic_kmeans_labels(points, cluster_count=3)
+        ordered = (
+            pd.DataFrame({"cluster_id": raw_labels, "priority": matched["priority_score"].to_numpy()})
+            .groupby("cluster_id")["priority"].mean().sort_values().index.astype(int).tolist()
+        )
+        label_sets = {
+            1: ["Priority improvement"],
+            2: ["Monitor", "Priority improvement"],
+            3: ["Monitor", "Attention", "Priority improvement"],
+        }
+        name_map = {cluster_id: label_sets[len(ordered)][i] for i, cluster_id in enumerate(ordered)}
+        matched["cluster_label"] = [name_map[int(value)] for value in raw_labels]
+        grouped.loc[matched.index, "priority_score"] = matched["priority_score"]
+        grouped.loc[matched.index, "cluster_label"] = matched["cluster_label"]
+
+    meta.update({
+        "matched_families": int(matched_mask.sum()),
+        "matched_fqc_rows": int(grouped.loc[matched_mask, "fqc_records"].sum()),
+        "matched_iv_models": int(matched_iv["model_code"].nunique()) if not matched_iv.empty else 0,
+    })
+    grouped["defect_rate"] = grouped["defect_rate"].round(6)
+    return grouped[columns].sort_values(
+        ["match_status", "priority_score", "defect_rate"],
+        ascending=[True, False, False],
+    ).reset_index(drop=True), meta
 
 
 def build_cmw_product_clusters(events: pd.DataFrame) -> pd.DataFrame:
