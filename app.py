@@ -14440,7 +14440,7 @@ def render_fsd_iv_cluster_analysis(
             yanchor="bottom",
             y=1.04,
             xanchor="center",
-            x=0.5,
+            x=0.32,
         ),
         transition=dict(duration=420, easing="cubic-in-out"),
         hoverlabel=dict(
