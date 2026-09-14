@@ -1853,6 +1853,7 @@ st.markdown(
         margin-right: 6px;
     }
     .st-key-zx_cluster_control,
+    .st-key-fsd_cluster_control,
     .st-key-zx_cc_search,
     .st-key-zx_process_cc_filter,
     .st-key-worker_skill_control {
@@ -1864,6 +1865,7 @@ st.markdown(
         box-shadow: 0 12px 28px rgba(36, 52, 167, 0.08);
     }
     .st-key-zx_cluster_control [data-baseweb="select"] > div,
+    .st-key-fsd_cluster_control [data-baseweb="select"] > div,
     .st-key-zx_cc_search [data-baseweb="select"] > div,
     .st-key-zx_process_cc_filter [data-baseweb="select"] > div,
     .st-key-worker_skill_control [data-baseweb="select"] > div {
@@ -1873,6 +1875,7 @@ st.markdown(
         min-height: 44px;
     }
     .st-key-zx_cluster_control [data-baseweb="tag"],
+    .st-key-fsd_cluster_control [data-baseweb="tag"],
     .st-key-zx_cc_search [data-baseweb="tag"],
     .st-key-zx_process_cc_filter [data-baseweb="tag"],
     .st-key-worker_skill_control [data-baseweb="tag"] {
@@ -1883,6 +1886,7 @@ st.markdown(
         font-weight: 800 !important;
     }
     .st-key-zx_cluster_control [data-baseweb="tag"] *,
+    .st-key-fsd_cluster_control [data-baseweb="tag"] *,
     .st-key-zx_cc_search [data-baseweb="tag"] *,
     .st-key-zx_process_cc_filter [data-baseweb="tag"] *,
     .st-key-worker_skill_control [data-baseweb="tag"] * {
@@ -2236,7 +2240,8 @@ st.markdown(
         from {opacity: 0; transform: translateY(8px);}
         to {opacity: 1; transform: translateY(0);}
     }
-    .st-key-zx_cluster_chart .stPlotlyChart {
+    .st-key-zx_cluster_chart .stPlotlyChart,
+    .st-key-fsd_cluster_chart .stPlotlyChart {
         animation: zxChartEnter 0.42s ease-out both;
     }
     div[data-testid="stExpander"] details {
@@ -14304,11 +14309,22 @@ def render_fsd_iv_cluster_analysis(
     analysis: pd.DataFrame,
     meta: dict[str, object],
 ) -> None:
-    """Render the preliminary FSD FQC × Intern Voice cluster analysis."""
-    st.markdown(
-        f'<div class="bme-fg-heading">{html.escape(t("FSD 聚类分析", "FSD Cluster Analysis"))}</div>'
-        f'<div class="bme-fg-subheading">{html.escape(t("X轴：FQC问题率 · Y轴：Intern Voice问题单数", "X-axis: FQC defect rate · Y-axis: Intern Voice cases"))}</div>',
-        unsafe_allow_html=True,
+    """Render the FSD cluster with the same visual hierarchy as TU."""
+    source_label = (
+        "BME Database/FSD Cluster/FSD P2 data input.xlsx + "
+        "BME Database/FSD Cluster/2026 四家 (1).xlsx"
+    )
+    render_chart_heading(
+        "FSD 聚类分析",
+        "FSD Cluster Analysis",
+        "识别哪些 FSD 型号族同时存在工厂 FQC 问题和客户端 Intern Voice 问题。",
+        "Identify FSD families with both factory FQC defects and client-side Intern Voice issues.",
+        "越靠右表示 FQC 问题率越高，越靠上表示 IV 问题单越多；右上区域应优先调查。",
+        "Farther right means a higher FQC defect rate; higher means more IV cases. Investigate the upper-right area first.",
+        "仅对标准化名称族精确匹配的对象做 K-means 聚类；未匹配型号不按 IV=0 处理，也不进入聚类。",
+        "K-means uses exact normalized name-family matches only. Unmatched families are not treated as IV=0 and are excluded.",
+        source_label,
+        "fsd_iv_cluster",
     )
     fqc_families = int(meta.get("fqc_families", 0) or 0)
     fqc_rows = int(meta.get("fqc_rows", 0) or 0)
@@ -14316,25 +14332,6 @@ def render_fsd_iv_cluster_analysis(
     matched_families = int(meta.get("matched_families", 0) or 0)
     matched_fqc_rows = int(meta.get("matched_fqc_rows", 0) or 0)
     matched_iv_models = int(meta.get("matched_iv_models", 0) or 0)
-    metric_columns = st.columns(3, gap="small")
-    metric_columns[0].metric(
-        t("已匹配 FSD 型号族", "Matched FSD families"),
-        f"{matched_families}/{fqc_families}",
-    )
-    metric_columns[1].metric(
-        t("FQC记录覆盖", "FQC row coverage"),
-        f"{matched_fqc_rows}/{fqc_rows}",
-    )
-    metric_columns[2].metric(
-        t("IV型号覆盖", "IV model coverage"),
-        f"{matched_iv_models}/{iv_models}",
-    )
-    st.warning(
-        t(
-            "试算：两份源文件没有共同产品编码，目前只使用标准化后的名称族精确匹配；未匹配型号不会按 IV=0 计算。聚类仅用于确定调查顺序。",
-            "Trial analysis: the sources have no shared product code. Only exact normalized name-family matches are used; unmatched models are not treated as IV=0. Clusters only prioritize investigation.",
-        )
-    )
     if analysis.empty or analysis["iv_cases"].notna().sum() == 0:
         st.info(t("当前筛选期间没有可聚类的已匹配数据。", "No matched data is available for clustering in this period."))
         return
@@ -14346,12 +14343,44 @@ def render_fsd_iv_cluster_analysis(
         "Monitor": t("持续观察", "Monitor"),
     }
     matched["cluster_display"] = matched["cluster_label"].map(cluster_labels).fillna(matched["cluster_label"])
+    risk_options = [
+        t("优先改善", "Priority improvement"),
+        t("重点关注", "Attention"),
+        t("持续观察", "Monitor"),
+    ]
+    with st.container(key="fsd_cluster_control"):
+        coverage_col, filter_col = st.columns([0.43, 0.57], vertical_alignment="center")
+        with coverage_col:
+            st.markdown(
+                t(
+                    f"**名称族匹配 {matched_families}/{fqc_families}** · FQC {matched_fqc_rows}/{fqc_rows} · IV {matched_iv_models}/{iv_models}",
+                    f"**Name-family matches {matched_families}/{fqc_families}** · FQC {matched_fqc_rows}/{fqc_rows} · IV {matched_iv_models}/{iv_models}",
+                )
+            )
+        with filter_col:
+            selected_clusters = st.multiselect(
+                t("聚类筛选（可多选）", "Cluster Filter (multi-select)"),
+                risk_options,
+                default=risk_options,
+                key=f"fsd_iv_cluster_filter_{language_query_code()}",
+                placeholder=t("选择一个或多个聚类", "Choose one or more clusters"),
+                label_visibility="collapsed",
+            )
+    st.caption(
+        t(
+            "试算口径：两份源文件没有共同产品编码，未匹配的型号族保留为数据缺口。",
+            "Trial basis: the sources have no shared product code; unmatched families remain explicit data gaps.",
+        )
+    )
+    plot_view = matched[matched["cluster_display"].isin(selected_clusters)].copy()
+    if plot_view.empty:
+        st.info(t("当前聚类筛选下没有对象。", "No objects match the current cluster filter."))
+        return
     fig = px.scatter(
-        matched,
+        plot_view.sort_values("priority_score", ascending=False),
         x="defect_rate",
         y="iv_cases",
         color="cluster_display",
-        size="inspected_qty",
         text="fsd_model",
         custom_data=["fsd_model", "inspected_qty", "nc_qty", "iv_model_names", "priority_score"],
         color_discrete_map={
@@ -14359,14 +14388,15 @@ def render_fsd_iv_cluster_analysis(
             t("重点关注", "Attention"): "#D98200",
             t("持续观察", "Monitor"): "#168A83",
         },
-        size_max=34,
     )
     fig.update_traces(
         textposition="top center",
+        textfont=dict(size=13, color="#344054"),
         cliponaxis=False,
-        marker={"line": {"width": 1.5, "color": "#FFFFFF"}},
+        marker=dict(size=18, opacity=0.86, line=dict(width=1.4, color="#FFFFFF")),
         hovertemplate=(
-            "<b>%{customdata[0]}</b><br>"
+            "<b>%{customdata[0]} · %{fullData.name}</b><br>"
+            "━━━━━━━━━━━━━━━━━━━━<br>"
             + t("FQC问题率", "FQC defect rate") + ": %{x:.2%}<br>"
             + t("IV问题单", "IV cases") + ": %{y:.0f}<br>"
             + t("检验数量", "Inspected qty") + ": %{customdata[1]:,.0f}<br>"
@@ -14377,23 +14407,40 @@ def render_fsd_iv_cluster_analysis(
     )
     x_max = float(matched["defect_rate"].max()) if not matched.empty else 0
     y_max = float(matched["iv_cases"].max()) if not matched.empty else 0
+    x_mid = float(matched["defect_rate"].median())
+    y_mid = float(matched["iv_cases"].median())
     fig.update_xaxes(
         title=t("FQC 问题率", "FQC Defect Rate"),
         tickformat=".1%",
-        range=[-max(x_max * 0.08, 0.002), max(x_max * 1.20, 0.01)],
+        range=[-max(x_max * 0.06, 0.0015), max(x_max * 1.16, 0.01)],
+        constrain="domain",
     )
     fig.update_yaxes(
         title=t("Intern Voice 问题单数", "Intern Voice Cases"),
-        range=[-max(y_max * 0.06, 1), max(y_max * 1.18, 5)],
+        range=[-max(y_max * 0.04, 1), max(y_max * 1.13, 5)],
         rangemode="tozero",
+        constrain="domain",
+    )
+    fig.add_vline(x=x_mid, line_dash="dash", line_color="#8b96b8", opacity=0.45)
+    fig.add_hline(y=y_mid, line_dash="dash", line_color="#8b96b8", opacity=0.45)
+    fig.add_annotation(
+        xref="paper", yref="paper", x=0.98, y=0.98,
+        text=t("右上：FQC + IV 双高", "Upper-right: high FQC + IV"),
+        showarrow=False,
+        font=dict(size=13, color="#dc2626"),
+        bgcolor="rgba(255,255,255,0.72)",
     )
     fig.update_layout(
-        height=480,
-        margin=dict(l=30, r=30, t=55, b=30),
         legend_title_text=t("聚类", "Cluster"),
+        transition=dict(duration=420, easing="cubic-in-out"),
+        hoverlabel=dict(
+            bgcolor="#f8faff", bordercolor="#8795e8",
+            font=dict(size=14, color="#172033", family="Arial, sans-serif"),
+            align="left", namelength=-1,
+        ),
     )
-    apply_bme_chart_style(fig, height=480, showlegend=True)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key="fsd_iv_cluster")
+    with st.container(key="fsd_cluster_chart"):
+        plot_chart(fig, 620, key="fsd_iv_cluster_plot", enable_box_zoom=True)
 
     display = matched.copy()
     display["defect_rate"] = display["defect_rate"] * 100
@@ -14416,13 +14463,14 @@ def render_fsd_iv_cluster_analysis(
         t("IV问题单", "IV Cases"), t("聚类", "Cluster"),
         t("调查优先分", "Priority Score"),
     ]
-    st.dataframe(
-        display[table_columns], hide_index=True, width="stretch",
-        column_config={
-            t("FQC问题率", "FQC Defect Rate"): st.column_config.NumberColumn(format="%.2f%%"),
-            t("调查优先分", "Priority Score"): st.column_config.NumberColumn(format="%.1f"),
-        },
-    )
+    with st.expander(t(f"查看聚类明细（{len(display)}）", f"View cluster details ({len(display)})")):
+        st.dataframe(
+            display[table_columns], hide_index=True, width="stretch",
+            column_config={
+                t("FQC问题率", "FQC Defect Rate"): st.column_config.NumberColumn(format="%.2f%%"),
+                t("调查优先分", "Priority Score"): st.column_config.NumberColumn(format="%.1f"),
+            },
+        )
     unmatched = analysis[analysis["iv_cases"].isna()].copy()
     if not unmatched.empty:
         with st.expander(t(f"未匹配型号族（{len(unmatched)}）", f"Unmatched families ({len(unmatched)})")):
@@ -15731,12 +15779,6 @@ def render_bme_bike_quality_dashboard_v3(
     if "FSD" in selected_suppliers and pd.notna(ppm["coverage"]) and ppm["coverage"] < .90:
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
 
-    fg_summary, fg_pareto = load_fg_quality_analysis_cached(
-        bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION
-    )
-    render_fg_quality_gate_analysis(
-        fg_summary, fg_pareto, selected_suppliers, start_date, end_date
-    )
     if "FSD" in selected_suppliers:
         fsd_cluster_fqc, fsd_cluster_iv = load_fsd_iv_cluster_inputs_cached(
             bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION
@@ -15745,6 +15787,13 @@ def render_bme_bike_quality_dashboard_v3(
             fsd_cluster_fqc, fsd_cluster_iv, start_date, end_date
         )
         render_fsd_iv_cluster_analysis(fsd_cluster_analysis, fsd_cluster_meta)
+
+    fg_summary, fg_pareto = load_fg_quality_analysis_cached(
+        bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION
+    )
+    render_fg_quality_gate_analysis(
+        fg_summary, fg_pareto, selected_suppliers, start_date, end_date
+    )
 
     # Supplier selection controls visibility only. Scores retain the complete
     # period peer pool so the same supplier does not move when peers are hidden.
