@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-09-14-v18-fsd-iv-cluster"
+BME_QUALITY_LOGIC_VERSION = "2026-09-17-v19-cpt-quality"
 
 
 # Presentation-only labels for CMW torque components. Source values remain
@@ -946,39 +946,133 @@ def _fg_pareto_frame(**columns: object) -> pd.DataFrame:
     return frame[FG_PARETO_COLUMNS]
 
 
+def _load_iqc_exception_analysis(
+    root: Path,
+    path: Path,
+    supplier: str,
+) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
+    if not path.exists():
+        return [], []
+    raw = _clean_columns(_read_excel(path, sheet_name="IQC"))
+    if raw.empty:
+        return [], []
+    date = _date(_col(raw, "日期"))
+    po_qty = _number(_col(raw, "数量"), None)
+    defect_qty = _number(_col(raw, "不良笔数"), None)
+    business = date.notna() | po_qty.notna() | _text(_col(raw, "料号")).ne("")
+    raw, date, po_qty, defect_qty = (
+        raw.loc[business].copy(), date.loc[business], po_qty.loc[business], defect_qty.loc[business]
+    )
+    checked = ["外观不良", "尺寸不良", "牙纹不良", "混装/漏装", "功性能"]
+    issue = raw.apply(
+        lambda row: " / ".join(
+            name for name in checked
+            if str(row.get(name, "")).strip() in {"☑", "√", "1", "True"}
+        ) or str(row.get("异常原因", "")).strip(),
+        axis=1,
+    )
+    source_file = str(path.relative_to(root))
+    return [
+        _fg_summary_frame(
+            stage="IQC", supplier=supplier, date=date, po_qty=po_qty,
+            defect_qty=defect_qty, rework_qty=np.nan, rework_available=False,
+            source_file=source_file, source_sheet="IQC",
+        )
+    ], [
+        _fg_pareto_frame(
+            stage="IQC", supplier=supplier, date=date, defect_name=issue,
+            defect_qty=defect_qty, category_type="defect",
+            source_file=source_file, source_sheet="IQC",
+        )
+    ]
+
+
+def _load_monthly_pqc_analysis(
+    root: Path,
+    path: Path,
+    supplier: str,
+) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
+    if not path.exists():
+        return [], []
+    sheet = "2026 KPI-大小线（PQC)"
+    raw = _read_excel(path, sheet_name=sheet, header=None)
+    if raw.empty or raw.shape[0] < 34 or raw.shape[1] < 16:
+        return [], []
+    months = list(range(1, 13))
+    dates = pd.Series([pd.Timestamp(2026, month, 1) + pd.offsets.MonthEnd(0) for month in months])
+    defect_qty = pd.to_numeric(raw.iloc[17, 3:15], errors="coerce").reset_index(drop=True)
+    po_qty = pd.to_numeric(raw.iloc[33, 3:15], errors="coerce").reset_index(drop=True)
+    valid = po_qty.gt(0)
+    source_file = str(path.relative_to(root))
+    summaries = [_fg_summary_frame(
+        stage="PQC", supplier=supplier, date=dates.loc[valid].reset_index(drop=True),
+        po_qty=po_qty.loc[valid].reset_index(drop=True),
+        defect_qty=defect_qty.loc[valid].fillna(0).reset_index(drop=True),
+        rework_qty=np.nan, rework_available=False,
+        source_file=source_file, source_sheet=sheet,
+    )]
+    pareto_rows: list[dict[str, object]] = []
+    for row_index in range(2, 17):
+        family = str(raw.iloc[row_index, 2]).strip() if pd.notna(raw.iloc[row_index, 2]) else ""
+        if not family or family.lower() in {"nan", "total", "大线total", "小线total"}:
+            continue
+        values = pd.to_numeric(raw.iloc[row_index, 3:15], errors="coerce")
+        for month, value in zip(months, values):
+            if pd.notna(value) and float(value) > 0:
+                pareto_rows.append({
+                    "stage": "PQC", "supplier": supplier,
+                    "date": pd.Timestamp(2026, month, 1) + pd.offsets.MonthEnd(0),
+                    "defect_name": family, "defect_qty": float(value),
+                    "category_type": "product_family",
+                    "source_file": source_file, "source_sheet": sheet,
+                })
+    paretos = [_fg_pareto_frame(**{
+        column: [row[column] for row in pareto_rows] for column in FG_PARETO_COLUMNS
+    })] if pareto_rows else []
+    return summaries, paretos
+
+
+def _load_fqc_daily_analysis(
+    root: Path,
+    path: Path,
+    supplier: str,
+) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
+    summaries: list[pd.DataFrame] = []
+    paretos: list[pd.DataFrame] = []
+    if not path.exists():
+        return summaries, paretos
+    for sheet in ["Common line", "High-end line"]:
+        raw = _clean_columns(_read_excel(path, sheet_name=sheet, header=1))
+        if raw.empty:
+            continue
+        date = _date(_col(raw, "日期"))
+        po_qty = _number(_col(raw, "检验批量"), None)
+        defect_qty = _number(_col(raw, "总不良数量", "拒收数量"), 0)
+        business = date.notna() & po_qty.notna()
+        raw, date, po_qty, defect_qty = (
+            raw.loc[business].copy(), date.loc[business], po_qty.loc[business], defect_qty.loc[business]
+        )
+        action = _text(_col(raw, "不良处理措施"))
+        rework = action.str.contains(r"REWORK|返工", case=False, regex=True, na=False)
+        issue = _text(_col(raw, "不良描述"))
+        issue = issue.where(issue.ne(""), _text(_col(raw, "不良的部位")))
+        source_file = str(path.relative_to(root))
+        summaries.append(_fg_summary_frame(
+            stage="FQC", supplier=supplier, date=date, po_qty=po_qty,
+            defect_qty=defect_qty, rework_qty=defect_qty.where(rework, 0),
+            rework_available=True, source_file=source_file, source_sheet=sheet,
+        ))
+        paretos.append(_fg_pareto_frame(
+            stage="FQC", supplier=supplier, date=date, defect_name=issue,
+            defect_qty=defect_qty, category_type="defect",
+            source_file=source_file, source_sheet=sheet,
+        ))
+    return summaries, paretos
+
+
 def _load_fg_iqc(root: Path) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
     summaries: list[pd.DataFrame] = []
     paretos: list[pd.DataFrame] = []
-
-    fsd_path = root / "BME Database" / "FG IQC" / "FSD P2 data input.xlsx"
-    if fsd_path.exists():
-        raw = _clean_columns(_read_excel(fsd_path, sheet_name="IQC"))
-        if not raw.empty:
-            date = _date(_col(raw, "日期"))
-            po_qty = _number(_col(raw, "数量"), None)
-            defect_qty = _number(_col(raw, "不良笔数"), None)
-            business = date.notna() | po_qty.notna() | _text(_col(raw, "料号")).ne("")
-            raw, date, po_qty, defect_qty = (
-                raw.loc[business].copy(), date.loc[business], po_qty.loc[business], defect_qty.loc[business]
-            )
-            checked = ["外观不良", "尺寸不良", "牙纹不良", "混装/漏装", "功性能"]
-            issue = raw.apply(
-                lambda row: " / ".join(
-                    name for name in checked
-                    if str(row.get(name, "")).strip() in {"☑", "√", "1", "True"}
-                ) or str(row.get("异常原因", "")).strip(),
-                axis=1,
-            )
-            summaries.append(_fg_summary_frame(
-                stage="IQC", supplier="FSD", date=date, po_qty=po_qty,
-                defect_qty=defect_qty, rework_qty=np.nan, rework_available=False,
-                source_file=str(fsd_path.relative_to(root)), source_sheet="IQC",
-            ))
-            paretos.append(_fg_pareto_frame(
-                stage="IQC", supplier="FSD", date=date, defect_name=issue,
-                defect_qty=defect_qty, category_type="defect",
-                source_file=str(fsd_path.relative_to(root)), source_sheet="IQC",
-            ))
 
     cmw_path = root / "BME Database" / "FG IQC" / "IQC Daily Report-2026.xlsx"
     if cmw_path.exists():
@@ -1007,125 +1101,62 @@ def _load_fg_iqc(root: Path) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
 
 
 def _load_fg_pqc(root: Path) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
-    path = root / "BME Database" / "FG PQC" / "Copy of 2026-PQC PPM统计.xlsx"
+    path = root / "BME Database" / "CMW（迪奇）" / "PQC" / "Process Control Record_2026.xlsm"
     if not path.exists():
         return [], []
-    sheet = "2026 KPI-大小线（PQC)"
-    raw = _read_excel(path, sheet_name=sheet, header=None)
-    if raw.empty or raw.shape[0] < 34 or raw.shape[1] < 16:
+    sheet = "Defect Follow-up"
+    raw = _clean_columns(_read_excel(path, sheet_name=sheet, header=1))
+    if raw.empty:
         return [], []
-    months = list(range(1, 13))
-    dates = pd.Series([pd.Timestamp(2026, month, 1) + pd.offsets.MonthEnd(0) for month in months])
-    defect_qty = pd.to_numeric(raw.iloc[17, 3:15], errors="coerce").reset_index(drop=True)
-    po_qty = pd.to_numeric(raw.iloc[33, 3:15], errors="coerce").reset_index(drop=True)
-    valid = po_qty.gt(0)
-    summaries = [_fg_summary_frame(
-        stage="PQC", supplier="CMW", date=dates.loc[valid].reset_index(drop=True),
-        po_qty=po_qty.loc[valid].reset_index(drop=True),
-        defect_qty=defect_qty.loc[valid].fillna(0).reset_index(drop=True),
+    date = _date(_col(raw, "Date日期"))
+    defect_qty = _number(_col(raw, "Q'ty数量", "数量"), 0)
+    business = date.notna() | defect_qty.gt(0) | _text(_col(raw, "NonconformanceDescription问题描述")).ne("")
+    raw, date, defect_qty = raw.loc[business].copy(), date.loc[business], defect_qty.loc[business]
+    issue = _text(_col(raw, "NonconformanceDescription问题描述"))
+    issue = issue.where(issue.ne(""), _text(_col(raw, "W.S工位")))
+    source_file = str(path.relative_to(root))
+    return [_fg_summary_frame(
+        stage="PQC", supplier="CMW", date=date,
+        po_qty=np.nan, defect_qty=defect_qty,
         rework_qty=np.nan, rework_available=False,
-        source_file=str(path.relative_to(root)), source_sheet=sheet,
+        source_file=source_file, source_sheet=sheet,
+    )], [_fg_pareto_frame(
+        stage="PQC", supplier="CMW", date=date, defect_name=issue,
+        defect_qty=defect_qty, category_type="defect",
+        source_file=source_file, source_sheet=sheet,
     )]
-
-    pareto_rows: list[dict[str, object]] = []
-    for row_index in range(2, 17):
-        family = str(raw.iloc[row_index, 2]).strip() if pd.notna(raw.iloc[row_index, 2]) else ""
-        if not family or family.lower() in {"nan", "total", "大线total", "小线total"}:
-            continue
-        values = pd.to_numeric(raw.iloc[row_index, 3:15], errors="coerce")
-        for month, value in zip(months, values):
-            if pd.notna(value) and float(value) > 0:
-                pareto_rows.append({
-                    "stage": "PQC", "supplier": "CMW",
-                    "date": pd.Timestamp(2026, month, 1) + pd.offsets.MonthEnd(0),
-                    "defect_name": family, "defect_qty": float(value),
-                    "category_type": "product_family",
-                    "source_file": str(path.relative_to(root)), "source_sheet": sheet,
-                })
-    paretos = [_fg_pareto_frame(**{
-        column: [row[column] for row in pareto_rows] for column in FG_PARETO_COLUMNS
-    })] if pareto_rows else []
-    return summaries, paretos
 
 
 def _load_fg_fqc(root: Path) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
-    summaries: list[pd.DataFrame] = []
-    paretos: list[pd.DataFrame] = []
-
-    cmw_path = root / "BME Database" / "FG FQC" / "FQC Daily Report_2026.xlsm"
-    if cmw_path.exists():
-        for sheet in ["Common line", "High-end line"]:
-            raw = _clean_columns(_read_excel(cmw_path, sheet_name=sheet, header=1))
-            if raw.empty:
-                continue
-            date = _date(_col(raw, "日期"))
-            po_qty = _number(_col(raw, "检验批量"), None)
-            defect_qty = _number(_col(raw, "总不良数量", "拒收数量"), 0)
-            business = date.notna() & po_qty.notna()
-            raw, date, po_qty, defect_qty = (
-                raw.loc[business].copy(), date.loc[business], po_qty.loc[business], defect_qty.loc[business]
-            )
-            action = _text(_col(raw, "不良处理措施"))
-            rework = action.str.contains(r"REWORK|返工", case=False, regex=True, na=False)
-            issue = _text(_col(raw, "不良描述"))
-            issue = issue.where(issue.ne(""), _text(_col(raw, "不良的部位")))
-            summaries.append(_fg_summary_frame(
-                stage="FQC", supplier="CMW", date=date, po_qty=po_qty,
-                defect_qty=defect_qty, rework_qty=defect_qty.where(rework, 0),
-                rework_available=True, source_file=str(cmw_path.relative_to(root)), source_sheet=sheet,
-            ))
-            paretos.append(_fg_pareto_frame(
-                stage="FQC", supplier="CMW", date=date, defect_name=issue,
-                defect_qty=defect_qty, category_type="defect",
-                source_file=str(cmw_path.relative_to(root)), source_sheet=sheet,
-            ))
-
-    fsd_path = root / "BME Database" / "FG FQC" / "FSD P2 data input.xlsx"
-    if fsd_path.exists():
-        sheet = "Factory FQC 2nd version"
-        raw = _clean_columns(_read_excel(fsd_path, sheet_name=sheet))
-        if not raw.empty:
-            year = pd.to_numeric(_col(raw, "Year年", "Year"), errors="coerce")
-            week = pd.to_numeric(_col(raw, "Week周", "Week"), errors="coerce")
-            date = _iso_week_date(year, week)
-            po_qty = _number(_col(raw, "P.O.Qty订单数量", "P.O.Qty", "Orderqty"), None)
-            defect_qty = _number(_col(raw, "NCQty不良数量", "NCQty"), 0)
-            business = date.notna() & po_qty.notna()
-            raw, date, po_qty, defect_qty = (
-                raw.loc[business].copy(), date.loc[business], po_qty.loc[business], defect_qty.loc[business]
-            )
-            action = _text(_col(raw, "Specificreactionactiondefined?相应措施", "Sortingresult查库结果（不良率）"))
-            if action.eq("").all():
-                action = _text(_col(raw, "Sortingresult查库结果（不良率）"))
-            rework = action.str.contains(r"REWORK|返工", case=False, regex=True, na=False)
-            control_columns = list(raw.columns[15:36])
-            issue = raw[control_columns].apply(
-                lambda row: " / ".join(
-                    str(column).split("\n")[0].strip()
-                    for column, value in row.items()
-                    if str(value).upper().strip() == "NOK"
-                ),
-                axis=1,
-            ) if control_columns else pd.Series("", index=raw.index)
-            summaries.append(_fg_summary_frame(
-                stage="FQC", supplier="FSD", date=date, po_qty=po_qty,
-                defect_qty=defect_qty, rework_qty=defect_qty.where(rework, 0),
-                rework_available=True, source_file=str(fsd_path.relative_to(root)), source_sheet=sheet,
-            ))
-            paretos.append(_fg_pareto_frame(
-                stage="FQC", supplier="FSD", date=date, defect_name=issue,
-                defect_qty=defect_qty, category_type="defect",
-                source_file=str(fsd_path.relative_to(root)), source_sheet=sheet,
-            ))
-    return summaries, paretos
+    path = root / "BME Database" / "CMW（迪奇）" / "AQL inspecation" / "FQC Daily Report_2026 (1).xlsm"
+    return _load_fqc_daily_analysis(root, path, "CMW")
 
 
 def load_fg_quality_analysis(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load the user-classified FG IQC/PQC/FQC folders without editing sources."""
+    """Load CMW-only finished-goods IQC, PQC and FQC evidence."""
     summary_frames: list[pd.DataFrame] = []
     pareto_frames: list[pd.DataFrame] = []
     for loader in [_load_fg_iqc, _load_fg_pqc, _load_fg_fqc]:
         summaries, paretos = loader(root)
+        summary_frames.extend(summaries)
+        pareto_frames.extend(paretos)
+    summary = pd.concat(summary_frames, ignore_index=True) if summary_frames else pd.DataFrame(columns=FG_SUMMARY_COLUMNS)
+    pareto = pd.concat(pareto_frames, ignore_index=True) if pareto_frames else pd.DataFrame(columns=FG_PARETO_COLUMNS)
+    return summary, pareto
+
+
+def load_cpt_quality_analysis(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load CPT evidence from the three user-confirmed IQC, PQC and FQC workbooks."""
+    iqc_path = root / "BME Database" / "CPT IQC" / "FSD P2 data input.xlsx"
+    pqc_path = root / "BME Database" / "CPT PQC" / "Copy of 2026-PQC PPM统计.xlsx"
+    fqc_path = root / "BME Database" / "CPT FQC" / "FQC Daily Report_2026.xlsm"
+    summary_frames: list[pd.DataFrame] = []
+    pareto_frames: list[pd.DataFrame] = []
+    for summaries, paretos in [
+        _load_iqc_exception_analysis(root, iqc_path, "CPT"),
+        _load_monthly_pqc_analysis(root, pqc_path, "CPT"),
+        _load_fqc_daily_analysis(root, fqc_path, "CPT"),
+    ]:
         summary_frames.extend(summaries)
         pareto_frames.extend(paretos)
     summary = pd.concat(summary_frames, ignore_index=True) if summary_frames else pd.DataFrame(columns=FG_SUMMARY_COLUMNS)

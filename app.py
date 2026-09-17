@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-09-14-v18-fsd-iv-cluster"
+_BME_QUALITY_LOGIC_VERSION = "2026-09-17-v19-cpt-quality"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -53,6 +53,7 @@ build_fsd_iv_cluster_analysis = _bme_quality.build_fsd_iv_cluster_analysis
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
+load_cpt_quality_analysis = _bme_quality.load_cpt_quality_analysis
 load_fg_quality_analysis = _bme_quality.load_fg_quality_analysis
 load_fsd_iv_cluster_inputs = _bme_quality.load_fsd_iv_cluster_inputs
 summarize_spc_process_risk = _bme_quality.summarize_spc_process_risk
@@ -1138,7 +1139,10 @@ st.markdown(
     }
     .st-key-bme_fg_iqc,
     .st-key-bme_fg_pqc,
-    .st-key-bme_fg_fqc {
+    .st-key-bme_fg_fqc,
+    .st-key-bme_cpt_iqc,
+    .st-key-bme_cpt_pqc,
+    .st-key-bme_cpt_fqc {
         min-height: 690px;
         padding: 15px 15px 8px;
         border: 1px solid #dbe2ec;
@@ -1232,16 +1236,21 @@ st.markdown(
         line-height: 1.4;
     }
     @media (max-width: 1000px) {
-        div[data-testid="stHorizontalBlock"]:has(.st-key-bme_fg_iqc) {
+        div[data-testid="stHorizontalBlock"]:has(.st-key-bme_fg_iqc),
+        div[data-testid="stHorizontalBlock"]:has(.st-key-bme_cpt_iqc) {
             flex-direction: column;
         }
-        div[data-testid="stHorizontalBlock"]:has(.st-key-bme_fg_iqc) > div[data-testid="stColumn"] {
+        div[data-testid="stHorizontalBlock"]:has(.st-key-bme_fg_iqc) > div[data-testid="stColumn"],
+        div[data-testid="stHorizontalBlock"]:has(.st-key-bme_cpt_iqc) > div[data-testid="stColumn"] {
             width: 100%;
             flex: 1 1 100%;
         }
         .st-key-bme_fg_iqc,
         .st-key-bme_fg_pqc,
-        .st-key-bme_fg_fqc {min-height: 0;}
+        .st-key-bme_fg_fqc,
+        .st-key-bme_cpt_iqc,
+        .st-key-bme_cpt_pqc,
+        .st-key-bme_cpt_fqc {min-height: 0;}
     }
     .st-key-bme_spc_filter {
         background: rgba(255, 255, 255, 0.96);
@@ -14099,6 +14108,15 @@ def load_fg_quality_analysis_cached(
 
 
 @st.cache_data(show_spinner=False)
+def load_cpt_quality_analysis_cached(
+    fingerprint: tuple[tuple[str, int, int], ...],
+    logic_version: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    _ = fingerprint, logic_version
+    return load_cpt_quality_analysis(ROOT)
+
+
+@st.cache_data(show_spinner=False)
 def load_fsd_iv_cluster_inputs_cached(
     fingerprint: tuple[tuple[str, int, int], ...],
     logic_version: str,
@@ -14113,18 +14131,34 @@ def render_fg_quality_gate_analysis(
     selected_suppliers: list[str],
     start_date: dt.date,
     end_date: dt.date,
+    analysis_kind: str = "FG",
 ) -> None:
+    is_cpt = analysis_kind.upper() == "CPT"
+    if is_cpt:
+        heading_cn, heading_en = "CPT质量分析", "CPT Quality Analysis"
+        subheading_cn = "按照 CPT IQC、CPT PQC、CPT FQC 查看 FSD（CPT）的问题趋势与问题结构。"
+        subheading_en = "Review FSD (CPT) issue trends and structure across CPT IQC, CPT PQC, and CPT FQC."
+        stage_meta = {
+            "IQC": {"key": "bme_cpt_iqc", "title": "CPT IQC", "scope_cn": "FSD（CPT）· 来料", "scope_en": "FSD (CPT) · Incoming"},
+            "PQC": {"key": "bme_cpt_pqc", "title": "CPT PQC", "scope_cn": "FSD（CPT）· 制程", "scope_en": "FSD (CPT) · Process"},
+            "FQC": {"key": "bme_cpt_fqc", "title": "CPT FQC", "scope_cn": "FSD（CPT）· 成品", "scope_en": "FSD (CPT) · Final"},
+        }
+    else:
+        heading_cn, heading_en = "FG质量分析", "FG Quality Analysis"
+        subheading_cn = "按照 FG IQC、FG PQC、FG FQC 查看 CMW 的问题趋势与问题结构。"
+        subheading_en = "Review CMW issue trends and structure across FG IQC, FG PQC, and FG FQC."
+        stage_meta = {
+            "IQC": {"key": "bme_fg_iqc", "title": "FG IQC", "scope_cn": "CMW · 来料", "scope_en": "CMW · Incoming"},
+            "PQC": {"key": "bme_fg_pqc", "title": "FG PQC", "scope_cn": "CMW · 制程", "scope_en": "CMW · Process"},
+            "FQC": {"key": "bme_fg_fqc", "title": "FG FQC", "scope_cn": "CMW · 成品", "scope_en": "CMW · Final"},
+        }
     st.markdown(
-        f'<div class="bme-fg-heading">{html.escape(t("成品质量环节分析", "Finished Goods Quality Gate Analysis"))}</div>'
-        f'<div class="bme-fg-subheading">{html.escape(t("按照 FG IQC、FG PQC、FG FQC 查看问题率趋势与问题结构。", "Review defect-rate trends and issue structure across FG IQC, FG PQC, and FG FQC."))}</div>',
+        f'<div class="bme-fg-heading">{html.escape(t(heading_cn, heading_en))}</div>'
+        f'<div class="bme-fg-subheading">{html.escape(t(subheading_cn, subheading_en))}</div>',
         unsafe_allow_html=True,
     )
     stage_columns = st.columns(3, gap="medium")
-    stage_meta = {
-        "IQC": {"key": "bme_fg_iqc", "title": "FG IQC", "scope_cn": "FSD + CMW · 来料", "scope_en": "FSD + CMW · Incoming"},
-        "PQC": {"key": "bme_fg_pqc", "title": "FG PQC", "scope_cn": "CMW · 制程", "scope_en": "CMW · Process"},
-        "FQC": {"key": "bme_fg_fqc", "title": "FG FQC", "scope_cn": "FSD + CMW · 成品", "scope_en": "FSD + CMW · Final"},
-    }
+    chart_key_prefix = "cpt" if is_cpt else "fg"
 
     def rate_text(value: float) -> str:
         return f"{value:.2%}" if pd.notna(value) else "—"
@@ -14157,6 +14191,7 @@ def render_fg_quality_gate_analysis(
                 po_total = float(stage_summary["po_qty"].sum(min_count=1))
                 defect_total = float(stage_summary["defect_qty"].sum(min_count=1))
                 defect_rate = defect_total / po_total if po_total > 0 else np.nan
+                has_denominator = bool(stage_summary["po_qty"].fillna(0).gt(0).any())
                 rework_rows = stage_summary[stage_summary["rework_available"]].copy()
                 rework_rate = np.nan
                 if not rework_rows.empty:
@@ -14164,7 +14199,11 @@ def render_fg_quality_gate_analysis(
                     rework_total = float(rework_rows["rework_qty"].sum(min_count=1))
                     rework_rate = rework_total / rework_denominator if rework_denominator > 0 else np.nan
 
-                metric_items = [(t("问题率", "Defect rate"), rate_text(defect_rate))]
+                metric_items = [
+                    (t("问题率", "Defect rate"), rate_text(defect_rate))
+                    if has_denominator
+                    else (t("问题数量", "Issue count"), f"{defect_total:,.0f}")
+                ]
                 if stage != "IQC":
                     metric_items.append((t("返工率", "Rework rate"), rate_text(rework_rate)))
                 metric_html = "".join(
@@ -14177,12 +14216,14 @@ def render_fg_quality_gate_analysis(
 
                 st.markdown(f'<div class="bme-fg-chart-label">{html.escape(t("月度趋势", "Monthly trend"))}</div>', unsafe_allow_html=True)
                 monthly = stage_summary.assign(month=stage_summary["date"].dt.to_period("M")).groupby("month").agg(
-                    po_qty=("po_qty", "sum"), defect_qty=("defect_qty", "sum")
+                    po_qty=("po_qty", lambda values: values.sum(min_count=1)),
+                    defect_qty=("defect_qty", "sum"),
                 )
                 monthly["defect_rate"] = monthly["defect_qty"].div(monthly["po_qty"].replace(0, np.nan))
+                primary_metric = t("问题率", "Defect rate") if has_denominator else t("问题数量", "Issue count")
                 trend = pd.DataFrame({
                     "month": monthly.index.to_timestamp(),
-                    t("问题率", "Defect rate"): monthly["defect_rate"].values,
+                    primary_metric: monthly["defect_rate"].values if has_denominator else monthly["defect_qty"].values,
                 })
                 if not rework_rows.empty:
                     rework_monthly = rework_rows.assign(month=rework_rows["date"].dt.to_period("M")).groupby("month").agg(
@@ -14195,11 +14236,15 @@ def render_fg_quality_gate_analysis(
                             t("返工率", "Rework rate"): rework_monthly["rework_rate"].values,
                         }), on="month", how="left",
                     )
-                trend_long = trend.melt(id_vars="month", var_name="metric", value_name="rate").dropna(subset=["rate"])
+                trend_long = trend.melt(id_vars="month", var_name="metric", value_name="value").dropna(subset=["value"])
                 trend_fig = px.line(
-                    trend_long, x="month", y="rate", color="metric", markers=True,
-                    color_discrete_map={t("问题率", "Defect rate"): "#2855c5", t("返工率", "Rework rate"): "#d98200"},
-                    labels={"month": t("月份", "Month"), "rate": t("比例", "Rate"), "metric": ""},
+                    trend_long, x="month", y="value", color="metric", markers=True,
+                    color_discrete_map={
+                        t("问题率", "Defect rate"): "#2855c5",
+                        t("问题数量", "Issue count"): "#2855c5",
+                        t("返工率", "Rework rate"): "#d98200",
+                    },
+                    labels={"month": t("月份", "Month"), "value": t("比例", "Rate") if has_denominator else t("数量", "Quantity"), "metric": ""},
                 )
                 apply_bme_chart_style(trend_fig, height=225, showlegend=len(trend_long["metric"].unique()) > 1)
                 trend_fig.update_layout(margin=dict(l=8, r=8, t=25, b=25), legend=dict(orientation="h", y=1.12, x=0))
@@ -14211,8 +14256,8 @@ def render_fg_quality_gate_analysis(
                     automargin=True,
                     tickfont=dict(size=10 if stage == "FQC" else 11),
                 )
-                trend_fig.update_yaxes(title_text=None, tickformat=".2%", rangemode="tozero")
-                st.plotly_chart(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"fg_trend_{stage}")
+                trend_fig.update_yaxes(title_text=None, tickformat=".2%" if has_denominator else ",.0f", rangemode="tozero")
+                st.plotly_chart(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}")
 
                 category_type = (
                     stage_pareto["category_type"].mode().iloc[0]
@@ -14273,7 +14318,7 @@ def render_fg_quality_gate_analysis(
                         secondary_y=False,
                     )
                     pareto_fig.update_yaxes(title_text=None, tickformat=".0%", range=[0, 1.08], secondary_y=True)
-                    st.plotly_chart(pareto_fig, use_container_width=True, config={"displayModeBar": False}, key=f"fg_pareto_{stage}")
+                    st.plotly_chart(pareto_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_pareto_{stage}")
                     pareto_rows = []
                     for row_index, row in ranked.iterrows():
                         full_name = re.sub(r"\s+", " ", str(row["defect_name"])).strip()
@@ -14291,15 +14336,27 @@ def render_fg_quality_gate_analysis(
                     )
 
                 if stage == "IQC":
-                    note = t(
-                        "问题率 = 源不良数量 ÷ 源 PO/来料数量。FSD 源为异常记录表，不能解释为全部来料总体不良率。",
-                        "Defect rate = source defect quantity / source PO or incoming quantity. The FSD source is an exception log, not the full incoming population.",
-                    )
+                    if is_cpt:
+                        note = t(
+                            "问题率 = 异常记录中的不良笔数 ÷ 对应数量；该源是 IQC 异常记录，不能解释为全部来料总体不良率。",
+                            "Defect rate = defect records / corresponding quantity in the IQC exception log; it is not the full incoming population rate.",
+                        )
+                    else:
+                        note = t(
+                            "问题率 = CMW 退货数量 ÷ 来料数量。",
+                            "Defect rate = CMW returned quantity / incoming quantity.",
+                        )
                 elif stage == "PQC":
-                    note = t(
-                        "源文件只有月度拒收数量、生产数量和产品族，没有结构化返工数量或具体 defect name。",
-                        "The source contains monthly rejected quantity, production quantity, and product family, but no structured reworked quantity or specific defect name.",
-                    )
+                    if is_cpt:
+                        note = t(
+                            "问题率 = 月度拒收数量 ÷ 生产数量；源文件没有结构化返工数量或具体 defect name。",
+                            "Defect rate = monthly rejected quantity / production quantity; the source has no structured rework quantity or specific defect name.",
+                        )
+                    else:
+                        note = t(
+                            "CMW 源为问题跟踪记录，没有生产数量分母，因此显示问题数量，不计算问题率或返工率。",
+                            "The CMW source is a defect follow-up log without production volume, so issue counts are shown and no defect or rework rate is calculated.",
+                        )
                 else:
                     note = t(
                         "返工数量仅统计处理措施明确标记 Rework/返工的源不良数量。",
@@ -15753,12 +15810,21 @@ def render_bme_bike_quality_dashboard_v3(
         )
         render_fsd_iv_cluster_analysis(fsd_cluster_analysis, fsd_cluster_meta)
 
-    fg_summary, fg_pareto = load_fg_quality_analysis_cached(
-        bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION
-    )
-    render_fg_quality_gate_analysis(
-        fg_summary, fg_pareto, selected_suppliers, start_date, end_date
-    )
+    source_fingerprint = bme_source_fingerprint(ROOT)
+    if "CMW" in selected_suppliers:
+        fg_summary, fg_pareto = load_fg_quality_analysis_cached(
+            source_fingerprint, _BME_QUALITY_LOGIC_VERSION
+        )
+        render_fg_quality_gate_analysis(
+            fg_summary, fg_pareto, ["CMW"], start_date, end_date, analysis_kind="FG"
+        )
+    if "FSD" in selected_suppliers:
+        cpt_summary, cpt_pareto = load_cpt_quality_analysis_cached(
+            source_fingerprint, _BME_QUALITY_LOGIC_VERSION
+        )
+        render_fg_quality_gate_analysis(
+            cpt_summary, cpt_pareto, ["CPT"], start_date, end_date, analysis_kind="CPT"
+        )
 
     # Supplier selection controls visibility only. Scores retain the complete
     # period peer pool so the same supplier does not move when peers are hidden.

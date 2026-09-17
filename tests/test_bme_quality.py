@@ -11,6 +11,7 @@ from bme_quality import (
     build_spc_model_component_risk,
     classify_torque_component_group,
     load_bme_quality_events,
+    load_cpt_quality_analysis,
     load_fg_quality_analysis,
     load_fsd_iv_cluster_inputs,
     summarize_spc_process_risk,
@@ -75,9 +76,10 @@ class FinishedGoodsGateAnalysisTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.summary, cls.pareto = load_fg_quality_analysis(ROOT)
 
-    def test_user_classified_finished_goods_folders_are_loaded(self) -> None:
+    def test_fg_analysis_contains_cmw_only(self) -> None:
         self.assertEqual(set(self.summary["stage"]), {"IQC", "PQC", "FQC"})
-        self.assertTrue(self.summary["source_file"].str.contains(r"BME Database/FG (?:IQC|PQC|FQC)/", regex=True).all())
+        self.assertEqual(set(self.summary["supplier"]), {"CMW"})
+        self.assertFalse(self.summary["source_file"].str.contains(r"CPT |FSD", regex=True).any())
         self.assertTrue(self.summary.loc[self.summary["po_qty"].notna(), "po_qty"].gt(0).all())
 
     def test_pqc_missing_rework_quantity_remains_unavailable(self) -> None:
@@ -86,12 +88,40 @@ class FinishedGoodsGateAnalysisTest(unittest.TestCase):
         self.assertFalse(pqc["rework_available"].any())
         self.assertTrue(pqc["rework_qty"].isna().all())
 
-    def test_pqc_pareto_is_labeled_as_product_family_not_defect_name(self) -> None:
+    def test_cmw_pqc_uses_problem_count_when_denominator_is_unavailable(self) -> None:
+        pqc_summary = self.summary[self.summary["stage"].eq("PQC")]
         pqc = self.pareto[self.pareto["stage"].eq("PQC")]
         self.assertGreater(len(pqc), 0)
-        self.assertTrue(pqc["category_type"].eq("product_family").all())
+        self.assertTrue(pqc_summary["po_qty"].isna().all())
+        self.assertTrue(pqc_summary["defect_qty"].fillna(0).gt(0).any())
+        self.assertTrue(pqc["category_type"].eq("defect").all())
 
     def test_fqc_rework_is_only_counted_from_explicit_actions(self) -> None:
+        fqc = self.summary[self.summary["stage"].eq("FQC")]
+        self.assertGreater(len(fqc), 0)
+        self.assertTrue(fqc["rework_available"].all())
+        self.assertTrue(fqc["rework_qty"].fillna(0).le(fqc["defect_qty"].fillna(0)).all())
+
+
+class CptQualityAnalysisTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.summary, cls.pareto = load_cpt_quality_analysis(ROOT)
+
+    def test_three_cpt_gates_use_the_new_cpt_sources(self) -> None:
+        self.assertEqual(set(self.summary["stage"]), {"IQC", "PQC", "FQC"})
+        self.assertEqual(set(self.summary["supplier"]), {"CPT"})
+        self.assertTrue(self.summary["source_file"].str.contains(r"BME Database/CPT (?:IQC|PQC|FQC)/", regex=True).all())
+
+    def test_cpt_pqc_rate_has_rejected_and_production_quantities(self) -> None:
+        pqc = self.summary[self.summary["stage"].eq("PQC")]
+        self.assertGreater(len(pqc), 0)
+        self.assertTrue(pqc["po_qty"].gt(0).all())
+        self.assertTrue(pqc["defect_qty"].ge(0).all())
+        pqc_pareto = self.pareto[self.pareto["stage"].eq("PQC")]
+        self.assertTrue(pqc_pareto["category_type"].eq("product_family").all())
+
+    def test_cpt_fqc_rework_requires_explicit_action(self) -> None:
         fqc = self.summary[self.summary["stage"].eq("FQC")]
         self.assertGreater(len(fqc), 0)
         self.assertTrue(fqc["rework_available"].all())
