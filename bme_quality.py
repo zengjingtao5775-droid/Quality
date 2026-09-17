@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-09-17-v19-cpt-quality"
+BME_QUALITY_LOGIC_VERSION = "2026-09-17-v20-fsd-rpm-cluster"
 
 
 # Presentation-only labels for CMW torque components. Source values remain
@@ -1576,20 +1576,23 @@ def _joined_unique(values: pd.Series) -> str:
     return ", ".join(sorted(cleaned))
 
 
-def load_fsd_iv_cluster_inputs(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load the isolated FSD FQC and Intern Voice sources for clustering."""
+def load_fsd_rpm_cluster_inputs(
+    root: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Load FSD FQC, finished-bike RPM and the audited item/model bridge."""
     base = root / "BME Database" / "FSD Cluster"
     fqc_path = base / "FSD P2 data input.xlsx"
-    iv_path = base / "2026 四家 (1).xlsx"
-    if not fqc_path.exists() or not iv_path.exists():
-        return pd.DataFrame(), pd.DataFrame()
+    mapping_path = base / "FSD Item Model Mapping.xlsx"
+    rpm_path = base / "RPM Model Export.xlsx"
+    if not fqc_path.exists() or not mapping_path.exists() or not rpm_path.exists():
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     raw_fqc = _clean_columns(_read_excel(fqc_path, sheet_name="Factory FQC 2nd version"))
     fqc = pd.DataFrame({
         "date": _iso_week_date(_col(raw_fqc, "Year"), _col(raw_fqc, "Week")),
         "supplier": _text(_col(raw_fqc, "PartsSupplier", "供应商")),
         "model_name": _text(_col(raw_fqc, "Name(formularlinkwithDATABASE)车种名", "车种名")),
-        "item_code": _text(_col(raw_fqc, "ItemforFrameforkonly")),
+        "item_code": _identifier(_col(raw_fqc, "ItemforFrameforkonly")),
         "inspected_qty": _number(_col(raw_fqc, "InspectedQty", "检验数量"), None),
         "nc_qty": _number(_col(raw_fqc, "NCQty", "不良数量"), None),
         "source_row": raw_fqc.index + 2,
@@ -1603,58 +1606,82 @@ def load_fsd_iv_cluster_inputs(root: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         & fqc["nc_qty"].ge(0)
     ].reset_index(drop=True)
 
-    raw_iv = _clean_columns(_read_excel(iv_path, sheet_name="Sheet1"))
-    vendor_code = pd.to_numeric(_col(raw_iv, "VENDORCODE"), errors="coerce")
-    vendor_name = _text(_col(raw_iv, "VENDORNAME"))
-    iv = pd.DataFrame({
-        "date": pd.to_datetime(_col(raw_iv, "CREATEDDATE"), errors="coerce"),
-        "feedback_no": _text(_col(raw_iv, "FEEDBACKNo.")),
-        "model_code": _text(_col(raw_iv, "MODELCODE")),
-        "model_name": _text(_col(raw_iv, "MODELNAME")),
-        "iv_qty": _number(_col(raw_iv, "PRODUCTQUANTITY"), 0),
-        "source_row": raw_iv.index + 2,
+    raw_mapping = _clean_columns(_read_excel(mapping_path, sheet_name="DATABASE"))
+    mapping = pd.DataFrame({
+        "item_code": _identifier(_col(raw_mapping, "Itemcode")),
+        "model_code": _identifier(_col(raw_mapping, "ModelCode")),
+        "description": _text(_col(raw_mapping, "Description")),
+        "record_type": _text(_col(raw_mapping, "FrameforkorBike")),
+        "raw_frame": _text(_col(raw_mapping, "Rawframe")),
+        "raw_fork": _text(_col(raw_mapping, "RawR-fork", "RawRfork")),
+        "source_row": raw_mapping.index + 2,
     })
-    is_fsd = vendor_code.eq(61839) | vendor_name.str.contains("FUJI|FSD", case=False, na=False)
-    iv = iv[is_fsd & iv["date"].notna() & iv["model_name"].ne("")].reset_index(drop=True)
-    return fqc, iv
+    mapping["raw_frame_key"] = mapping["raw_frame"].map(_fsd_cluster_match_key)
+    mapping["raw_fork_key"] = mapping["raw_fork"].map(_fsd_cluster_match_key)
+    mapping = mapping[
+        mapping["item_code"].ne("") | mapping["model_code"].ne("")
+    ].reset_index(drop=True)
+
+    raw_rpm = _clean_columns(_read_excel(rpm_path, sheet_name="Sheet 1"))
+    rpm = pd.DataFrame({
+        "product_code": _identifier(_col(raw_rpm, "ProductCode")),
+        "product_name": _text(_col(raw_rpm, "ProductName")),
+        "source_rpm": _number(_col(raw_rpm, "N0RPM"), None),
+        "returned_qty": _number(_col(raw_rpm, "N0Qtyreturned"), None),
+        "sold_qty": _number(_col(raw_rpm, "N0Qtysold(RPM)"), None),
+        "source_row": raw_rpm.index + 2,
+    })
+    rpm = rpm[rpm["product_code"].ne("")].reset_index(drop=True)
+    return fqc, rpm, mapping
 
 
-def build_fsd_iv_cluster_analysis(
+def build_fsd_rpm_cluster_analysis(
     fqc: pd.DataFrame,
-    iv: pd.DataFrame,
+    rpm: pd.DataFrame,
+    mapping: pd.DataFrame,
     start_date: object | None = None,
     end_date: object | None = None,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
-    """Build a preliminary FQC defect-rate × IV-case cluster analysis.
+    """Build FQC defect-rate × RPM clusters through an exact master-data bridge.
 
-    The two sources have no shared product code. Only exact normalized FQC
-    name-family containment is used, with the longest family winning. Unmatched
-    families remain unavailable on the IV axis and never become zero.
+    The auditable relationship is FQC item code -> raw frame/raw fork -> finished
+    bike model code -> RPM product code. RPM is recomputed as total returned
+    quantity / total sold quantity x 1,000,000; unmatched families remain null.
     """
     columns = [
         "fsd_model", "item_codes", "fqc_records", "inspected_qty", "nc_qty",
-        "defect_rate", "iv_model_codes", "iv_model_names", "iv_models",
-        "iv_cases", "iv_qty", "match_status", "cluster_label", "priority_score",
+        "defect_rate", "rpm_model_codes", "rpm_model_names", "rpm_models",
+        "rpm_qty_returned", "rpm_qty_sold", "rpm", "match_status",
+        "cluster_label", "priority_score",
     ]
     fqc_period = fqc.copy()
-    iv_period = iv.copy()
     if start_date is not None:
         start_ts = pd.Timestamp(start_date)
         fqc_period = fqc_period[pd.to_datetime(fqc_period["date"], errors="coerce").ge(start_ts)]
-        iv_period = iv_period[pd.to_datetime(iv_period["date"], errors="coerce").ge(start_ts)]
     if end_date is not None:
         end_ts = pd.Timestamp(end_date)
         fqc_period = fqc_period[pd.to_datetime(fqc_period["date"], errors="coerce").le(end_ts)]
-        iv_period = iv_period[pd.to_datetime(iv_period["date"], errors="coerce").le(end_ts)]
+
+    valid_rpm = rpm[
+        rpm["product_code"].ne("")
+        & rpm["sold_qty"].gt(0)
+        & rpm["returned_qty"].ge(0)
+    ].copy()
+    rpm_by_model = valid_rpm.groupby("product_code", as_index=False).agg(
+        product_name=("product_name", _joined_unique),
+        returned_qty=("returned_qty", "sum"),
+        sold_qty=("sold_qty", "sum"),
+    )
 
     meta: dict[str, object] = {
         "fqc_rows": len(fqc_period),
         "fqc_families": int(fqc_period.get("family", pd.Series(dtype="object")).nunique()),
-        "iv_rows": len(iv_period),
-        "iv_models": int(iv_period.get("model_code", pd.Series(dtype="object")).nunique()),
+        "mapping_rows": len(mapping),
+        "rpm_rows": len(rpm),
+        "rpm_models": int(rpm_by_model["product_code"].nunique()),
         "matched_families": 0,
         "matched_fqc_rows": 0,
-        "matched_iv_models": 0,
+        "matched_rpm_models": 0,
     }
     if fqc_period.empty:
         return pd.DataFrame(columns=columns), meta
@@ -1667,43 +1694,58 @@ def build_fsd_iv_cluster_analysis(
     ).rename(columns={"family": "fsd_model"})
     grouped["defect_rate"] = grouped["nc_qty"].div(grouped["inspected_qty"].replace(0, np.nan))
 
-    family_keys = [
-        (family, _fsd_cluster_match_key(family))
-        for family in grouped["fsd_model"].tolist()
+    rpm_codes = set(rpm_by_model["product_code"])
+    finished_bikes = mapping[
+        mapping["record_type"].str.strip().str.casefold().eq("bike")
+        & mapping["model_code"].isin(rpm_codes)
     ]
-    family_keys = sorted(
-        [(family, key) for family, key in family_keys if len(key) >= 5],
-        key=lambda item: len(item[1]),
-        reverse=True,
-    )
-    iv_period = iv_period.copy()
-    iv_period["match_family"] = iv_period["model_name"].map(
-        lambda name: next(
-            (family for family, key in family_keys if key in _fsd_cluster_match_key(name)),
-            None,
-        )
-    )
-    matched_iv = iv_period[iv_period["match_family"].notna()].copy()
-    if matched_iv.empty:
-        grouped["iv_model_codes"] = pd.NA
-        grouped["iv_model_names"] = pd.NA
-        grouped["iv_models"] = np.nan
-        grouped["iv_cases"] = np.nan
-        grouped["iv_qty"] = np.nan
-    else:
-        iv_grouped = matched_iv.groupby("match_family", as_index=False).agg(
-            iv_model_codes=("model_code", _joined_unique),
-            iv_model_names=("model_name", lambda values: " | ".join(sorted(set(values)))),
-            iv_models=("model_code", "nunique"),
-            iv_cases=("feedback_no", "nunique"),
-            iv_qty=("iv_qty", "sum"),
-        ).rename(columns={"match_family": "fsd_model"})
-        grouped = grouped.merge(iv_grouped, on="fsd_model", how="left")
+    raw_frame_to_models: dict[str, set[str]] = {}
+    raw_fork_to_models: dict[str, set[str]] = {}
+    for row in finished_bikes.itertuples(index=False):
+        if row.raw_frame_key:
+            raw_frame_to_models.setdefault(row.raw_frame_key, set()).add(row.model_code)
+        if row.raw_fork_key:
+            raw_fork_to_models.setdefault(row.raw_fork_key, set()).add(row.model_code)
 
-    grouped["match_status"] = np.where(grouped["iv_cases"].notna(), "Matched by name family", "Unmatched")
+    item_to_models: dict[str, set[str]] = {}
+    relevant_mapping = mapping[mapping["item_code"].isin(set(fqc_period["item_code"]))]
+    for item_code, rows in relevant_mapping.groupby("item_code"):
+        model_codes: set[str] = set()
+        for row in rows.itertuples(index=False):
+            if row.model_code in rpm_codes:
+                model_codes.add(row.model_code)
+            if row.raw_frame_key:
+                model_codes.update(raw_frame_to_models.get(row.raw_frame_key, set()))
+            if row.raw_fork_key:
+                model_codes.update(raw_fork_to_models.get(row.raw_fork_key, set()))
+        item_to_models[item_code] = model_codes
+
+    family_to_models = {
+        family: set().union(*(item_to_models.get(item_code, set()) for item_code in rows["item_code"]))
+        for family, rows in fqc_period.groupby("family")
+    }
+    rpm_records: list[dict[str, object]] = []
+    for family, model_codes in family_to_models.items():
+        family_rpm = rpm_by_model[rpm_by_model["product_code"].isin(model_codes)]
+        returned_qty = family_rpm["returned_qty"].sum(min_count=1)
+        sold_qty = family_rpm["sold_qty"].sum(min_count=1)
+        rpm_value = returned_qty / sold_qty * 1_000_000 if pd.notna(sold_qty) and sold_qty > 0 else np.nan
+        rpm_records.append({
+            "fsd_model": family,
+            "rpm_model_codes": _joined_unique(family_rpm["product_code"]),
+            "rpm_model_names": " | ".join(sorted(set(family_rpm["product_name"]))) if not family_rpm.empty else pd.NA,
+            "rpm_models": family_rpm["product_code"].nunique() if not family_rpm.empty else np.nan,
+            "rpm_qty_returned": returned_qty,
+            "rpm_qty_sold": sold_qty,
+            "rpm": rpm_value,
+        })
+    grouped = grouped.merge(pd.DataFrame(rpm_records), on="fsd_model", how="left")
+    grouped["match_status"] = np.where(
+        grouped["rpm"].notna(), "Matched by item/master data", "Unmatched"
+    )
     grouped["cluster_label"] = pd.NA
     grouped["priority_score"] = np.nan
-    matched_mask = grouped["iv_cases"].notna()
+    matched_mask = grouped["rpm"].notna()
     matched = grouped.loc[matched_mask].copy()
     if not matched.empty:
         def minmax(series: pd.Series) -> pd.Series:
@@ -1711,10 +1753,14 @@ def build_fsd_iv_cluster_analysis(
             span = numeric.max() - numeric.min()
             return pd.Series(0.5, index=series.index) if not span else (numeric - numeric.min()) / span
 
+        rpm_log = np.log10(pd.to_numeric(matched["rpm"], errors="coerce").clip(lower=1))
         matched["priority_score"] = (
-            50 * minmax(matched["defect_rate"]) + 50 * minmax(matched["iv_cases"])
+            50 * minmax(matched["defect_rate"]) + 50 * minmax(rpm_log)
         ).round(1)
-        points = matched[["defect_rate", "iv_cases"]].to_numpy(dtype=float)
+        points = np.column_stack([
+            minmax(matched["defect_rate"]).to_numpy(dtype=float),
+            minmax(rpm_log).to_numpy(dtype=float),
+        ])
         raw_labels = _deterministic_kmeans_labels(points, cluster_count=3)
         ordered = (
             pd.DataFrame({"cluster_id": raw_labels, "priority": matched["priority_score"].to_numpy()})
@@ -1733,9 +1779,12 @@ def build_fsd_iv_cluster_analysis(
     meta.update({
         "matched_families": int(matched_mask.sum()),
         "matched_fqc_rows": int(grouped.loc[matched_mask, "fqc_records"].sum()),
-        "matched_iv_models": int(matched_iv["model_code"].nunique()) if not matched_iv.empty else 0,
+        "matched_rpm_models": len(set().union(*[
+            models for models in family_to_models.values() if models
+        ])) if any(family_to_models.values()) else 0,
     })
     grouped["defect_rate"] = grouped["defect_rate"].round(6)
+    grouped["rpm"] = grouped["rpm"].round(1)
     return grouped[columns].sort_values(
         ["match_status", "priority_score", "defect_rate"],
         ascending=[True, False, False],

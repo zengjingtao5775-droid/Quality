@@ -34,7 +34,7 @@ import bme_quality as _bme_quality
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-09-17-v19-cpt-quality"
+_BME_QUALITY_LOGIC_VERSION = "2026-09-17-v20-fsd-rpm-cluster"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -49,13 +49,13 @@ build_bme_relative_risk_scores = _bme_quality.build_bme_relative_risk_scores
 build_bme_relative_risk_scores_for_selection = _bme_quality.build_bme_relative_risk_scores_for_selection
 build_bme_priority_product_clusters = _bme_quality.build_bme_priority_product_clusters
 build_cmw_product_clusters = _bme_quality.build_cmw_product_clusters
-build_fsd_iv_cluster_analysis = _bme_quality.build_fsd_iv_cluster_analysis
+build_fsd_rpm_cluster_analysis = _bme_quality.build_fsd_rpm_cluster_analysis
 calculate_fsd_customer_ppm = _bme_quality.calculate_fsd_customer_ppm
 load_bme_customer_quality = _bme_quality.load_bme_customer_quality
 load_bme_quality_events = _bme_quality.load_bme_quality_events
 load_cpt_quality_analysis = _bme_quality.load_cpt_quality_analysis
 load_fg_quality_analysis = _bme_quality.load_fg_quality_analysis
-load_fsd_iv_cluster_inputs = _bme_quality.load_fsd_iv_cluster_inputs
+load_fsd_rpm_cluster_inputs = _bme_quality.load_fsd_rpm_cluster_inputs
 summarize_spc_process_risk = _bme_quality.summarize_spc_process_risk
 build_spc_model_component_risk = _bme_quality.build_spc_model_component_risk
 classify_torque_component_group = _bme_quality.classify_torque_component_group
@@ -14117,12 +14117,12 @@ def load_cpt_quality_analysis_cached(
 
 
 @st.cache_data(show_spinner=False)
-def load_fsd_iv_cluster_inputs_cached(
+def load_fsd_rpm_cluster_inputs_cached(
     fingerprint: tuple[tuple[str, int, int], ...],
     logic_version: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _ = fingerprint, logic_version
-    return load_fsd_iv_cluster_inputs(ROOT)
+    return load_fsd_rpm_cluster_inputs(ROOT)
 
 
 def render_fg_quality_gate_analysis(
@@ -14365,38 +14365,39 @@ def render_fg_quality_gate_analysis(
                 st.markdown(f'<div class="bme-fg-data-note">{html.escape(note)}</div>', unsafe_allow_html=True)
 
 
-def render_fsd_iv_cluster_analysis(
+def render_fsd_rpm_cluster_analysis(
     analysis: pd.DataFrame,
     meta: dict[str, object],
 ) -> None:
     """Render the FSD cluster with the same visual hierarchy as TU."""
     source_label = (
         "BME Database/FSD Cluster/FSD P2 data input.xlsx + "
-        "BME Database/FSD Cluster/2026 四家 (1).xlsx"
+        "BME Database/FSD Cluster/FSD Item Model Mapping.xlsx + "
+        "BME Database/FSD Cluster/RPM Model Export.xlsx"
     )
     render_chart_heading(
         "FSD 聚类分析",
         "FSD Cluster Analysis",
-        "识别哪些 FSD 型号族同时存在工厂 FQC 问题和客户端 Intern Voice 问题。",
-        "Identify FSD families with both factory FQC defects and client-side Intern Voice issues.",
-        "越靠右表示 FQC 不良率越高，越靠上表示 IV 问题单越多；右上区域应优先调查。",
-        "Farther right means a higher FQC defect rate; higher means more IV cases. Investigate the upper-right area first.",
-        "仅对标准化名称族精确匹配的对象做 K-means 聚类；未匹配型号不按 IV=0 处理，也不进入聚类。",
-        "K-means uses exact normalized name-family matches only. Unmatched families are not treated as IV=0 and are excluded.",
+        "识别哪些 FSD 型号族同时存在较高的工厂 FQC 不良率和客户端 RPM。",
+        "Identify FSD families with both higher factory FQC defect rates and client-side RPM.",
+        "越靠右表示 FQC 不良率越高，越靠上表示 RPM 越高；右上区域应优先调查。",
+        "Farther right means a higher FQC defect rate; higher means a higher RPM. Investigate the upper-right area first.",
+        "仅通过 Item Code → Raw frame / Raw R-fork → 成品 Model Code → RPM 的精确主数据链路做聚类；未匹配型号不按 RPM=0 处理。",
+        "Clustering uses only the exact Item Code → Raw frame / Raw R-fork → finished Model Code → RPM master-data bridge. Unmatched families are not treated as RPM=0.",
         source_label,
-        "fsd_iv_cluster",
+        "fsd_rpm_cluster",
     )
     fqc_families = int(meta.get("fqc_families", 0) or 0)
     fqc_rows = int(meta.get("fqc_rows", 0) or 0)
-    iv_models = int(meta.get("iv_models", 0) or 0)
+    rpm_models = int(meta.get("rpm_models", 0) or 0)
     matched_families = int(meta.get("matched_families", 0) or 0)
     matched_fqc_rows = int(meta.get("matched_fqc_rows", 0) or 0)
-    matched_iv_models = int(meta.get("matched_iv_models", 0) or 0)
-    if analysis.empty or analysis["iv_cases"].notna().sum() == 0:
+    matched_rpm_models = int(meta.get("matched_rpm_models", 0) or 0)
+    if analysis.empty or analysis["rpm"].notna().sum() == 0:
         st.info(t("当前筛选期间没有可聚类的已匹配数据。", "No matched data is available for clustering in this period."))
         return
 
-    matched = analysis[analysis["iv_cases"].notna()].copy()
+    matched = analysis[analysis["rpm"].notna()].copy()
     cluster_labels = {
         "Priority improvement": t("高风险", "High Risk"),
         "Attention": t("中风险", "Medium Risk"),
@@ -14413,8 +14414,8 @@ def render_fsd_iv_cluster_analysis(
         with coverage_col:
             st.markdown(
                 t(
-                    f"**名称族匹配 {matched_families}/{fqc_families}** · FQC {matched_fqc_rows}/{fqc_rows} · IV {matched_iv_models}/{iv_models}",
-                    f"**Name-family matches {matched_families}/{fqc_families}** · FQC {matched_fqc_rows}/{fqc_rows} · IV {matched_iv_models}/{iv_models}",
+                    f"**RPM 映射 {matched_families}/{fqc_families}** · FQC {matched_fqc_rows}/{fqc_rows} · RPM Model {matched_rpm_models}/{rpm_models}",
+                    f"**RPM mappings {matched_families}/{fqc_families}** · FQC {matched_fqc_rows}/{fqc_rows} · RPM models {matched_rpm_models}/{rpm_models}",
                 )
             )
         with filter_col:
@@ -14422,14 +14423,14 @@ def render_fsd_iv_cluster_analysis(
                 t("聚类筛选（可多选）", "Cluster Filter (multi-select)"),
                 risk_options,
                 default=risk_options,
-                key=f"fsd_iv_cluster_filter_{language_query_code()}",
+                key=f"fsd_rpm_cluster_filter_{language_query_code()}",
                 placeholder=t("选择一个或多个聚类", "Choose one or more clusters"),
                 label_visibility="collapsed",
             )
     st.caption(
         t(
-            "试算口径：两份源文件没有共同产品编码，未匹配的型号族保留为数据缺口。",
-            "Trial basis: the sources have no shared product code; unmatched families remain explicit data gaps.",
+            "计算口径：RPM = 对应成品 Model 的退货数量合计 ÷ 销售数量合计 × 1,000,000；未匹配型号族保留为数据缺口。",
+            "Calculation: RPM = total returned quantity ÷ total sold quantity × 1,000,000 for mapped finished models; unmatched families remain explicit data gaps.",
         )
     )
     plot_view = matched[matched["cluster_display"].isin(selected_clusters)].copy()
@@ -14439,10 +14440,13 @@ def render_fsd_iv_cluster_analysis(
     fig = px.scatter(
         plot_view.sort_values("priority_score", ascending=False),
         x="defect_rate",
-        y="iv_cases",
+        y="rpm",
         color="cluster_display",
         text="fsd_model",
-        custom_data=["fsd_model", "inspected_qty", "nc_qty", "iv_model_names", "priority_score"],
+        custom_data=[
+            "fsd_model", "inspected_qty", "nc_qty", "rpm_model_names",
+            "rpm_models", "rpm_qty_returned", "rpm_qty_sold", "priority_score",
+        ],
         color_discrete_map={
             t("高风险", "High Risk"): "#E85D68",
             t("中风险", "Medium Risk"): "#F0A94A",
@@ -14458,17 +14462,20 @@ def render_fsd_iv_cluster_analysis(
             "<b>%{customdata[0]} · %{fullData.name}</b><br>"
             "━━━━━━━━━━━━━━━━━━━━<br>"
             + t("FQC不良率", "FQC defect rate") + ": %{x:.2%}<br>"
-            + t("IV问题单", "IV cases") + ": %{y:.0f}<br>"
+            + "RPM: %{y:,.0f}<br>"
             + t("检验数量", "Inspected qty") + ": %{customdata[1]:,.0f}<br>"
             + t("不良数量", "NC qty") + ": %{customdata[2]:,.0f}<br>"
-            + t("IV型号", "IV models") + ": %{customdata[3]}<br>"
-            + t("调查优先分", "Priority score") + ": %{customdata[4]:.1f}<extra></extra>"
+            + t("RPM成品型号", "RPM finished models") + ": %{customdata[4]:.0f}<br>"
+            + t("退货 / 销量", "Returns / sales") + ": %{customdata[5]:,.0f} / %{customdata[6]:,.0f}<br>"
+            + t("成品型号名称", "Finished model names") + ": %{customdata[3]}<br>"
+            + t("调查优先分", "Priority score") + ": %{customdata[7]:.1f}<extra></extra>"
         ),
     )
     x_max = float(matched["defect_rate"].max()) if not matched.empty else 0
-    y_max = float(matched["iv_cases"].max()) if not matched.empty else 0
+    positive_rpm = matched.loc[matched["rpm"].gt(0), "rpm"]
+    y_max = float(positive_rpm.max()) if not positive_rpm.empty else 1
+    y_min = float(positive_rpm.min()) if not positive_rpm.empty else 1
     x_mid = float(matched["defect_rate"].median())
-    y_mid = float(matched["iv_cases"].median())
     fig.update_xaxes(
         title=t("FQC 不良率", "FQC Defect Rate"),
         tickformat=".1%",
@@ -14476,16 +14483,16 @@ def render_fsd_iv_cluster_analysis(
         constrain="domain",
     )
     fig.update_yaxes(
-        title=t("Intern Voice 问题单数", "Intern Voice Cases"),
-        range=[-max(y_max * 0.04, 1), max(y_max * 1.13, 5)],
-        rangemode="tozero",
+        title=t("RPM（每百万销量退货数，对数轴）", "RPM (returns per million sold, log scale)"),
+        type="log",
+        range=[math.log10(max(y_min * 0.65, 1)), math.log10(max(y_max * 1.6, 10))],
+        tickformat=",.0f",
         constrain="domain",
     )
     fig.add_vline(x=x_mid, line_dash="dash", line_color="#8b96b8", opacity=0.45)
-    fig.add_hline(y=y_mid, line_dash="dash", line_color="#8b96b8", opacity=0.45)
     fig.add_annotation(
         xref="paper", yref="paper", x=0.98, y=0.98,
-        text=t("右上：FQC + IV 双高", "Upper-right: high FQC + IV"),
+        text=t("右上：FQC + RPM 双高", "Upper-right: high FQC + RPM"),
         showarrow=False,
         font=dict(size=13, color="#dc2626"),
         bgcolor="rgba(255,255,255,0.72)",
@@ -14510,7 +14517,7 @@ def render_fsd_iv_cluster_analysis(
         plot_chart(
             fig,
             560,
-            key="fsd_iv_cluster_plot",
+            key="fsd_rpm_cluster_plot",
             enable_box_zoom=True,
             stretch_width=True,
         )
@@ -15802,13 +15809,13 @@ def render_bme_bike_quality_dashboard_v3(
         st.warning(t("FSD 已关联 PO 的零部件问题数量占比低于90%，因此暂不显示 PPM。", "FSD component-issue PO-link coverage is below 90%; PPM is hidden."))
 
     if "FSD" in selected_suppliers:
-        fsd_cluster_fqc, fsd_cluster_iv = load_fsd_iv_cluster_inputs_cached(
+        fsd_cluster_fqc, fsd_cluster_rpm, fsd_cluster_mapping = load_fsd_rpm_cluster_inputs_cached(
             bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION
         )
-        fsd_cluster_analysis, fsd_cluster_meta = build_fsd_iv_cluster_analysis(
-            fsd_cluster_fqc, fsd_cluster_iv, start_date, end_date
+        fsd_cluster_analysis, fsd_cluster_meta = build_fsd_rpm_cluster_analysis(
+            fsd_cluster_fqc, fsd_cluster_rpm, fsd_cluster_mapping, start_date, end_date
         )
-        render_fsd_iv_cluster_analysis(fsd_cluster_analysis, fsd_cluster_meta)
+        render_fsd_rpm_cluster_analysis(fsd_cluster_analysis, fsd_cluster_meta)
 
     source_fingerprint = bme_source_fingerprint(ROOT)
     if "CMW" in selected_suppliers:
@@ -17503,8 +17510,8 @@ def render_bme_bike_quality_dashboard_v3(
             spc_logic_cn = "不会把其他产品的机器数据自动放到所选产品下面。"
             spc_logic_en = "Machine data from another product is never shown as if it belonged to the selected product."
         elif method == "imr":
-            spc_read_cn = "图中显示每次扭力实测值：蓝点是实测值，青色 CL 是过程平均值，灰色 UCL/LCL 是统计控制限，橙色 USL/LSL 是产品规格上下限。只有红点表示需要调查的异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
-            spc_read_en = "The chart shows each measured torque value: blue points are measurements, the teal CL is the process average, grey UCL/LCL lines are statistical control limits, and orange USL/LSL lines are product specifications. Only red points indicate patterns requiring investigation. A red point alone does not mean the product must be rejected."
+            spc_read_cn = "图中显示每次扭力实测值：蓝点是实测值，青色 CL 是过程平均值，橙色 USL/LSL 是产品规格上下限。只有红点表示需要调查的异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
+            spc_read_en = "The chart shows each measured torque value: blue points are measurements, the teal CL is the process average, and orange USL/LSL lines are product specifications. Only red points indicate patterns requiring investigation. A red point alone does not mean the product must be rejected."
             spc_logic_cn = "同一车型、产品描述、工序、规格和单位形成同质序列；I-MR 控制限为均值 ± 2.66×平均移动极差，并检查超出 3σ、连续 8 点同侧和连续 6 点单调趋势。疑似录入错误保留在源数据中，但不参与图表、SPC 信号、规格超限、稳定性和默认排序。只有过程稳定、样本不少于 25 且规格完整时才显示 Ppk。"
             spc_logic_en = "A homogeneous sequence uses the same model, product description, process, specification, and unit. I-MR limits are mean ± 2.66×average moving range, with 3σ, eight-on-one-side, and six-point-trend rules. Suspected data-entry errors remain in the source data but are excluded from the chart, SPC signals, specification breaches, stability, and ranking. Ppk is shown only for a stable process with at least 25 observations and complete specifications."
         elif method == "imr_stability":
@@ -17571,8 +17578,6 @@ def render_bme_bike_quality_dashboard_v3(
             if limits:
                 line_specs = [
                     (limits["center"], "CL", BME_COLORS["machine"], "solid", "bottom left"),
-                    (limits["ucl"], "UCL", BME_COLORS["control"], "dot", "top left"),
-                    (limits["lcl"], "LCL", BME_COLORS["control"], "dot", "bottom left"),
                 ]
                 for value, name, color, dash, position in line_specs:
                     fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, annotation_position=position)

@@ -7,13 +7,13 @@ import pandas as pd
 
 from bme_quality import (
     bme_events_to_alerts,
-    build_fsd_iv_cluster_analysis,
+    build_fsd_rpm_cluster_analysis,
     build_spc_model_component_risk,
     classify_torque_component_group,
     load_bme_quality_events,
     load_cpt_quality_analysis,
     load_fg_quality_analysis,
-    load_fsd_iv_cluster_inputs,
+    load_fsd_rpm_cluster_inputs,
     summarize_spc_process_risk,
     torque_component_display_name,
 )
@@ -128,22 +128,23 @@ class CptQualityAnalysisTest(unittest.TestCase):
         self.assertTrue(fqc["rework_qty"].fillna(0).le(fqc["defect_qty"].fillna(0)).all())
 
 
-class FsdIvClusterAnalysisTest(unittest.TestCase):
+class FsdRpmClusterAnalysisTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.fqc, cls.iv = load_fsd_iv_cluster_inputs(ROOT)
-        cls.analysis, cls.meta = build_fsd_iv_cluster_analysis(
-            cls.fqc, cls.iv, "2025-09-14", "2026-09-14"
+        cls.fqc, cls.rpm, cls.mapping = load_fsd_rpm_cluster_inputs(ROOT)
+        cls.analysis, cls.meta = build_fsd_rpm_cluster_analysis(
+            cls.fqc, cls.rpm, cls.mapping, "2025-09-14", "2026-09-14"
         )
 
-    def test_deployed_sources_match_the_audited_trial_coverage(self) -> None:
+    def test_sources_match_the_audited_item_to_finished_model_coverage(self) -> None:
         self.assertEqual(self.meta["fqc_rows"], 606)
         self.assertEqual(self.meta["fqc_families"], 37)
-        self.assertEqual(self.meta["iv_rows"], 1945)
-        self.assertEqual(self.meta["iv_models"], 78)
-        self.assertEqual(self.meta["matched_families"], 5)
-        self.assertEqual(self.meta["matched_fqc_rows"], 169)
-        self.assertEqual(self.meta["matched_iv_models"], 7)
+        self.assertEqual(self.meta["mapping_rows"], 1970)
+        self.assertEqual(self.meta["rpm_rows"], 238)
+        self.assertEqual(self.meta["rpm_models"], 190)
+        self.assertEqual(self.meta["matched_families"], 21)
+        self.assertEqual(self.meta["matched_fqc_rows"], 410)
+        self.assertEqual(self.meta["matched_rpm_models"], 45)
 
     def test_fqc_defect_rate_uses_nc_over_inspected_quantity(self) -> None:
         row = self.analysis[self.analysis["fsd_model"].eq("EXPL100")].iloc[0]
@@ -151,16 +152,17 @@ class FsdIvClusterAnalysisTest(unittest.TestCase):
         self.assertEqual(row["nc_qty"], 5)
         self.assertAlmostEqual(row["defect_rate"], 5 / 124, places=6)
 
-    def test_longest_exact_name_family_wins(self) -> None:
-        multi = self.analysis[self.analysis["fsd_model"].eq("EXPL100 MULTI")].iloc[0]
-        regular = self.analysis[self.analysis["fsd_model"].eq("EXPL100")].iloc[0]
-        self.assertEqual(multi["iv_model_codes"], "8941954")
-        self.assertNotIn("8941954", regular["iv_model_codes"])
+    def test_rpm_is_weighted_from_returned_and_sold_quantities(self) -> None:
+        row = self.analysis[self.analysis["fsd_model"].eq("RC120")].iloc[0]
+        self.assertEqual(row["rpm_qty_returned"], 6792)
+        self.assertEqual(row["rpm_qty_sold"], 96089)
+        self.assertAlmostEqual(row["rpm"], 6792 / 96089 * 1_000_000, places=1)
+        self.assertEqual(row["rpm_models"], 6)
 
-    def test_unmatched_family_is_not_treated_as_zero_iv(self) -> None:
+    def test_unmatched_family_is_not_treated_as_zero_rpm(self) -> None:
         unmatched = self.analysis[self.analysis["match_status"].eq("Unmatched")]
         self.assertGreater(len(unmatched), 0)
-        self.assertTrue(unmatched["iv_cases"].isna().all())
+        self.assertTrue(unmatched["rpm"].isna().all())
         self.assertTrue(unmatched["cluster_label"].isna().all())
 
 
