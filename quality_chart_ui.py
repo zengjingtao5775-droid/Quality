@@ -42,7 +42,9 @@ def style_quality_trend(fig: go.Figure, *, height: int, is_rate: bool = True,
                       legend=dict(orientation="h", y=1.12, x=0, title_text="", font_size=11))
     fig.update_xaxes(title_text=None, tickangle=0, automargin=True, tickfont=dict(size=tick_size))
     if monthly:
-        fig.update_xaxes(tickformat="%b<br>%Y" if show_year else "%b", dtick=f"M{month_step}")
+        # Cross-year labels need room for the year in narrow three-column cards.
+        interval = max(month_step, 3) if show_year and month_step > 1 else month_step
+        fig.update_xaxes(tickformat="%b<br>%Y" if show_year else "%b", dtick=f"M{interval}")
     fig.update_yaxes(title_text=None, tickformat=".2%" if is_rate else ",.0f", rangemode="tozero")
     return fig
 
