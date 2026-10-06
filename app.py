@@ -21052,10 +21052,10 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
     fig.update_traces(texttemplate="%{text:.1f}", textposition="outside", cliponaxis=False)
     fig.update_xaxes(range=[0, max(105, float(ranked.risk_score.max()) * 1.15)])
     fig.update_yaxes(autorange="reversed", type="category", title_text="CC")
-    fig.update_layout(height=min(1000, max(310, 105 + 50 * len(ranked))), margin=dict(l=15, r=50, t=20, b=40), showlegend=False)
+    fig.update_layout(height=min(1000, max(310, 105 + 50 * len(ranked))), margin=dict(l=150 if community == "BME" else 90, r=50, t=20, b=40), showlegend=False)
     apply_bme_chart_style(fig)
     fig.update_layout(plot_bgcolor="rgba(0,0,0,0)")
-    fig.update_yaxes(showgrid=False, zeroline=False)
+    fig.update_yaxes(showgrid=False, zeroline=False, automargin=True)
     st.session_state["_pending_chart_summary"] = t(f"当前 {stats['total']} 个可计算 CC 中，展示 {stats['selected']} 个，贡献 {share} 风险分；最高为 {ranked.iloc[0]['cc']}（{ranked.iloc[0]['risk_score']:.1f}）。风险分沿用聚类结果，仅用于调查排序。", f"Showing {stats['selected']} of {stats['total']} scored CCs, contributing {share} of the risk score. Highest: {ranked.iloc[0]['cc']} ({ranked.iloc[0]['risk_score']:.1f}). Cluster scores rank investigations only.")
     render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{community.lower()}_unified_risk_pareto")
     return risks
