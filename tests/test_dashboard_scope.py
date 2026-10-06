@@ -3,13 +3,54 @@ import unittest
 import pandas as pd
 
 from dashboard_scope import (
-    DashboardScope, count_iv_cases, customer_totals, filter_records,
+    DashboardScope, count_iv_cases, customer_totals, filter_records, build_iv_issue_pareto,
     fsd_item_model_links, ranked_cc_risk, select_customer_grain,
     select_fsd_customer,
 )
 
 
 class DashboardSelectionTests(unittest.TestCase):
+    def test_business_type_multiselect_and_unmapped_supplier(self):
+        records = pd.DataFrame({"supplier": ["ZX", "CMW", "FSD", "TEKTRO", "Unknown"], "qty": [1, 2, 3, 4, 5]})
+        self.assertEqual(filter_records(records, DashboardScope(product_types=("FG",)), date_col=None).qty.tolist(), [1, 2])
+        self.assertEqual(filter_records(records, DashboardScope(product_types=("CPT",)), date_col=None).qty.tolist(), [3, 4])
+        self.assertEqual(filter_records(records, DashboardScope(product_types=("FG", "CPT")), date_col=None).qty.tolist(), [1, 2, 3, 4])
+        self.assertEqual(filter_records(records, DashboardScope(product_types=("CPT",), suppliers=("TEKTRO",)), date_col=None).qty.tolist(), [4])
+        self.assertFalse(DashboardScope(product_types=("CPT",)).includes_supplier("ZX"))
+        self.assertTrue(DashboardScope(product_types=("CPT",)).includes_supplier("FSD"))
+
+    def test_tu_customer_snapshot_cannot_leak_into_cpt_selection(self):
+        voice = pd.DataFrame({"customer_grain": ["CC"], "product_code": ["111111"], "returned_now": [2], "sold_now": [100]})
+        selected = select_customer_grain(voice, DashboardScope(product_types=("CPT",)))
+        self.assertTrue(selected.empty)
+        self.assertIsNone(customer_totals(selected)["rpm_now"])
+        cases = pd.DataFrame({"case_id": ["a"], "responsibility_stage": ["Before Sales"]})
+        self.assertIsNone(count_iv_cases(cases, DashboardScope(product_types=("CPT",))))
+
+    def test_iv_pareto_matches_unique_before_sales_cases(self):
+        cases = pd.DataFrame({
+            "case_id": ["a", "a", "b", "b", "c", "d", "e", ""],
+            "date": ["2026-07-01"] * 6 + ["2025-07-01", "2026-07-01"],
+            "responsibility_stage": ["Before Sales"] * 5 + ["After Sales", "Before Sales", "Before Sales"],
+            "issue_type": ["Seam", "Seam", "Seam", "Hole", "", "Seam", "Seam", "Hole"],
+            "model_code": ["1000001"] * 8,
+        })
+        scope = DashboardScope(models=("1000001",), start="2026-07-01", end="2026-07-31")
+        ranked = build_iv_issue_pareto(cases, scope)
+        self.assertEqual(ranked.set_index("issue_type").case_count.to_dict(), {"Seam": 1, "分类不一致": 1, "未分类": 1})
+        self.assertEqual(ranked.case_count.sum(), 3)
+        self.assertEqual(ranked.case_count.sum(), count_iv_cases(cases, scope))
+        self.assertAlmostEqual(ranked.cumulative_share.iloc[-1], 1)
+        self.assertTrue(build_iv_issue_pareto(cases, DashboardScope(models=("9999999",))).empty)
+        self.assertTrue(build_iv_issue_pareto(cases, DashboardScope(product_types=("CPT",))).empty)
+
+    def test_missing_iv_type_stays_in_denominator(self):
+        cases = pd.DataFrame({"case_id": ["a", "a", "b"], "responsibility_stage": ["Before Sales"] * 3})
+        ranked = build_iv_issue_pareto(cases, DashboardScope())
+        self.assertEqual(ranked.issue_type.tolist(), ["未分类"])
+        self.assertEqual(ranked.case_count.tolist(), [count_iv_cases(cases, DashboardScope())])
+        self.assertEqual(ranked.cumulative_share.tolist(), [1])
+
     def test_multiselect_union_and_cross_field_intersection(self):
         records = pd.DataFrame({
             "supplier": ["ZX", "ZX", "ZX", "CMW"],
@@ -90,6 +131,7 @@ class DashboardSelectionTests(unittest.TestCase):
         self.assertEqual(customer_totals(selected)["nqc_now"], 20)
         self.assertTrue(select_fsd_customer(rpm, DashboardScope(ccs=("unknown",)), links).empty)
         self.assertTrue(select_fsd_customer(rpm, DashboardScope(suppliers=("CMW",)), links).empty)
+        self.assertTrue(select_fsd_customer(rpm, DashboardScope(product_types=("FG",)), links).empty)
 
     def test_top_twenty_percent_retains_cluster_scores_and_excludes_missing(self):
         frame = pd.DataFrame({"code": [str(i) for i in range(11)] + ["unknown"], "score": list(range(1, 12)) + [None]})
@@ -98,6 +140,8 @@ class DashboardSelectionTests(unittest.TestCase):
         self.assertEqual(ranked.risk_score.tolist(), [11, 10, 9])
         self.assertEqual(meta["total"], 11)
         self.assertAlmostEqual(meta["share"], 30 / 66)
+        self.assertAlmostEqual(ranked.cumulative_share.iloc[-1], 30 / 66)
+        self.assertAlmostEqual(ranked.cumulative_share.iloc[0], 11 / 66)
 
 
 if __name__ == "__main__":

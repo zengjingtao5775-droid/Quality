@@ -7,6 +7,15 @@ from quality_chart_ui import build_quality_pareto, quality_pareto_rows_html, sty
 
 
 class SharedQualityChartTest(unittest.TestCase):
+    def test_risk_score_pareto_preserves_decimal_scores_and_full_share(self):
+        ranked = pd.DataFrame({"cc": ["111111", "222222"], "score": [38.7, 37.0], "cum": [.18, .36]})
+        fig = build_quality_pareto(ranked, name_col="cc", qty_col="score", cumulative_col="cum", value_format=".1f")
+        self.assertEqual(list(fig.data[0].y), [38.7, 37.0])
+        self.assertEqual(list(fig.data[0].x), ["1", "2"])
+        self.assertEqual(list(fig.data[1].y), [.18, .36])
+        self.assertEqual(fig.data[0].texttemplate, "%{text:.1f}")
+        self.assertIn("38.7", quality_pareto_rows_html(ranked, name_col="cc", qty_col="score", value_format=".1f"))
+
     def test_top_subset_keeps_supplied_full_population_share(self):
         ranked = pd.DataFrame({"name": ["Seam", "Stain"], "qty": [40, 20], "cum": [.4, .6]})
         fig = build_quality_pareto(ranked, name_col="name", qty_col="qty", cumulative_col="cum")
