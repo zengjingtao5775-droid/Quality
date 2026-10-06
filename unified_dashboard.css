@@ -1,0 +1,30 @@
+/* Shared TU/BME toolbar. The filters inherit the reference's white, bordered
+   controls and blue active state while remaining native accessible widgets. */
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] {display:none !important;}
+.st-key-quality_unified_filter {background:#fff; border:1px solid #e1e5ee; border-radius:8px; padding:20px 24px 16px; margin-bottom:24px;}
+.quality-brand {font-size:20px; font-weight:800; color:#173b8f; letter-spacing:.02em;}
+.quality-brand-sub {font-size:12px; color:#667085; margin-top:3px;}
+.quality-default-view {display:inline-block; background:#363dc6; color:white; border-radius:18px; padding:5px 16px; font-size:13px; font-weight:650; margin-bottom:12px;}
+.st-key-quality_unified_filter [data-testid="stWidgetLabel"] {font-size:12px; color:#667085;}
+.st-key-quality_unified_filter [data-testid="stPopoverButton"] {border-color:#d5d8df; border-radius:5px; min-height:42px; gap:8px;}
+.st-key-quality_unified_filter [data-testid="stPopoverButton"] > span {order:1;}
+.st-key-quality_unified_filter [data-testid="stPopoverButton"] > [data-testid="stMarkdownContainer"] {order:0; flex:1; text-align:left;}
+.st-key-quality_unified_filter [data-testid="stPopoverButton"] > div:not([data-testid="stMarkdownContainer"]) {order:2;}
+.st-key-quality_unified_filter [data-testid="stPopoverButton"] [data-testid="stIconMaterial"] {color:#363dc6 !important;}
+.st-key-quality_filter_details [data-testid="stPopover"] {margin-top:28px;}
+.st-key-quality_unified_filter [data-baseweb="select"] > div {background:#fff; border-color:#d5d8df; border-radius:5px; min-height:42px;}
+.st-key-quality_unified_filter [data-baseweb="tag"] {background:#eef0ff; color:#343bc3; border-radius:4px;}
+.quality-filter-context {font-size:12px; color:#667085; line-height:1.6; margin:8px 0 0;}
+.quality-community-heading {font-size:25px; font-weight:800; color:#172033; margin:20px 0 14px;}
+.quality-inline-ai {border-left:3px solid #cbd2ff; background:#f7f8fe; padding:9px 11px; margin:8px 0 14px; font-size:12px; line-height:1.65; color:#475467; border-radius:0 5px 5px 0;}
+.quality-inline-ai-label {color:#343bc3; font-weight:750; margin-right:5px;}
+.quality-ai-report {background:#fff; border:1px solid #e1e5ee; border-top:4px solid #363dc6; border-radius:10px; padding:20px; margin-top:22px;}
+.quality-risk-chip {display:inline-block; padding:8px 14px; color:#343bc3; background:#eef0ff; border:1px solid #ccd2ff; border-radius:24px; font-size:13px; font-weight:750; margin:8px 0 15px;}
+[data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {max-width:100%; min-width:0;}
+@media(max-width:760px) {
+ .st-key-quality_unified_filter {padding:14px;}
+ .st-key-quality_unified_filter [data-testid="stHorizontalBlock"] {flex-wrap:wrap; gap:12px;}
+ .st-key-quality_unified_filter [data-testid="stColumn"] {min-width:180px; flex:1 1 180px;}
+ .quality-community-heading {font-size:22px;}
+ .st-key-quality_filter_details [data-testid="stPopover"] {margin-top:0;}
+}

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-BME_QUALITY_LOGIC_VERSION = "2026-09-17-v20-fsd-rpm-cluster"
+BME_QUALITY_LOGIC_VERSION = "2026-10-06-v21-unified-filters"
 
 
 # Presentation-only labels for CMW torque components. Source values remain
@@ -914,11 +914,11 @@ def load_bme_quality_events(root: Path) -> pd.DataFrame:
 
 FG_SUMMARY_COLUMNS = [
     "stage", "supplier", "date", "po_qty", "defect_qty", "rework_qty",
-    "rework_available", "source_file", "source_sheet",
+    "rework_available", "source_file", "source_sheet", "code", "model_code",
 ]
 FG_PARETO_COLUMNS = [
     "stage", "supplier", "date", "defect_name", "defect_qty",
-    "category_type", "source_file", "source_sheet",
+    "category_type", "source_file", "source_sheet", "code", "model_code",
 ]
 
 
@@ -931,6 +931,8 @@ def _fg_summary_frame(**columns: object) -> pd.DataFrame:
     for column in ["po_qty", "defect_qty", "rework_qty"]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame["rework_available"] = frame["rework_available"].fillna(False).astype(bool)
+    for column in ["code", "model_code"]:
+        frame[column] = _identifier(frame[column])
     return frame[FG_SUMMARY_COLUMNS]
 
 
@@ -943,7 +945,17 @@ def _fg_pareto_frame(**columns: object) -> pd.DataFrame:
     frame["defect_qty"] = pd.to_numeric(frame["defect_qty"], errors="coerce")
     frame["defect_name"] = _text(frame["defect_name"])
     frame["category_type"] = _text(frame["category_type"], "defect")
+    for column in ["code", "model_code"]:
+        frame[column] = _identifier(frame[column])
     return frame[FG_PARETO_COLUMNS]
+
+
+def _analysis_ids(raw: pd.DataFrame) -> dict[str, pd.Series]:
+    """Retain supplied identifiers, without guessing links from product names."""
+    return {
+        "code": _identifier(_col(raw, "Item code", "Itemcode", "料号", "Model车种", "Model")),
+        "model_code": _identifier(_col(raw, "Model code", "ModelCode")),
+    }
 
 
 def _load_iqc_exception_analysis(
@@ -977,12 +989,14 @@ def _load_iqc_exception_analysis(
             stage="IQC", supplier=supplier, date=date, po_qty=po_qty,
             defect_qty=defect_qty, rework_qty=np.nan, rework_available=False,
             source_file=source_file, source_sheet="IQC",
+            **_analysis_ids(raw),
         )
     ], [
         _fg_pareto_frame(
             stage="IQC", supplier=supplier, date=date, defect_name=issue,
             defect_qty=defect_qty, category_type="defect",
             source_file=source_file, source_sheet="IQC",
+            **_analysis_ids(raw),
         )
     ]
 
@@ -1027,7 +1041,7 @@ def _load_monthly_pqc_analysis(
                     "source_file": source_file, "source_sheet": sheet,
                 })
     paretos = [_fg_pareto_frame(**{
-        column: [row[column] for row in pareto_rows] for column in FG_PARETO_COLUMNS
+        column: [row.get(column, "") for row in pareto_rows] for column in FG_PARETO_COLUMNS
     })] if pareto_rows else []
     return summaries, paretos
 
@@ -1061,11 +1075,13 @@ def _load_fqc_daily_analysis(
             stage="FQC", supplier=supplier, date=date, po_qty=po_qty,
             defect_qty=defect_qty, rework_qty=defect_qty.where(rework, 0),
             rework_available=True, source_file=source_file, source_sheet=sheet,
+            **_analysis_ids(raw),
         ))
         paretos.append(_fg_pareto_frame(
             stage="FQC", supplier=supplier, date=date, defect_name=issue,
             defect_qty=defect_qty, category_type="defect",
             source_file=source_file, source_sheet=sheet,
+            **_analysis_ids(raw),
         ))
     return summaries, paretos
 
@@ -1091,11 +1107,13 @@ def _load_fg_iqc(root: Path) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
                 stage="IQC", supplier="CMW", date=date, po_qty=po_qty,
                 defect_qty=defect_qty, rework_qty=np.nan, rework_available=False,
                 source_file=str(cmw_path.relative_to(root)), source_sheet="Sheet1",
+                **_analysis_ids(raw),
             ))
             paretos.append(_fg_pareto_frame(
                 stage="IQC", supplier="CMW", date=date, defect_name=issue,
                 defect_qty=defect_qty, category_type="defect",
                 source_file=str(cmw_path.relative_to(root)), source_sheet="Sheet1",
+                **_analysis_ids(raw),
             ))
     return summaries, paretos
 
@@ -1120,10 +1138,12 @@ def _load_fg_pqc(root: Path) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
         po_qty=np.nan, defect_qty=defect_qty,
         rework_qty=np.nan, rework_available=False,
         source_file=source_file, source_sheet=sheet,
+        **_analysis_ids(raw),
     )], [_fg_pareto_frame(
         stage="PQC", supplier="CMW", date=date, defect_name=issue,
         defect_qty=defect_qty, category_type="defect",
         source_file=source_file, source_sheet=sheet,
+        **_analysis_ids(raw),
     )]
 
 
@@ -1629,6 +1649,10 @@ def load_fsd_rpm_cluster_inputs(
         "source_rpm": _number(_col(raw_rpm, "N0RPM"), None),
         "returned_qty": _number(_col(raw_rpm, "N0Qtyreturned"), None),
         "sold_qty": _number(_col(raw_rpm, "N0Qtysold(RPM)"), None),
+        "returned_prev": _number(_col(raw_rpm, "N-1Qtyreturned"), None),
+        "sold_prev": _number(_col(raw_rpm, "N-1Qtysold(RPM)"), None),
+        "nqc_now": _number(_col(raw_rpm, "N0NQC"), None),
+        "nqc_prev": _number(_col(raw_rpm, "N-1NQC"), None),
         "source_row": raw_rpm.index + 2,
     })
     rpm = rpm[rpm["product_code"].ne("")].reset_index(drop=True)

@@ -29,6 +29,14 @@ from openpyxl import load_workbook
 from plotly.subplots import make_subplots
 
 import bme_quality as _bme_quality
+import dashboard_scope as _dashboard_scope
+if getattr(_dashboard_scope, "LOGIC_VERSION", "") != "2026-10-06-v2-net-sales":
+    importlib.reload(_dashboard_scope)
+from dashboard_scope import (
+    DashboardScope, filter_records, identifiers, customer_totals, business_dates,
+    select_customer_grain, count_iv_cases, fsd_item_model_links,
+    select_fsd_customer, ranked_cc_risk,
+)
 from tu_quality import build_zx_quality_gates
 from quality_chart_ui import (
     QUALITY_SERIES_COLORS,
@@ -42,7 +50,7 @@ from quality_chart_ui import (
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
 # helper module. Version-gate the import so deployed data logic and UI cannot
 # drift into a half-updated state.
-_BME_QUALITY_LOGIC_VERSION = "2026-09-17-v20-fsd-rpm-cluster"
+_BME_QUALITY_LOGIC_VERSION = "2026-10-06-v21-unified-filters"
 if getattr(_bme_quality, "BME_QUALITY_LOGIC_VERSION", "") != _BME_QUALITY_LOGIC_VERSION:
     _bme_quality = importlib.reload(_bme_quality)
 
@@ -2493,6 +2501,7 @@ FACTORIES = {
         "supplier": "中兴",
         "location": "ZX",
         "finished": Path("TU database/ZX Database/Factory data/05.7-06.6检验数据.xlsx"),
+        "pqc_endline": Path("TU database/ZX Database/Factory data/ZX PQC End of line data.xlsx"),
         "voice": Path("TU database/ZX Database/Decathlon Customer data/1 - Export (CC) - Compare Hierarchy [All KPIs].csv"),
         "customer_rpm_r12m": Path("TU database/ZX Database/Decathlon Customer data/R12M RPM.csv"),
         "customer_rpm_ytd": Path("TU database/ZX Database/Decathlon Customer data/YTD RPM.csv"),
@@ -8355,12 +8364,18 @@ def compute_product_summary(
                 delta_rpm=("delta_rpm", "mean"),
                 avg_score_now=("avg_score_now", "mean"),
                 returned_now=("returned_now", "sum"),
+                sold_now=("sold_now", "sum"),
                 nqc_now=("nqc_now", "sum"),
                 intern_voice_count=("intern_voice_count", "sum"),
                 intern_voice_prev_count=("intern_voice_prev_count", lambda s: s.sum(min_count=1)),
                 intern_voice_prev_available=("intern_voice_prev_available", "max"),
             )
         )
+
+    if not cust.empty:
+        # Selected Models are aggregated with their actual sales weights.
+        quantity_available = pd.to_numeric(cust["sold_now"], errors="coerce").gt(0)
+        cust.loc[quantity_available, "rpm_now"] = cust.loc[quantity_available, "returned_now"].div(cust.loc[quantity_available, "sold_now"]).mul(1_000_000)
 
     if qc.empty and cust.empty:
         return pd.DataFrame()
@@ -9073,7 +9088,7 @@ def plot_chart(
         }
     if stretch_width:
         chart_kwargs["use_container_width"] = True
-    st.plotly_chart(
+    render_unified_plotly(
         prepared_fig.update_layout(height=height) if preserve_layout else chart_layout(prepared_fig, height),
         config=chart_config,
         key=chart_key,
@@ -9288,6 +9303,9 @@ def render_readme_popover(
 def render_bme_chart_conclusion(text_cn: str, text_en: str) -> None:
     """Render one filter-aware management takeaway directly below a BME chart."""
     conclusion = t(text_cn, text_en)
+    if st.session_state.get("_active_ai_community"):
+        st.session_state["_pending_chart_summary"] = conclusion
+        return
     st.markdown(
         f'<div class="bme-chart-conclusion">{html.escape(conclusion)}</div>',
         unsafe_allow_html=True,
@@ -10688,6 +10706,7 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         markers=True,
         custom_data=["product_code", "qty_inspected", "defect_qty", "week_date", "week_label"],
         category_orders={"week_key": ordered_week_keys},
+        color_discrete_sequence=QUALITY_SERIES_COLORS,
         labels={
             "week_key": t("周次", "Week"),
             "defect_rate": t("不良率", "Defect Rate"),
@@ -10713,11 +10732,13 @@ def render_zx_cc_defect_rate_trend_v1(finished_df: pd.DataFrame, products: pd.Da
         categoryorder="array",
         categoryarray=ordered_week_keys,
         tickmode="array",
-        tickvals=ordered_week_keys,
-        ticktext=[week_tick_labels[key] for key in ordered_week_keys],
+        tickvals=ordered_week_keys[::max(1, int(np.ceil(len(ordered_week_keys) / 12)))],
+        ticktext=[week_tick_labels[key] for key in ordered_week_keys[::max(1, int(np.ceil(len(ordered_week_keys) / 12)))]],
     )
     fig.update_layout(hovermode="x unified", transition=dict(duration=320, easing="cubic-in-out"))
-    plot_chart(fig, 390, key="zx_cc_defect_rate_trend_chart", cc_customdata_index=0)
+    style_quality_trend(fig, height=330)
+    plot_chart(fig, 330, key="zx_cc_defect_rate_trend_chart", cc_customdata_index=0,
+               stretch_width=True, preserve_layout=True)
 
 
 def render_zx_cc_defect_rate_trend(finished_df: pd.DataFrame, products: pd.DataFrame) -> None:
@@ -10782,6 +10803,7 @@ def render_defect_pareto(
     source_label: str,
     show_caption: bool = True,
     focus_mode: bool = False,
+    shared_style: bool = False,
 ):
     all_defects = compute_pareto(
         finished_df[finished_df["defect_qty"] > 0],
@@ -10819,6 +10841,19 @@ def render_defect_pareto(
         )
     else:
         pareto = all_defects.head(10).copy()
+    if shared_style:
+        # Shares stay relative to all defect types in the selected CC scope,
+        # even when the display is limited to Top 20%.
+        pareto_height = max(300, min(600, 120 + len(pareto) * 24))
+        fig = build_quality_pareto(
+            pareto, name_col="defect_type", qty_col="defect_qty", cumulative_col="cum_share",
+            height=pareto_height, quantity_label=t("疵点数量", "Defect Quantity"),
+            cumulative_label=t("累计占比", "Cumulative share"), issue_label=t("疵点", "Defect"),
+        )
+        plot_chart(fig, pareto_height, stretch_width=True, preserve_layout=True)
+        st.markdown(quality_pareto_rows_html(pareto, name_col="defect_type", qty_col="defect_qty"), unsafe_allow_html=True)
+        st.caption(t("累计占比以当前 CC 范围内全部疵点数量为分母。", "Cumulative share uses all defect quantities in the current CC scope."))
+        return
     fig = px.bar(
         pareto,
         x="defect_qty",
@@ -12166,13 +12201,42 @@ def render_tu_jiandaoyun_ytd_cp(
     render_qwen_summary_panel("tu_jdy_cp", t("FQC + CP 总结报告", "FQC + CP Summary Report"), facts)
 
 
+@st.cache_data(show_spinner=False)
+def load_zx_pqc_endline_qc(
+    cache_version: int = DATA_SCOPE_CACHE_VERSION,
+) -> pd.DataFrame:
+    _ = cache_version
+    path = ROOT / FACTORIES["ZX"]["pqc_endline"]
+    if not path.exists():
+        return pd.DataFrame(columns=["date", "qty_inspected", "defect_qty", "source_file"])
+    raw = read_excel_any(path, sheet_name=0).drop_duplicates().reset_index(drop=True)
+    raw.columns = [str(column).strip() for column in raw.columns]
+    finished_mask = pick(raw, "质检类型", "").astype(str).str.contains("成品检验", na=False)
+    finished = raw.loc[finished_mask].copy()
+    return pd.DataFrame(
+        {
+            "date": pd.to_datetime(pick(finished, "检验日期", pd.NaT), errors="coerce"),
+            "qty_inspected": pd.to_numeric(pick(finished, "检验数量", 0), errors="coerce").fillna(0).clip(lower=0),
+            "defect_qty": pd.to_numeric(pick(finished, "疵点个数", 0), errors="coerce").fillna(0).clip(lower=0),
+            "product_code": pick(finished, "款式", "").map(normalize_decathlon_cc),
+            "model_code": pick(finished, "颜色", "").map(extract_decathlon_model),
+            "source_file": str(FACTORIES["ZX"]["pqc_endline"]),
+        }
+    )
+
+
 def build_zx_kpi_cards(
     finished_df: pd.DataFrame,
     voice_df: pd.DataFrame,
     jdy_fqc: pd.DataFrame | None = None,
     customer_period: str = "R12M",
+    *,
+    customer_metrics: dict | None = None,
+    end_qc: pd.DataFrame | None = None,
+    iv_metrics: dict | None = None,
 ) -> list[dict[str, str]]:
-    end_qc = finished_df[finished_df["inspection_stage"].eq("End QC / FQC")].copy()
+    if end_qc is None:
+        end_qc = load_zx_pqc_endline_qc(DATA_SCOPE_CACHE_VERSION)
     eol_qty = float(pd.to_numeric(end_qc.get("qty_inspected", 0), errors="coerce").fillna(0).sum())
     eol_defects = float(pd.to_numeric(end_qc.get("defect_qty", 0), errors="coerce").fillna(0).sum())
     eol_rft = 1 - eol_defects / eol_qty if eol_qty else np.nan
@@ -12200,7 +12264,14 @@ def build_zx_kpi_cards(
         if not current_rows.empty and not previous_rows.empty:
             current_rft = float(current_rows.iloc[0]["rft"])
             previous_rft = float(previous_rows.iloc[0]["rft"])
-            if previous_rft > 0:
+            if round(current_rft, 4) == round(previous_rft, 4):
+                eol_trend_direction = "flat"
+                eol_trend_label = t("RFT 环比持平", "RFT MoM flat")
+                eol_trend_note = t(
+                    f"本月 {current_rft:.2%} / 上月 {previous_rft:.2%}",
+                    f"current {current_rft:.2%} / previous {previous_rft:.2%}",
+                )
+            elif previous_rft > 0:
                 rft_change = (current_rft - previous_rft) / previous_rft
                 eol_trend_direction = "down" if rft_change < 0 else "up" if rft_change > 0 else "flat"
                 eol_trend_label = t(
@@ -12295,7 +12366,15 @@ def build_zx_kpi_cards(
         }
 
     decathlon_fqc_card = fqc_owner_card("Decathlon", "迪卡侬验货合格率", "Decathlon Inspection RFT")
-    zx_factory_fqc_card = fqc_owner_card("ZX Factory", "中兴工厂自检合格率", "ZX Factory Self-Inspection RFT")
+    zx_factory_pqc_card = {
+        "label": t("中兴工厂 PQC 一次通过率", "ZX Factory PQC End-of-line RFT"),
+        "value": pct(eol_rft) if pd.notna(eol_rft) else "N/A",
+        "note": eol_trend_note,
+        "trend_label": eol_trend_label,
+        "trend_direction": eol_trend_direction,
+        "trend_tone": "bad" if eol_trend_direction == "down" else "good" if eol_trend_direction == "up" else "flat",
+        "level": "high" if pd.notna(eol_rft) and eol_rft < 0.96 else "medium" if pd.notna(eol_rft) and eol_rft < 0.98 else "low",
+    }
 
     ytd_voice = (
         voice_df[voice_df.get("voice_source", pd.Series("", index=voice_df.index)).eq("YTD Compare")].copy()
@@ -12311,7 +12390,8 @@ def build_zx_kpi_cards(
     total_nqc = float(nqc_now_series.sum(min_count=1)) if not nqc_now_series.empty else np.nan
     previous_nqc = float(nqc_prev_series.sum(min_count=1)) if not nqc_prev_series.empty else np.nan
 
-    period_metrics = load_zx_customer_period_metrics(customer_period)
+    # A scoped detail result must never be overwritten by a factory export.
+    period_metrics = customer_metrics if customer_metrics is not None else load_zx_customer_period_metrics(customer_period)
     metric_period = str(period_metrics.get("period", "R12M"))
     period_rpm_now = finite_number(period_metrics.get("rpm_now"))
     period_rpm_prev = finite_number(period_metrics.get("rpm_prev"))
@@ -12321,6 +12401,12 @@ def build_zx_kpi_cards(
         total_nqc = float(period_metrics["nqc_now"])
     if finite_number(period_metrics.get("nqc_prev")) is not None:
         previous_nqc = float(period_metrics["nqc_prev"])
+    if customer_metrics is not None:
+        rpm_r12m = float(period_rpm_now) if period_rpm_now is not None else np.nan
+        total_nqc = float(period_metrics["nqc_now"]) if finite_number(period_metrics.get("nqc_now")) is not None else np.nan
+        previous_nqc = float(period_metrics["nqc_prev"]) if finite_number(period_metrics.get("nqc_prev")) is not None else np.nan
+        returned_now = float(period_metrics.get("returned_now") or 0)
+        sold_now = float(period_metrics.get("sold_now") or 0)
 
     rpm_trend_direction = ""
     rpm_trend_tone = "flat"
@@ -12386,6 +12472,12 @@ def build_zx_kpi_cards(
         else pd.Series(np.nan, index=iv_voice.index)
     )
     iv_previous = float(pd.to_numeric(iv_previous_source, errors="coerce").sum(min_count=1)) if not iv_voice.empty else np.nan
+    iv_available = True
+    if iv_metrics is not None:
+        iv_available = iv_metrics.get("current") is not None
+        iv_current = int(iv_metrics.get("current") or 0)
+        iv_previous = float(iv_metrics["previous"]) if iv_metrics.get("previous") is not None else np.nan
+        previous_available = iv_metrics.get("previous") is not None
     iv_trend_direction = ""
     iv_trend_label = ""
     if previous_available and pd.notna(iv_previous):
@@ -12407,16 +12499,7 @@ def build_zx_kpi_cards(
 
     return [
         decathlon_fqc_card,
-        zx_factory_fqc_card,
-        {
-            "label": t("End of line RFT", "End-of-line RFT"),
-            "value": pct(eol_rft) if pd.notna(eol_rft) else "N/A",
-            "note": eol_trend_note,
-            "trend_label": eol_trend_label,
-            "trend_direction": eol_trend_direction,
-            "trend_tone": "bad" if eol_trend_direction == "down" else "good" if eol_trend_direction == "up" else "flat",
-            "level": "high" if pd.notna(eol_rft) and eol_rft < 0.96 else "medium" if pd.notna(eol_rft) and eol_rft < 0.98 else "low",
-        },
+        zx_factory_pqc_card,
         {
             "label": f"RPM ({metric_period})",
             "value": num(rpm_r12m, 0) if pd.notna(rpm_r12m) else "N/A",
@@ -12437,7 +12520,7 @@ def build_zx_kpi_cards(
         },
         {
             "label": t("工厂售前 IV", "Factory Before-Sale IV"),
-            "value": f"{iv_current:,}",
+            "value": f"{iv_current:,}" if iv_available else "—",
             "note": yoy_note,
             "trend_label": iv_trend_label,
             "trend_direction": iv_trend_direction,
@@ -12934,21 +13017,19 @@ def render_community_cockpit(
                 t("RFT 使用加权分母；RPM 使用工厂退货量 / 销量；IV 使用同期案件数。", "RFT uses weighted denominators; RPM uses factory returns / sold quantity; IV uses comparable-period cases."),
                 t(
                     "- **迪卡侬验货合格率：** 迪卡侬验货人员完成的首次检验结果。\n"
-                    "- **中兴工厂自检合格率：** 中兴工厂检验人员完成的首次自检结果。\n"
-                    "- **End of line RFT：** 产线末端检验的一次通过表现参考。\n"
+                    "- **中兴工厂 PQC 一次通过率：** `（成品检验数量合计 - 疵点个数合计）÷ 成品检验数量合计`，按最新月份展示。\n"
                     "- **RPM（R12M）：** 最近 12 个月每百万销量对应的退货水平。\n"
                     "- **工厂售前 IV：** 销售前发现并归属工厂责任的问题数量。\n"
                     "- **工厂检验占比：** 工厂强制检验要求；每个出货PO均须完成工厂FQC，因此按 YTD 出货 PO 计算的理论覆盖率固定为 100%，不代表简道云记录完整率。\n"
                     "- **迪卡侬 FQC 抽检率：** `Wuhao、Daisy Yu、Eric Zeng 的 FQC PO 检验记录数 ÷ HUGSS ZX YTD 出货 PO 数`。分子和分母使用同一 YTD 截止日；一条 FQC 记录按一个 PO 检验记录计数。",
                     "- **Decathlon inspection pass rate:** First inspection results completed by Decathlon inspectors.\n"
-                    "- **ZX factory self-inspection pass rate:** First self-inspection results completed by ZX factory inspectors.\n"
-                    "- **End-of-line RFT:** A reference for first-pass performance at the end of the production line.\n"
+                    "- **ZX factory PQC end-of-line RFT:** `(total finished-goods inspected quantity - total defect quantity) ÷ total finished-goods inspected quantity`, shown for the latest month.\n"
                     "- **RPM (R12M):** Returns per million units sold over the latest 12 months.\n"
                     "- **Factory before-sale IV:** Factory-owned issues found before sale.\n"
                     "- **Factory inspection share:** Factory FQC is mandatory for every shipped PO, so its theoretical coverage is fixed at 100% of YTD shipped POs. It does not measure Jiandaoyun record completeness.\n"
                     "- **Decathlon FQC sampling rate:** `FQC PO inspection records by Wuhao, Daisy Yu, and Eric Zeng ÷ HUGSS ZX YTD shipped POs`. Numerator and denominator use the same YTD cutoff; one FQC record counts as one PO inspection record.",
                 ),
-                "Jiandaoyun ZX FQC + HUGSS Supplier Shipped Qty + Factory data/05.7-06.6检验数据.xlsx + Decathlon Customer data/R12M RPM.csv + YTD RPM.csv + ZX intervoice.xlsx",
+                "Jiandaoyun ZX FQC + HUGSS Supplier Shipped Qty + Factory data/ZX PQC End of line data.xlsx + Decathlon Customer data/R12M RPM.csv + YTD RPM.csv + ZX intervoice.xlsx",
                 section_title=t("卡片含义", "Card Guide"),
             )
         render_kpi_cards(
@@ -14143,7 +14224,8 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
         fig.add_annotation(text=t("暂无数据", "No data available"), x=.5, y=.5, xref="paper", yref="paper",
                            showarrow=False, font=dict(color="#98a2b3", size=14))
         fig.update_layout(margin=dict(l=8, r=8, t=25, b=25))
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key}_{kind}_empty")
+        render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key}_{kind}_empty")
+
 
 
 def render_quality_gate_analysis(
@@ -14229,7 +14311,7 @@ def render_quality_gate_analysis(
 
                 po_total = float(stage_summary["po_qty"].sum(min_count=1))
                 defect_total = float(stage_summary["defect_qty"].sum(min_count=1))
-                has_denominator = bool(stage_summary["po_qty"].gt(0).all()) if is_tu else bool(stage_summary["po_qty"].fillna(0).gt(0).any())
+                has_denominator = bool(stage_summary["po_qty"].gt(0).all())
                 defect_rate = defect_total / po_total if po_total > 0 and has_denominator else np.nan
                 rework_rows = stage_summary[stage_summary["rework_available"]].copy()
                 rework_rate = np.nan
@@ -14266,17 +14348,7 @@ def render_quality_gate_analysis(
                     "month": monthly.index.to_timestamp(),
                     primary_metric: monthly["defect_rate"].values if has_denominator else monthly["defect_qty"].values,
                 })
-                if not rework_rows.empty:
-                    rework_monthly = rework_rows.assign(month=rework_rows["date"].dt.to_period("M")).groupby("month").agg(
-                        po_qty=("po_qty", "sum"), rework_qty=("rework_qty", "sum")
-                    )
-                    rework_monthly["rework_rate"] = rework_monthly["rework_qty"].div(rework_monthly["po_qty"].replace(0, np.nan))
-                    trend = trend.merge(
-                        pd.DataFrame({
-                            "month": rework_monthly.index.to_timestamp(),
-                            t("返工率", "Rework rate"): rework_monthly["rework_rate"].values,
-                        }), on="month", how="left",
-                    )
+                # One weighted primary trend; rework remains a separate KPI.
                 trend_long = trend.melt(id_vars="month", var_name="metric", value_name="value").dropna(subset=["value"])
                 trend_fig = px.line(
                     trend_long, x="month", y="value", color="metric", markers=True,
@@ -14292,7 +14364,7 @@ def render_quality_gate_analysis(
                                     monthly=True, tick_size=10 if stage == "FQC" else 11,
                                     month_step=2 if len(monthly) > 8 else 1,
                                     show_year=monthly.index.year.nunique() > 1)
-                st.plotly_chart(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}")
+                render_unified_plotly(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}")
 
                 category_type = (
                     stage_pareto["category_type"].mode().iloc[0]
@@ -14316,7 +14388,7 @@ def render_quality_gate_analysis(
                 else:
                     ranked = ranked.reset_index(drop=True)
                     ranked["rank_label"] = [str(rank) for rank in range(1, len(ranked) + 1)]
-                    pareto_denominator = defect_total if is_tu else float(ranked.head(5)["defect_qty"].sum())
+                    pareto_denominator = defect_total
                     ranked = ranked.head(5).copy()
                     ranked["cumulative"] = ranked["defect_qty"].cumsum() / pareto_denominator
                     pareto_fig = build_quality_pareto(
@@ -14324,7 +14396,7 @@ def render_quality_gate_analysis(
                         quantity_label=t("数量", "Quantity"), cumulative_label=t("累计占比", "Cumulative share"),
                         issue_label=t("问题", "Issue"),
                     )
-                    st.plotly_chart(pareto_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_pareto_{stage}")
+                    render_unified_plotly(pareto_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_pareto_{stage}")
                     st.markdown(
                         quality_pareto_rows_html(ranked, name_col="defect_name", qty_col="defect_qty"),
                         unsafe_allow_html=True,
@@ -14364,6 +14436,7 @@ def render_quality_gate_analysis(
                 st.markdown(f'<div class="bme-fg-data-note">{html.escape(note)}</div>', unsafe_allow_html=True)
 
 
+
 def render_fsd_rpm_cluster_analysis(
     analysis: pd.DataFrame,
     meta: dict[str, object],
@@ -14377,12 +14450,12 @@ def render_fsd_rpm_cluster_analysis(
     render_chart_heading(
         "FSD 聚类分析",
         "FSD Cluster Analysis",
-        "识别哪些 FSD 型号族同时存在较高的工厂 FQC 不良率和客户端 RPM。",
-        "Identify FSD families with both higher factory FQC defect rates and client-side RPM.",
+        "识别哪些 FSD CC / code同时存在较高的工厂 FQC 不良率和客户端 RPM。",
+        "Identify FSD CC/code objects with both higher factory FQC defect rates and client-side RPM.",
         "越靠右表示 FQC 不良率越高，越靠上表示 RPM 越高；右上区域应优先调查。",
         "Farther right means a higher FQC defect rate; higher means a higher RPM. Investigate the upper-right area first.",
         "仅通过 Item Code → Raw frame / Raw R-fork → 成品 Model Code → RPM 的精确主数据链路做聚类；未匹配型号不按 RPM=0 处理。",
-        "Clustering uses only the exact Item Code → Raw frame / Raw R-fork → finished Model Code → RPM master-data bridge. Unmatched families are not treated as RPM=0.",
+        "Clustering uses only the exact Item Code → Raw frame / Raw R-fork → finished Model Code → RPM master-data bridge. Unmatched codes are not treated as RPM=0.",
         source_label,
         "fsd_rpm_cluster",
     )
@@ -14428,8 +14501,8 @@ def render_fsd_rpm_cluster_analysis(
             )
     st.caption(
         t(
-            "计算口径：RPM = 对应成品 Model 的退货数量合计 ÷ 销售数量合计 × 1,000,000；未匹配型号族保留为数据缺口。",
-            "Calculation: RPM = total returned quantity ÷ total sold quantity × 1,000,000 for mapped finished models; unmatched families remain explicit data gaps.",
+            "计算口径：RPM = 对应成品 Model 的退货数量合计 ÷ 销售数量合计 × 1,000,000；未匹配 CC / code保留为数据缺口。",
+            "Calculation: RPM = total returned quantity ÷ total sold quantity × 1,000,000 for mapped finished models; unmatched codes remain explicit data gaps.",
         )
     )
     plot_view = matched[matched["cluster_display"].isin(selected_clusters)].copy()
@@ -15409,7 +15482,7 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     fig.update_yaxes(range=[-4, 112], dtick=20)
     fig.update_layout(height=440, margin=dict(l=20, r=20, t=30, b=30), legend=dict(orientation="h", y=1.12, x=0))
     apply_bme_chart_style(fig)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False})
 
     priority_view = clusters[clusters["defect_qty"].gt(0)].head(12).copy()
     priority_view[t("质量环节", "Quality Gate")] = priority_view["quality_gate"]
@@ -15444,6 +15517,990 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     if clusters["quality_gate"].eq("PQC").any():
         st.caption(t("PQC 当前没有可靠检验分母，因此 PQC 风险分置信度标记为低，只用于定位优先级。补充正式分母后才可与 IQC/FQC 一样计算问题率。", "PQC currently lacks a valid inspection denominator, so its score has low confidence and is used only for prioritization. A formal denominator is required before calculating an issue rate like IQC/FQC."))
     return clusters
+
+
+
+def render_unified_spc(events: pd.DataFrame, scope: DashboardScope, community: str = "BME") -> None:
+    st.markdown(f'<div id="{community.lower()}-spc" class="bme-section-anchor"></div>', unsafe_allow_html=True)
+    st.header(f"{community} · SPC")
+    st.caption(t("SPC 独立筛选：风险矩阵按单个供应商展示；过程图按该供应商的单个工艺点展示。", "Independent SPC filters: one supplier for the risk matrix, one process point for the control chart."))
+    options = ["ZX"] if community == "TU" else ["CMW", "FSD", "TEKTRO"]
+    selected_supplier = st.selectbox(t("SPC 供应商（单选）", "SPC supplier (single select)"), options, key=f"{community.lower()}_spc_supplier")
+    st.session_state["_active_spc_scope"] = {"supplier": selected_supplier, "start": str(scope.start), "end": str(scope.end), "independent_of_global_product_filters": True}
+    if community == "TU":
+        st.markdown(f"#### {t('供应商风险矩阵', 'Supplier Risk Matrix')}")
+        st.info(t("ZX 尚未接入连续过程测量数据。", "Continuous ZX process measurements are not connected yet."))
+        render_chart_ai({"id": "tu_spc_matrix", "empty": True, "reason": "No ZX process measurements"})
+        st.selectbox(t("SPC 工艺点（单选）", "SPC process point (single select)"), [], disabled=True, key="tu_spc_process", placeholder=t("等待过程数据", "Awaiting process data"))
+        st.markdown(f"#### {t('过程控制图', 'Process Control Chart')}")
+        st.info(t("暂无数据", "No data"))
+        render_chart_ai({"id": "tu_spc_control", "empty": True, "reason": "No ZX process measurements"})
+        st.session_state.pop("_active_spc_scope", None)
+        return
+    independent_scope = DashboardScope(suppliers=(selected_supplier,), start=scope.start, end=scope.end)
+    view = filter_records(events, independent_scope, cc_col="model_item_code", model_col="model_item_code")
+    cmw_torque = view[view["supplier"].eq("CMW") & view["stage"].eq("MACHINE") & view["measured_value"].notna()]
+
+    def bme_chart_source(frame: pd.DataFrame, fallback: str = "BME Database") -> str:
+        files = sorted(frame.get("source_file", pd.Series(dtype=str)).dropna().astype(str).unique())
+        return " + ".join(files) if files else fallback
+
+    # factory-wide context instead of inheriting an invisible product choice.
+    selected_product_key = ""
+    selected_product_supplier = ""
+    selected_product_display = ""
+    has_product_context = False
+
+    st.markdown('<div id="bme-spc" class="bme-section-anchor"></div>', unsafe_allow_html=True)
+    st.subheader(t("过程风险与控制图", "Process Risk and Control Charts"))
+    spc_heading_slot = st.empty()
+    selected_machine_label = ""
+    selected_machine_data = pd.DataFrame()
+    machine_scope_linked = False
+    machine_scope_note_cn = ""
+    machine_scope_note_en = ""
+    method_options: dict[str, tuple[str, pd.DataFrame]] = {}
+    for keys, group in cmw_torque.groupby(
+        ["model_item_code", "item_name", "process", "spec_low", "spec_high", "unit"],
+        dropna=False,
+    ):
+        if len(group) >= 5:
+            product_name = str(keys[1]).strip() if pd.notna(keys[1]) and str(keys[1]).strip() else str(keys[0])
+            label = f"CMW · I-MR · {product_name} · {keys[2]} · {keys[3]}–{keys[4]} {keys[5]}"
+            method_options[label] = ("imr", group)
+    tektro_pqc = view[(view["supplier"].eq("TEKTRO")) & (view["stage"].eq("PQC")) & view["measured_value"].notna()]
+    for keys, group in tektro_pqc.groupby(["model_item_code", "family", "order_po"], dropna=False):
+        if len(group) >= 5:
+            label = f"TEKTRO · I-MR 稳定性 · {keys[0]} · {keys[1]} · {keys[2]}"
+            method_options[label] = ("imr_stability", group)
+    tektro_lab = view[(view["supplier"].eq("TEKTRO")) & (view["stage"].eq("LAB")) & view["measured_value"].notna()]
+    for keys, group in tektro_lab.groupby(["item_name", "process", "spec_low", "spec_high", "unit"], dropna=False):
+        if len(group) >= 5:
+            # One physical process/specification per chart; trial batches of
+            # the same Q13RS pull-out test remain rational subgroups.
+            label = f"TEKTRO · X̄-R (n=5) · {keys[0]} · {keys[1]} · {keys[2]}–{keys[3]} {keys[4]}"
+            method_options[label] = ("xbar", group)
+    if not method_options:
+        with spc_heading_slot.container():
+            render_chart_heading(
+                "SPC（统计过程控制）", "SPC & Attribute Control",
+                "SPC 用连续数据判断生产过程是否稳定，帮助发现突然变化、持续偏移和需要回查的时间点。",
+                "Assess process stability and identify sudden changes, sustained shifts, and points requiring investigation.",
+                "先选择一个过程。控制图中的红点提示异常变化，但不等于产品一定不合格。",
+                "Select a process first. Red points indicate unusual process changes, not necessarily nonconforming products.",
+                "只有满足最小样本要求的同质过程才会进入选择列表。",
+                "Only homogeneous processes meeting the minimum sample requirement appear in the selector.",
+                "BME Database", "bme_v4_spc_info_empty",
+            )
+        st.info(t("当前供应商没有满足最小样本要求的 SPC 数据。", "No SPC source for this supplier meets the minimum sample requirement."))
+        render_chart_ai({"id": "bme_spc_matrix_empty", "empty": True})
+        st.selectbox(t("SPC 工艺点（单选）", "SPC process point (single select)"), [], disabled=True, key="bme_spc_process_empty")
+        st.markdown(f"#### {t('过程控制图', 'Process Control Chart')}")
+        st.info(t("暂无数据", "No data"))
+        render_chart_ai({"id": "bme_spc_control_empty", "empty": True})
+    else:
+        spc_risk_summaries = {
+            label: summarize_spc_process_risk(method, data)
+            for label, (method, data) in method_options.items()
+        }
+
+        def spc_risk_key(label: str) -> tuple[float, float, float, float]:
+            summary = spc_risk_summaries[label]
+            specification_breaches = int(summary["specification_breaches"])
+            signal_events = int(summary["signal_count"])
+            stable = summary["stable"]
+            stability_rank = 0.0 if stable is False else 1.0 if stable is True else 2.0
+            capability = float(summary["capability"]) if summary["capability"] is not None else 999.0
+            return (
+                0.0 if specification_breaches else 1.0,
+                stability_rank,
+                capability,
+                -float(signal_events),
+            )
+
+        def compact_machine_text(value: object) -> str:
+            return re.sub(r"[^A-Z0-9\u4e00-\u9fff]+", "", str(value or "").upper())
+
+        focus_alias = compact_machine_text(selected_product_key.split("|", 1)[1]) if "|" in selected_product_key else ""
+        cmw_order_item_codes: dict[str, str] = {}
+        cmw_fqc_links = view[
+            view["supplier"].eq("CMW")
+            & view["stage"].isin(["AQL", "DKL"])
+            & view["order_po"].fillna("").astype(str).str.strip().ne("")
+            & view["model_item_code"].fillna("").astype(str).str.strip().ne("")
+        ][["order_po", "model_item_code"]].copy()
+        if not cmw_fqc_links.empty:
+            cmw_fqc_links["order_key"] = cmw_fqc_links["order_po"].map(compact_machine_text)
+            for order_key, order_rows in cmw_fqc_links.groupby("order_key"):
+                item_codes = {
+                    compact_machine_text(value)
+                    for value in order_rows["model_item_code"]
+                    if compact_machine_text(value)
+                }
+                if len(item_codes) == 1:
+                    cmw_order_item_codes[str(order_key)] = next(iter(item_codes))
+
+        def matches_selected_product(label: str) -> bool:
+            if not selected_product_supplier or selected_product_supplier not in {"CMW", "TEKTRO"}:
+                return False
+            if not label.startswith(f"{selected_product_supplier} ·"):
+                return False
+            option_data = method_options[label][1]
+            if selected_product_supplier == "CMW" and focus_alias:
+                option_item_codes = {
+                    cmw_order_item_codes[compact_machine_text(value)]
+                    for value in option_data.get("order_po", pd.Series(dtype=object)).dropna().unique()
+                    if compact_machine_text(value) in cmw_order_item_codes
+                }
+                if focus_alias in option_item_codes:
+                    return True
+            candidates = {
+                compact_machine_text(value)
+                for column in ["model_item_code", "item_name", "family"]
+                for value in option_data.get(column, pd.Series(dtype=object)).dropna().unique()
+                if compact_machine_text(value)
+            }
+            return bool(
+                focus_alias
+                and any(
+                    focus_alias == candidate
+                    or focus_alias in candidate
+                    or (len(candidate) >= 6 and candidate in focus_alias)
+                    for candidate in candidates
+                )
+            )
+
+        ranked_all_methods = sorted(
+            method_options,
+            key=lambda label: (*spc_risk_key(label), -len(method_options[label][1]), label),
+        )
+        linked_methods = [label for label in ranked_all_methods if matches_selected_product(label)]
+        if linked_methods:
+            # Keep the linked product first, while retaining the factory-wide
+            # process list so the matrix can open the same component in other
+            # models for comparison.
+            linked_method_set = set(linked_methods)
+            ranked_methods = linked_methods + [
+                label for label in ranked_all_methods if label not in linked_method_set
+            ]
+            machine_scope_linked = True
+            machine_scope_note_cn = "默认过程已与上方所选产品对应；也可从风险矩阵打开其他车型作比较。"
+            machine_scope_note_en = "The default process is linked to the selected product; the risk matrix can also open another model for comparison."
+        else:
+            linked_method_set = set()
+            ranked_methods = ranked_all_methods
+            machine_scope_note_cn = "当前控制图来自全厂 Machine Data，并按过程风险优先展示。"
+            machine_scope_note_en = "The control chart uses factory-wide Machine Data and prioritizes higher-risk processes."
+            if has_product_context:
+                st.warning(t(
+                    f"{selected_product_display or '所选产品'} 暂无可确认对应的 Machine Data；下面显示全厂高风险过程，不代表该款式。",
+                    f"No reliably linked Machine Data is available for {selected_product_display or 'the selected product'}. The factory-wide high-risk process below does not represent that product.",
+                ))
+
+        focus_signature = f"{selected_supplier}|{scope.start}|{scope.end}"
+        if st.session_state.get("bme_v6_spc_focus") != focus_signature:
+            st.session_state["bme_v6_spc_focus"] = focus_signature
+            st.session_state["bme_v6_spc"] = ranked_methods[0]
+        if st.session_state.get("bme_v6_spc") not in ranked_methods:
+            st.session_state["bme_v6_spc"] = ranked_methods[0]
+
+        spc_language_code = "zh" if st.session_state.lang == "中文" else "en"
+
+        def compact_process_label(label: str) -> str:
+            parts = [part.strip() for part in str(label).split("·") if part.strip()]
+            if len(parts) >= 4 and parts[0] == "CMW":
+                parts[3] = torque_component_display_name(
+                    parts[3], spc_language_code
+                )
+            compact = " · ".join(parts[:4])
+            return compact if len(compact) <= 72 else compact[:71] + "…"
+
+        overview_rows: list[dict[str, object]] = []
+        for label in ranked_methods:
+            summary = spc_risk_summaries[label]
+            specification_breaches = int(summary["specification_breaches"])
+            signal_count = int(summary["signal_count"])
+            if specification_breaches > 0:
+                risk_key = "specification"
+                risk_label = t("规格超限", "Outside Specification")
+            elif signal_count > 0 or summary["stable"] is False:
+                risk_key = "spc"
+                risk_label = t("SPC 需排查", "SPC Investigation")
+            else:
+                continue
+            capability = summary["capability"]
+            overview_rows.append({
+                "full_label": label,
+                "display_label": compact_process_label(label),
+                "risk_key": risk_key,
+                "risk_rank": 0 if risk_key == "specification" else 1,
+                "risk_label": risk_label,
+                "attention_rate": float(summary["attention_rate"]),
+                "signal_display": f"{signal_count:,} / {int(summary['spc_observation_count']):,} ({float(summary['signal_rate']):.1%})",
+                "specification_display": (
+                    f"{specification_breaches:,} / {int(summary['measurement_count']):,} ({float(summary['specification_rate']):.1%})"
+                    if summary["has_specification"]
+                    else t("无产品规格，仅判断过程稳定性", "No product specification; stability only")
+                ),
+                "capability_display": f"{float(capability):.2f}" if capability is not None else "N/A",
+            })
+
+        risk_overview = (
+            pd.DataFrame(overview_rows)
+            .sort_values(["risk_rank", "attention_rate"], ascending=[True, False])
+            .head(10)
+            .reset_index(drop=True)
+            if overview_rows
+            else pd.DataFrame()
+        )
+        cmw_risk_matrix = build_spc_model_component_risk(
+            cmw_torque, spc_risk_summaries
+        )
+        if cmw_risk_matrix.empty and risk_overview.empty:
+            st.markdown(f"#### {t('车型 × 扭力料件风险矩阵', 'Model × Torque Component Risk Matrix')}")
+            st.success(t(
+                "当前筛选范围未发现规格超限或 SPC 异常信号；仍可通过下方过程列表查看全部明细。",
+                "No specification breach or SPC signal was found under the current filters. Use the process selector below to review all details.",
+            ))
+        elif not cmw_risk_matrix.empty:
+            model_count = int(cmw_risk_matrix["model_code"].nunique())
+            component_count = int(cmw_risk_matrix["component"].nunique())
+            recurring_component_count = int(
+                cmw_risk_matrix.loc[
+                    cmw_risk_matrix["recurs_across_models"], "component"
+                ].nunique()
+            )
+            risk_summary_items = [
+                (t("风险车型", "Models with Risk"), f"{model_count:,}", t("规格超限或 SPC 异常", "Specification or SPC risk")),
+                (t("风险扭力料件", "Components at Risk"), f"{component_count:,}", t("按源料件名称匹配", "Exact source names")),
+                (t("跨车型重复料件", "Cross-model Components"), f"{recurring_component_count:,}", t("已观察，不代表预测", "Observed, not forecast")),
+                (t("机器标定风险预测", "Machine Calibration Risk"), t("暂不可计算", "Unavailable"), t("缺少 Machine ID", "Machine ID missing")),
+            ]
+            risk_summary_html = "".join(
+                f'''<div class="bme-risk-summary-item">
+                  <div class="bme-risk-summary-label">{html.escape(label)}</div>
+                  <div class="bme-risk-summary-value" title="{html.escape(value)}">{html.escape(value)}</div>
+                  <div class="bme-risk-summary-note">{html.escape(note)}</div>
+                </div>'''
+                for label, value, note in risk_summary_items
+            )
+            st.markdown(
+                f'''<div class="bme-risk-overview-head">
+                  <div class="bme-risk-overview-copy">
+                    <div class="bme-risk-overview-title">{html.escape(t("车型 × 扭力料件风险矩阵", "Model × Torque Component Risk Matrix"))}</div>
+                    <div class="bme-risk-overview-note">{html.escape(t(
+                        "左侧锁定优先关注对象，右侧按系统查看风险关系。点击风险点可打开下方 SPC 明细。",
+                        "The priority rail focuses attention; the grouped matrix reveals risk relationships. Select a point to open SPC detail below.",
+                    ))}</div>
+                  </div>
+                  <div class="bme-risk-summary-strip">{risk_summary_html}</div>
+                </div>''',
+                unsafe_allow_html=True,
+            )
+
+            component_priority = (
+                cmw_risk_matrix.groupby("component", as_index=False)
+                .agg(
+                    risk_rank=("risk_rank", "min"),
+                    affected_models=("affected_model_count", "max"),
+                    specification_breaches=("specification_breaches", "sum"),
+                    max_attention=("attention_rate", "max"),
+                )
+                .sort_values(
+                    ["risk_rank", "specification_breaches", "affected_models", "max_attention"],
+                    ascending=[True, False, False, False],
+                )
+            )
+            priority_component_order = component_priority.head(15)["component"].tolist()
+            matrix_view = cmw_risk_matrix[
+                cmw_risk_matrix["component"].isin(priority_component_order)
+            ].copy().reset_index(drop=True)
+            group_definitions = {
+                "cockpit": t("操控 / 骑乘", "Cockpit / Contact"),
+                "brake": t("制动系统", "Braking"),
+                "drivetrain": t("传动系统", "Drivetrain"),
+                "chassis": t("轮组 / 车架", "Wheel / Chassis"),
+                "other": t("其他", "Other"),
+            }
+            group_order = list(group_definitions)
+            priority_position = {
+                component: position
+                for position, component in enumerate(priority_component_order)
+            }
+            component_groups = {
+                component: classify_torque_component_group(component)
+                for component in priority_component_order
+            }
+            component_order = sorted(
+                priority_component_order,
+                key=lambda component: (
+                    group_order.index(component_groups[component]),
+                    priority_position[component],
+                ),
+            )
+            matrix_view["component_group"] = matrix_view["component"].map(component_groups)
+            model_priority = (
+                matrix_view.groupby(["model_code", "model_display"], as_index=False)
+                .agg(
+                    risk_rank=("risk_rank", "min"),
+                    specification_breaches=("specification_breaches", "sum"),
+                    risk_components=("component", "nunique"),
+                    max_attention=("attention_rate", "max"),
+                )
+                .sort_values(
+                    ["risk_rank", "specification_breaches", "risk_components", "max_attention"],
+                    ascending=[True, False, False, False],
+                )
+            )
+            model_order = model_priority["model_display"].tolist()
+            matrix_view["risk_label"] = matrix_view["risk_key"].map({
+                "specification": t("规格超限", "Outside Specification"),
+                "spc": t("SPC 需排查", "SPC Investigation"),
+            })
+            matrix_view["recurrence_display"] = np.where(
+                matrix_view["recurs_across_models"],
+                matrix_view["affected_model_count"].map(
+                    lambda count: t(f"已在 {int(count)} 个 Model 观察到", f"Observed in {int(count)} models")
+                ),
+                t("当前仅在该 Model 观察到", "Currently observed only in this model"),
+            )
+            matrix_view["other_models_display"] = matrix_view["other_models"].replace(
+                "", t("当前未观察到其他 Model", "No other model currently observed")
+            )
+            matrix_view["capability_display"] = matrix_view["capability"].map(
+                lambda value: f"{float(value):.2f}" if pd.notna(value) else "N/A"
+            )
+            matrix_view["marker_size"] = 12 + matrix_view["attention_rate"].clip(0, 1) * 8
+            matrix_view["matrix_x"] = matrix_view["component"].map(
+                {component: index for index, component in enumerate(component_order)}
+            )
+            matrix_view["matrix_y"] = matrix_view["model_display"].map(
+                {model: index for index, model in enumerate(model_order)}
+            )
+            risk_overview_chart_key = "bme_spc_risk_overview"
+
+            def sync_spc_from_overview() -> None:
+                event = st.session_state.get(risk_overview_chart_key, {})
+                points = event.get("selection", {}).get("points", []) if isinstance(event, dict) else []
+                if not points:
+                    return
+                customdata = points[0].get("customdata", [])
+                label = str(customdata[0]) if isinstance(customdata, (list, tuple)) and customdata else ""
+                if label in ranked_methods:
+                    st.session_state["bme_v6_spc"] = label
+
+            def risk_customdata(frame: pd.DataFrame) -> np.ndarray:
+                component_display = frame["component"].map(
+                    lambda value: torque_component_display_name(
+                        value, "zh" if st.session_state.lang == "中文" else "en"
+                    )
+                )
+                return np.column_stack([
+                    frame["full_label"], frame["risk_label"], frame["model_code"],
+                    component_display, frame["signal_count"], frame["signal_rate"],
+                    frame["specification_breaches"], frame["measurement_count"],
+                    frame["specification_rate"], frame["recurrence_display"],
+                    frame["other_models_display"], frame["capability_display"],
+                    frame["model_display"],
+                ])
+
+            risk_hovertemplate = (
+                f"<b>Model  %{{customdata[12]}}</b><br>"
+                f"{t('整车料号', 'Model code')}  %{{customdata[2]}}<br>"
+                f"{t('扭力料件', 'Torque component')}  %{{customdata[3]}}<br>"
+                f"{t('风险类型', 'Risk type')}  %{{customdata[1]}}<br>"
+                f"{t('SPC 异常点', 'SPC signals')}  %{{customdata[4]}} (%{{customdata[5]:.1%}})<br>"
+                f"{t('规格超限', 'Specification breaches')}  %{{customdata[6]}} / %{{customdata[7]}} (%{{customdata[8]:.1%}})<br>"
+                f"{t('跨车型观察', 'Cross-model observation')}  %{{customdata[9]}}<br>"
+                f"{t('其他风险车型', 'Other models with risk')}  %{{customdata[10]}}<br>"
+                f"Ppk  %{{customdata[11]}}<extra></extra>"
+            )
+
+            def build_priority_rail(
+                rail_data: pd.DataFrame,
+                order: list[str],
+                *,
+                index_column: str,
+                count_column: str,
+                height: int,
+            ) -> go.Figure:
+                counts = (
+                    rail_data.groupby([index_column, "risk_key"])[count_column]
+                    .nunique()
+                    .unstack(fill_value=0)
+                    .reindex(index=order, fill_value=0)
+                )
+                specification = counts.get("specification", pd.Series(0, index=counts.index)).astype(int)
+                spc = counts.get("spc", pd.Series(0, index=counts.index)).astype(int)
+                maximum_total = max(1, int((specification + spc).max()))
+                remainder = (maximum_total - specification - spc).clip(lower=0)
+                def priority_display_label(value: object) -> str:
+                    label = str(value)
+                    if index_column == "component":
+                        label = torque_component_display_name(
+                            label, "zh" if st.session_state.lang == "中文" else "en"
+                        )
+                        return f"{label[:20]}…" if len(label) > 21 else label
+                    compact_model = label.upper().replace(" ", "")
+                    if "EXPL900HD" in compact_model:
+                        return "26” E900HD" if compact_model.startswith("26") else "E900HD"
+                    if "EXPL500" in compact_model:
+                        return "26” E500" if compact_model.startswith("26") else "E500"
+                    if "EXPL900" in compact_model:
+                        return "24” E900" if compact_model.startswith("24") else "E900"
+                    replacements = {"EXPL 100 MULTI": "EXPL 100"}
+                    label = replacements.get(label, label)
+                    return f"{label[:9]}…" if len(label) > 10 else label
+                figure = go.Figure()
+                figure.add_bar(
+                    x=specification,
+                    y=counts.index,
+                    orientation="h",
+                    name=t("规格超限", "Outside specification"),
+                    marker_color=BME_COLORS["alert"],
+                    hovertemplate=f"<b>%{{y}}</b><br>{t('规格风险料件/车型', 'Specification-risk components/models')}  %{{x}}<extra></extra>",
+                )
+                figure.add_bar(
+                    x=spc,
+                    y=counts.index,
+                    orientation="h",
+                    name=t("SPC 需排查", "SPC investigation"),
+                    marker_color=BME_COLORS["fqc"],
+                    hovertemplate=f"<b>%{{y}}</b><br>{t('SPC 风险料件/车型', 'SPC-risk components/models')}  %{{x}}<extra></extra>",
+                )
+                figure.add_bar(
+                    x=remainder,
+                    y=counts.index,
+                    orientation="h",
+                    marker_color="#E4E8F0",
+                    hoverinfo="skip",
+                    showlegend=False,
+                )
+                apply_bme_chart_style(figure)
+                figure.update_layout(
+                    barmode="stack",
+                    height=height,
+                    margin=dict(l=2, r=5, t=1, b=3),
+                    showlegend=False,
+                    bargap=0.63,
+                )
+                figure.update_xaxes(visible=False, fixedrange=True, range=[0, maximum_total])
+                figure.update_yaxes(
+                    categoryorder="array",
+                    categoryarray=order[::-1],
+                    tickmode="array",
+                    tickvals=order,
+                    ticktext=[priority_display_label(value) for value in order],
+                    fixedrange=True,
+                    gridcolor="rgba(0,0,0,0)",
+                    tickfont={"size": 10, "color": "#475467"},
+                    automargin=True,
+                )
+                return figure
+
+            top_models = model_order[:5]
+            top_components = priority_component_order[:5]
+            model_rail_fig = build_priority_rail(
+                matrix_view,
+                top_models,
+                index_column="model_display",
+                count_column="component",
+                height=168,
+            )
+            component_rail_fig = build_priority_rail(
+                matrix_view,
+                top_components,
+                index_column="component",
+                count_column="model_code",
+                height=188,
+            )
+
+            overview_fig = go.Figure()
+            selected_label = st.session_state.get("bme_v6_spc")
+            selected_matrix_row = matrix_view[matrix_view["full_label"].eq(selected_label)]
+            if not selected_matrix_row.empty:
+                overview_fig.add_trace(go.Scatter(
+                    x=selected_matrix_row["matrix_x"],
+                    y=selected_matrix_row["matrix_y"],
+                    mode="markers",
+                    marker={
+                        "size": selected_matrix_row["marker_size"] + 11,
+                        "color": "rgba(255,255,255,0)",
+                        "symbol": "square-open",
+                        "line": {"color": BME_COLORS["primary"], "width": 2.8},
+                    },
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
+            for risk_key, risk_name, color in [
+                ("specification", t("规格超限", "Outside Specification"), BME_COLORS["alert"]),
+                ("spc", t("SPC 需排查", "SPC Investigation"), BME_COLORS["fqc"]),
+            ]:
+                trace_data = matrix_view[matrix_view["risk_key"].eq(risk_key)].copy()
+                if trace_data.empty:
+                    continue
+                selected_points = np.flatnonzero(
+                    trace_data["full_label"].eq(selected_label).to_numpy()
+                ).tolist()
+                overview_fig.add_trace(go.Scatter(
+                    x=trace_data["matrix_x"],
+                    y=trace_data["matrix_y"],
+                    mode="markers",
+                    name=risk_name,
+                    marker={
+                        "size": trace_data["marker_size"],
+                        "color": color,
+                        "symbol": "square",
+                        "line": {
+                            "width": np.where(trace_data["recurs_across_models"], 2.0, 1.0),
+                            "color": np.where(trace_data["recurs_across_models"], "#7382B8", "rgba(255,255,255,.95)"),
+                        },
+                        "opacity": 0.94,
+                    },
+                    customdata=risk_customdata(trace_data),
+                    hovertemplate=risk_hovertemplate,
+                    selectedpoints=selected_points,
+                    selected={"marker": {"opacity": 1.0, "size": 24}},
+                    unselected={"marker": {"opacity": 0.78}},
+                ))
+
+            for row_index in range(len(model_order)):
+                if row_index % 2 == 0:
+                    overview_fig.add_hrect(
+                        y0=row_index - 0.5,
+                        y1=row_index + 0.5,
+                        fillcolor="#FBFCFE",
+                        line_width=0,
+                        layer="below",
+                    )
+
+            active_groups: list[tuple[str, list[int]]] = []
+            for group_key in group_order:
+                positions = [
+                    index
+                    for index, component in enumerate(component_order)
+                    if component_groups[component] == group_key
+                ]
+                if positions:
+                    active_groups.append((group_key, positions))
+            for group_index, (group_key, positions) in enumerate(active_groups):
+                start, end = min(positions), max(positions)
+                if group_index % 2 == 1:
+                    overview_fig.add_vrect(
+                        x0=start - 0.5,
+                        x1=end + 0.5,
+                        fillcolor="rgba(47,85,199,.018)",
+                        line_width=0,
+                        layer="below",
+                    )
+                overview_fig.add_annotation(
+                    x=(start + end) / 2,
+                    y=1.10,
+                    xref="x",
+                    yref="paper",
+                    text=f"<b>{group_definitions[group_key]} ({len(positions)})</b>",
+                    showarrow=False,
+                    font={"size": 12, "color": BME_COLORS["primary"]},
+                )
+                overview_fig.add_shape(
+                    type="line",
+                    x0=start - 0.42,
+                    x1=end + 0.42,
+                    y0=1.055,
+                    y1=1.055,
+                    xref="x",
+                    yref="paper",
+                    line={"color": "#AEBBEB", "width": 1.4},
+                )
+                if group_index < len(active_groups) - 1:
+                    overview_fig.add_vline(
+                        x=end + 0.5,
+                        line_width=1.1,
+                        line_color="#D3DAEA",
+                        layer="below",
+                    )
+
+            def wrap_component_label(value: str) -> str:
+                language_code = "zh" if st.session_state.lang == "中文" else "en"
+                label = torque_component_display_name(value, language_code)
+                if " / " in label:
+                    return label.replace(" / ", "<br>")
+                if language_code == "en" and len(label) > 16 and " " in label:
+                    words = label.split()
+                    split_at = max(1, len(words) // 2)
+                    return " ".join(words[:split_at]) + "<br>" + " ".join(words[split_at:])
+                if len(label) <= 6:
+                    return label
+                split_at = min(5, max(3, len(label) // 2))
+                return f"{label[:split_at]}<br>{label[split_at:]}"
+
+            apply_bme_chart_style(overview_fig)
+            overview_fig.update_layout(
+                height=max(485, 38 * len(model_order) + 135),
+                margin=dict(l=5, r=5, t=66, b=94),
+                clickmode="event+select",
+                showlegend=False,
+                hovermode="closest",
+            )
+            overview_fig.update_xaxes(
+                title_text=t("扭力料件（风险优先 Top 15）", "Torque Component (Risk-priority Top 15)"),
+                tickmode="array",
+                tickvals=list(range(len(component_order))),
+                ticktext=[wrap_component_label(component) for component in component_order],
+                tickangle=0,
+                range=[-0.55, len(component_order) - 0.45],
+                fixedrange=True,
+                automargin=True,
+                gridcolor="#EEF1F6",
+                tickfont={"size": 10, "color": "#667085"},
+            )
+            overview_fig.update_yaxes(
+                title_text="",
+                tickmode="array",
+                tickvals=list(range(len(model_order))),
+                ticktext=model_order,
+                range=[len(model_order) - 0.45, -0.55],
+                fixedrange=True,
+                automargin=True,
+                gridcolor="#EEF1F6",
+            )
+            with st.container(key="bme_spc_risk_workspace"):
+                priority_column, matrix_column = st.columns(
+                    [0.20, 0.80], gap="medium", vertical_alignment="top"
+                )
+                with priority_column:
+                    st.markdown(
+                        f'<div class="bme-risk-rail-heading">{html.escape(t("优先关注", "Priority Rail"))}'
+                        f'<span>TOP 5</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f'<div class="bme-risk-rail-subtitle">{html.escape(t("高风险车型", "Models requiring attention"))}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    render_unified_plotly(
+                        model_rail_fig,
+                        use_container_width=True,
+                        config={"displayModeBar": False, "staticPlot": False},
+                        key="bme_spc_priority_models",
+                    )
+                    st.markdown(
+                        f'<div class="bme-risk-rail-subtitle">{html.escape(t("高风险扭力料件", "Torque components requiring attention"))}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    render_unified_plotly(
+                        component_rail_fig,
+                        use_container_width=True,
+                        config={"displayModeBar": False, "staticPlot": False},
+                        key="bme_spc_priority_components",
+                    )
+                with matrix_column:
+                    st.markdown(
+                        f'''<div class="bme-risk-matrix-heading">
+                          <div class="bme-risk-matrix-title">{html.escape(t("分组风险矩阵", "Grouped Risk Matrix"))}</div>
+                          <div class="bme-risk-legend">
+                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch specification"></i>{html.escape(t("规格超限", "Outside specification"))}</span>
+                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch"></i>{html.escape(t("SPC 需排查", "SPC investigation"))}</span>
+                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch recurrence"></i>{html.escape(t("跨车型重复", "Cross-model recurrence"))}</span>
+                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch selected"></i>{html.escape(t("已选中", "Selected"))}</span>
+                          </div>
+                        </div>''',
+                        unsafe_allow_html=True,
+                    )
+                    render_unified_plotly(
+                        overview_fig,
+                        use_container_width=True,
+                        config={"displayModeBar": False},
+                        key=risk_overview_chart_key,
+                        on_select=sync_spc_from_overview,
+                        selection_mode="points",
+                    )
+        else:
+            st.markdown(f"#### {t('供应商 · 过程风险矩阵', 'Supplier · Process Risk Matrix')}")
+            labels = risk_overview.full_label.tolist()
+            summaries = [spc_risk_summaries[label] for label in labels]
+            values = [[float(s["specification_rate"]) if s["has_specification"] else None for s in summaries], [float(s["signal_rate"]) for s in summaries]]
+            matrix = go.Figure(go.Heatmap(
+                x=[compact_process_label(label) for label in labels],
+                y=[t("规格超限率", "Specification breach rate"), t("SPC 信号率", "SPC signal rate")],
+                z=values, zmin=0, zmax=1, colorscale="Blues",
+                colorbar=dict(tickformat=".0%"),
+                hovertemplate="%{x}<br>%{y}: %{z:.1%}<extra></extra>",
+            ))
+            matrix.update_layout(height=330, margin=dict(l=15, r=15, t=15, b=100))
+            apply_bme_chart_style(matrix)
+            st.session_state["_pending_chart_summary"] = t(f"当前供应商 {selected_supplier} 的 {len(labels)} 个过程存在规格超限或 SPC 信号；两行分别表示规格超限率和 SPC 信号率，没有规格的过程保留为空。", f"{len(labels)} processes for {selected_supplier} show specification breaches or SPC signals. The rows show breach rate and signal rate; missing specifications remain blank.")
+            render_unified_plotly(matrix, use_container_width=True, config={"displayModeBar": False}, key="bme_spc_supplier_process_matrix")
+            if not risk_overview.empty:
+                dataframe_with_format(
+                    risk_overview[["display_label", "risk_label", "signal_display", "specification_display", "capability_display"]].rename(columns={
+                        "display_label": t("过程", "Process"), "risk_label": t("风险类型", "Risk Type"),
+                        "signal_display": t("SPC 异常", "SPC Signals"), "specification_display": t("规格超限", "Specification Breaches"),
+                        "capability_display": "Ppk / Ppl",
+                    }),
+                    height=330,
+                )
+
+        with st.container(key="bme_spc_filter"):
+            filter_label, filter_control = st.columns([0.13, 0.87], vertical_alignment="center")
+            with filter_label:
+                st.markdown(f'<div class="bme-spc-filter-label">{html.escape(t("查看过程", "Process"))}</div>', unsafe_allow_html=True)
+            with filter_control:
+                selected_method = st.selectbox(
+                    t(
+                        "选择过程（所选产品优先，可跨车型比较）" if linked_methods else "选择全厂过程（高风险优先）",
+                        "Select a process (selected product first; cross-model comparison available)" if linked_methods else "Select a factory process (high risk first)",
+                    ),
+                    ranked_methods,
+                    key="bme_v6_spc",
+                    label_visibility="collapsed",
+                    format_func=compact_process_label,
+                )
+        if selected_method:
+            machine_scope_linked = selected_method in linked_method_set
+            if machine_scope_linked:
+                machine_scope_note_cn = "当前控制图已与上方所选产品对应。"
+                machine_scope_note_en = "The current control chart is linked to the product selected above."
+            else:
+                machine_scope_note_cn = "当前控制图来自全厂 Machine Data，并按过程风险优先展示。"
+                machine_scope_note_en = "The current control chart uses factory-wide Machine Data and prioritizes higher-risk processes."
+        if not selected_method:
+            method = ""
+            data = pd.DataFrame()
+        else:
+            method, data = method_options[selected_method]
+            selected_machine_label = selected_method
+            selected_machine_data = data.copy()
+            st.session_state["_active_spc_scope"]["process"] = selected_method
+        if not method:
+            spc_read_cn = "只有产品标识、供应商和过程数据能够可靠对应时，才显示控制图。"
+            spc_read_en = "A control chart is shown only when product identity, supplier, and process data can be linked reliably."
+            spc_logic_cn = "不会把其他产品的机器数据自动放到所选产品下面。"
+            spc_logic_en = "Machine data from another product is never shown as if it belonged to the selected product."
+        elif method == "imr":
+            spc_read_cn = "图中显示每次扭力实测值：蓝点是实测值，青色 CL 是过程平均值，橙色 USL/LSL 是产品规格上下限。只有红点表示需要调查的异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
+            spc_read_en = "The chart shows each measured torque value: blue points are measurements, the teal CL is the process average, and orange USL/LSL lines are product specifications. Only red points indicate patterns requiring investigation. A red point alone does not mean the product must be rejected."
+            spc_logic_cn = "同一车型、产品描述、工序、规格和单位形成同质序列；I-MR 控制限为均值 ± 2.66×平均移动极差，并检查超出 3σ、连续 8 点同侧和连续 6 点单调趋势。疑似录入错误保留在源数据中，但不参与图表、SPC 信号、规格超限、稳定性和默认排序。只有过程稳定、样本不少于 25 且规格完整时才显示 Ppk。"
+            spc_logic_en = "A homogeneous sequence uses the same model, product description, process, specification, and unit. I-MR limits are mean ± 2.66×average moving range, with 3σ, eight-on-one-side, and six-point-trend rules. Suspected data-entry errors remain in the source data but are excluded from the chart, SPC signals, specification breaches, stability, and ranking. Ppk is shown only for a stable process with at least 25 observations and complete specifications."
+        elif method == "imr_stability":
+            spc_read_cn = "图中显示每次实测值是否围绕平均值稳定波动。红点表示过程出现了不寻常的变化，需要回查工单、设备、人员和物料批次。因为源数据没有规格线，这张图只能判断过程是否稳定，不能判断产品是否合格。"
+            spc_read_en = "The chart shows whether measurements vary consistently around the average. Red points require investigation. Because source specifications are unavailable, this chart assesses stability only and cannot judge product conformity."
+            spc_logic_cn = "同一 TEKTRO 型号、油管长度和订单形成一个 I-MR 序列。源数据没有规格，因此只判断过程稳定性，不判 NG，也不计算能力指数。"
+            spc_logic_en = "One I-MR sequence uses the same TEKTRO model, hose length, and order. Source specifications are unavailable, so the chart assesses stability only without NG decisions or capability indices."
+        elif method == "pchart":
+            spc_read_cn = "蓝线是每周 NC率，青色线是整个期间的平均 NC率，灰色 UCL/LCL 是根据每周检验数量自动变化的控制限。只有红点表示该周的不合格率或连续走势异常，需要回查当周产品、人员、工序和物料变化；它不是固定的合格标准。"
+            spc_read_en = "The blue line is weekly NC rate, the teal line is the overall average, and grey UCL/LCL lines are control limits that change with weekly sample size. Only red points indicate an unusual week or trend requiring investigation; they are not fixed acceptance specifications."
+            spc_logic_cn = "按周汇总检验数和 NC 数，中心线为总 NC÷总检验数；每周控制限随当周样本量变化，并应用 3σ、连续 8 点同侧和连续 6 点趋势规则。"
+            spc_logic_en = "Weekly inspected and NC quantities are aggregated. The center line is total NC divided by total inspected; weekly limits vary with sample size and apply the 3σ, eight-on-one-side, and six-point-trend rules."
+        else:
+            spc_read_cn = "上半图 X̄ 看每组5件产品的平均拔脱力是否稳定，下半图 R 看同组5件之间的差异是否突然变大。红点表示组平均值或组内波动异常，应回查对应试验批次和测试条件。橙色 LSL 200 kgf 是产品最低规格，控制限和规格线不能混为一谈。"
+            spc_read_en = "The X̄ chart shows whether each five-piece subgroup average is stable, while the R chart shows whether within-subgroup variation suddenly increases. Red points require batch and test-condition investigation. The orange 200 kgf LSL is the product minimum specification and must not be confused with statistical control limits."
+            spc_logic_cn = "拔脱力按连续 5 件组成子组，使用 A2=0.577、D3=0、D4=2.114 的 X̄-R 控制图；不完整子组不参与控制限估计。只有稳定时才显示单边 PPL。"
+            spc_logic_en = "Pull-out force uses consecutive subgroups of five with X̄-R constants A2=0.577, D3=0, and D4=2.114. Incomplete subgroups are excluded from limit estimation, and one-sided PPL is shown only when stable."
+        if method:
+            spc_logic_cn = f"{machine_scope_note_cn}{spc_logic_cn}"
+            spc_logic_en = f"{machine_scope_note_en} {spc_logic_en}"
+        scope_conclusion_cn = "" if machine_scope_linked or not has_product_context else "本图为全厂高风险过程，不代表上方所选款式。"
+        scope_conclusion_en = "" if machine_scope_linked or not has_product_context else "This is a factory-wide high-risk process and does not represent the product selected above. "
+        with spc_heading_slot.container():
+            render_chart_heading(
+                "SPC（统计过程控制）",
+                "SPC & Attribute Control",
+                "SPC 用连续数据判断生产过程是否稳定，帮助发现突然变化、持续偏移和需要回查的时间点。",
+                "Assess process stability while separating control limits from product specifications.",
+                spc_read_cn,
+                spc_read_en,
+                spc_logic_cn,
+                spc_logic_en,
+                bme_chart_source(data),
+                "bme_v4_spc_info",
+            )
+        if not method:
+            pass
+        elif method.startswith("imr"):
+            chart, limits = build_imr_chart_data(data)
+            chart["spc_time"] = pd.to_datetime(chart["event_timestamp"], errors="coerce").fillna(pd.to_datetime(chart["date"], errors="coerce"))
+            chart["trace_number"] = chart.get("trace_number", pd.Series("", index=chart.index)).fillna("").astype(str).replace("", "-")
+            chart["comments"] = chart.get("comments", pd.Series("", index=chart.index)).fillna("").astype(str).replace("", "-")
+            chart["mr_signal"] = chart["moving_range"].gt(limits.get("mr_ucl", np.inf))
+            chart["spc_event_signal"] = chart.get("signal", False) | chart["mr_signal"]
+            chart["spc_signal_label"] = np.where(chart["spc_event_signal"], t("需要排查", "Investigate"), t("正常波动", "Common-cause variation"))
+            chart_plot = chart[~chart.get("is_data_quality_suspect", pd.Series(False, index=chart.index))].copy()
+            measured_label = t("扭力 / 实测值", "Torque / Measured Value") if method == "imr" else t("实测值", "Measured Value")
+            time_label = t("时间", "Time")
+            hover_template = (
+                f"{time_label}  %{{x|%Y-%m-%d %H:%M}}<br>"
+                f"{t('整车追溯号', 'Bike Trace No.')}  %{{customdata[0]}}<br>"
+                f"{measured_label}  %{{y:.2f}} %{{customdata[1]}}<br>"
+                f"{t('备注', 'Comments')}  %{{customdata[2]}}<br>"
+                f"SPC  %{{customdata[3]}}<extra></extra>"
+            )
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=chart_plot["spc_time"], y=chart_plot["value"], mode="lines+markers", name=t("实测值", "Measured"),
+                marker=dict(color=np.where(chart_plot["spc_event_signal"], BME_COLORS["alert"], BME_COLORS["primary"])),
+                line=dict(color=BME_COLORS["primary"]),
+                customdata=np.column_stack([chart_plot["trace_number"], chart_plot["unit"].fillna(""), chart_plot["comments"], chart_plot["spc_signal_label"]]),
+                hovertemplate=hover_template,
+            ))
+            if limits:
+                line_specs = [
+                    (limits["center"], "CL", BME_COLORS["machine"], "solid", "bottom left"),
+                ]
+                for value, name, color, dash, position in line_specs:
+                    fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, annotation_position=position)
+            if method == "imr":
+                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL", annotation_position="top right")
+                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL", annotation_position="bottom right")
+            fig.update_xaxes(title_text=time_label, tickangle=0)
+            fig.update_yaxes(title_text=None, tickangle=0)
+            fig.update_layout(height=430, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
+            apply_bme_chart_style(fig)
+            if limits:
+                signal_count = int(chart_plot["spc_event_signal"].sum())
+                if method == "imr":
+                    below_spec = chart_plot["spec_low"].notna() & chart_plot["value"].lt(chart_plot["spec_low"])
+                    above_spec = chart_plot["spec_high"].notna() & chart_plot["value"].gt(chart_plot["spec_high"])
+                    spec_breaches = int((below_spec | above_spec).sum())
+                    spec_text_cn = f"，{spec_breaches} 个实测值超出产品规格"
+                    spec_text_en = f", and {spec_breaches} measurement{'s' if spec_breaches != 1 else ''} outside product specifications"
+                else:
+                    spec_text_cn = "；源数据没有产品规格，本图只判断过程是否稳定"
+                    spec_text_en = "; source specifications are unavailable, so the chart assesses stability only"
+                render_bme_chart_conclusion(
+                    f"{scope_conclusion_cn}本期 {len(chart_plot):,} 个有效测量点，发现 {signal_count} 个 SPC 异常点{spec_text_cn}。请优先回查红点对应的工单、设备、人员和物料批次。",
+                    f"{scope_conclusion_en}This period has {len(chart_plot):,} valid measurements, {signal_count} SPC signal points{spec_text_en}. Review the related order, equipment, operator, and material batch first.",
+                )
+            else:
+                render_bme_chart_conclusion(
+                    f"当前选择共 {len(chart):,} 个测量点，但有效数据不足以计算控制限；本图只能查看原始变化，不能判断过程稳定性。",
+                    f"The selected scope contains {len(chart):,} measurements, but valid data is insufficient for control limits. The chart shows raw variation only and cannot assess process stability.",
+                )
+            render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        elif method == "pchart":
+            chart, limits = build_p_chart_data(data)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["rate"], mode="lines+markers", name="NC rate", line=dict(color=BME_COLORS["primary"]), marker=dict(color=np.where(chart["signal"], BME_COLORS["alert"], BME_COLORS["primary"]))))
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["ucl"], mode="lines", name="UCL", line=dict(color=BME_COLORS["control"], dash="dot")))
+            fig.add_trace(go.Scatter(x=chart["date"], y=chart["lcl"], mode="lines", name="LCL", line=dict(color=BME_COLORS["control"], dash="dot")))
+            fig.add_hline(y=limits["center"], line_color=BME_COLORS["machine"], annotation_text="CL")
+            fig.update_xaxes(tickangle=0)
+            fig.update_yaxes(tickformat=".1%", title_text=None, tickangle=0)
+            fig.update_layout(height=460, margin=dict(l=20, r=20, t=25, b=30), legend=dict(orientation="h"))
+            apply_bme_chart_style(fig)
+            peak = chart.loc[chart["rate"].idxmax()]
+            peak_date = pd.Timestamp(peak["date"]).strftime("%Y-%m-%d")
+            signal_count = int(chart["signal"].sum())
+            render_bme_chart_conclusion(
+                f"{scope_conclusion_cn}本期 {len(chart)} 个检验周期，平均 NC 率 {limits['center']:.2%}，发现 {signal_count} 个 SPC 异常点。最高点为 {peak_date} 的 {peak['rate']:.2%}，请优先回查该周期。",
+                f"{scope_conclusion_en}This period has {len(chart)} inspection periods, an average NC rate of {limits['center']:.2%}, and {signal_count} SPC signal points. The peak is {peak['rate']:.2%} on {peak_date}; review that period first.",
+            )
+            render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False})
+        else:
+            chart, limits = build_xbar_r_chart_data(data)
+            fig = make_subplots(
+                rows=2,
+                cols=1,
+                shared_xaxes=True,
+                row_heights=[.68, .32],
+                vertical_spacing=.12,
+                subplot_titles=[t("组平均值 X̄", "Subgroup Mean X̄"), t("组内极差 R", "Within-subgroup Range R")],
+            )
+            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["mean"], mode="lines+markers", name="X̄", line=dict(color=BME_COLORS["primary"]), marker=dict(color=np.where(chart["signal"], BME_COLORS["alert"], BME_COLORS["primary"]))), row=1, col=1)
+            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["range"], mode="lines+markers", name="R", line=dict(color=BME_COLORS["pqc"]), marker=dict(color=np.where(chart["range_signal"], BME_COLORS["alert"], BME_COLORS["pqc"]))), row=2, col=1)
+            for value, name in [(limits["center"], "CL"), (limits["ucl"], "UCL"), (limits["lcl"], "LCL")]: fig.add_hline(y=value, annotation_text=name, line_color=BME_COLORS["machine"] if name == "CL" else BME_COLORS["control"], line_dash="dot" if name != "CL" else "solid", row=1, col=1)
+            fig.add_hline(y=200, annotation_text="LSL", line_color=BME_COLORS["fqc"], line_dash="dash", row=1, col=1)
+            fig.add_hline(y=limits["r_ucl"], annotation_text="R UCL", line_color=BME_COLORS["control"], line_dash="dot", row=2, col=1)
+            fig.update_xaxes(tickangle=0)
+            fig.update_yaxes(title_text=None, tickangle=0)
+            fig.update_layout(height=560, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
+            apply_bme_chart_style(fig)
+            mean_signals = int(chart["signal"].sum())
+            range_signals = int(chart["range_signal"].sum())
+            below_lsl = int(data["measured_value"].lt(200).sum())
+            incomplete_groups = int(limits.get("incomplete_groups", 0))
+            render_bme_chart_conclusion(
+                f"{scope_conclusion_cn}本期 {len(chart)} 个完整子组，发现 {mean_signals + range_signals} 个 SPC 异常子组，{below_lsl} 个单件结果低于 200 kgf 规格。请优先回查异常子组的试验批次和测试条件。",
+                f"{scope_conclusion_en}This period has {len(chart)} complete subgroups, {mean_signals + range_signals} SPC signal subgroups, and {below_lsl} individual results below the 200 kgf specification. Review the related test batches and conditions first.",
+            )
+            render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # I-MR and p charts already contain the measured trend, so a second trend
+    # chart would repeat the same signal. Keep it only for X-bar/R, where the
+    # SPC view is based on subgroup averages rather than individual results.
+    if not selected_machine_data.empty and method == "xbar":
+        parameter_view = selected_machine_data.copy()
+        parameter_view = parameter_view[
+            parameter_view.get(
+                "data_quality_flag", pd.Series("", index=parameter_view.index)
+            ).fillna("").astype(str).eq("")
+        ].copy()
+        parameter_view["time"] = pd.to_datetime(parameter_view["event_timestamp"], errors="coerce").fillna(
+            pd.to_datetime(parameter_view["date"], errors="coerce")
+        )
+        parameter_view = parameter_view.sort_values(["time", "source_row"], na_position="last")
+        render_chart_heading(
+            "同一过程的实测趋势",
+            "Measured Trend for the Same Process",
+            "查看上方 SPC 所选过程的实测值，并与源规格直接比较。",
+            "Review measurements for the process selected in the SPC chart against source specifications.",
+            "横轴是时间，纵轴是实测值；橙色虚线是源数据中的规格上下限。",
+            "The x-axis is time and the y-axis is the measured value; orange dashed lines are source specification limits.",
+            f"{machine_scope_note_cn}本图与上方 SPC 共用一个过程选择，不再使用第二套筛选。只显示源数据已有的规格；疑似录入错误不进入趋势和规格超限判断。",
+            f"{machine_scope_note_en} This chart shares the process selector above. It shows source specifications only, and suspected data-entry errors are excluded from the trend and specification-breach check.",
+            bme_chart_source(parameter_view),
+            "bme_v6_parameter_trend_info",
+        )
+        unit_text = next((str(value) for value in parameter_view["unit"].dropna().astype(str) if value.strip()), "")
+        parameter_fig = px.line(
+            parameter_view,
+            x="time",
+            y="measured_value",
+            markers=True,
+            hover_data={
+                "supplier": True,
+                "model_item_code": True,
+                "item_name": True,
+                "process": True,
+                "order_po": True,
+                "trace_number": True,
+                "comments": True,
+                "unit": True,
+                "time": "|%Y-%m-%d %H:%M",
+                "measured_value": ":.2f",
+            },
+            labels={
+                "time": t("时间", "Time"),
+                "measured_value": t(f"实测值（{unit_text}）" if unit_text else "实测值", f"Measured Value ({unit_text})" if unit_text else "Measured Value"),
+                "supplier": t("供应商", "Supplier"),
+                "model_item_code": t("型号 / 料号", "Model / Item Code"),
+                "item_name": t("产品", "Product"),
+                "process": t("工序 / 参数", "Process / Parameter"),
+                "order_po": t("工单 / PO", "Order / PO"),
+                "trace_number": t("追溯号", "Trace Number"),
+                "comments": t("备注", "Comments"),
+                "unit": t("单位", "Unit"),
+            },
+            color_discrete_sequence=[BME_COLORS["primary"]],
+        )
+        if parameter_view["spec_low"].notna().any():
+            parameter_fig.add_hline(y=float(parameter_view["spec_low"].dropna().iloc[0]), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL")
+        if parameter_view["spec_high"].notna().any():
+            parameter_fig.add_hline(y=float(parameter_view["spec_high"].dropna().iloc[0]), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL")
+        parameter_fig.update_layout(height=410, margin=dict(l=20, r=25, t=25, b=40), showlegend=False)
+        apply_bme_chart_style(parameter_fig)
+        parameter_fig.update_xaxes(tickangle=0)
+        parameter_fig.update_yaxes(title_text=None, tickangle=0)
+        measured_min = float(parameter_view["measured_value"].min())
+        measured_max = float(parameter_view["measured_value"].max())
+        limits_available = parameter_view["spec_low"].notna().any() or parameter_view["spec_high"].notna().any()
+        render_bme_chart_conclusion(
+            f"{'' if machine_scope_linked or not has_product_context else '本图为全厂高风险过程，不代表上方所选款式。'}本期 {len(parameter_view):,} 个实测点，范围 {measured_min:,.2f}–{measured_max:,.2f}{'；已与源规格对比' if limits_available else '；源数据没有规格，只能查看变化'}。",
+            f"{'' if machine_scope_linked or not has_product_context else 'This is a factory-wide high-risk process and does not represent the product selected above. '}This period has {len(parameter_view):,} measurements ranging from {measured_min:,.2f} to {measured_max:,.2f}{'; source specifications are shown' if limits_available else '; source specifications are unavailable, so only the trend is shown'}.",
+        )
+        render_unified_plotly(parameter_fig, use_container_width=True, config={"displayModeBar": False})
+
+    st.session_state.pop("_active_spc_scope", None)
 
 
 def render_bme_bike_quality_dashboard_v3(
@@ -16798,938 +17855,7 @@ def render_bme_bike_quality_dashboard_v3(
                 st.plotly_chart(defect_fig, use_container_width=True, config={"displayModeBar": False})
 
     # Problem drill-down is no longer a visible BME module. Keep SPC in a
-    # factory-wide context instead of inheriting an invisible product choice.
-    selected_product_key = ""
-    selected_product_supplier = ""
-    selected_product_display = ""
-    has_product_context = False
-
-    st.markdown('<div id="bme-spc" class="bme-section-anchor"></div>', unsafe_allow_html=True)
-    st.header(t("Machine Data（CMW / TEKTRO）", "Machine Data (CMW / TEKTRO)"))
-    spc_heading_slot = st.empty()
-    selected_machine_label = ""
-    selected_machine_data = pd.DataFrame()
-    machine_scope_linked = False
-    machine_scope_note_cn = ""
-    machine_scope_note_en = ""
-    method_options: dict[str, tuple[str, pd.DataFrame]] = {}
-    for keys, group in cmw_torque.groupby(
-        ["model_item_code", "item_name", "process", "spec_low", "spec_high", "unit"],
-        dropna=False,
-    ):
-        if len(group) >= 5:
-            product_name = str(keys[1]).strip() if pd.notna(keys[1]) and str(keys[1]).strip() else str(keys[0])
-            label = f"CMW · I-MR · {product_name} · {keys[2]} · {keys[3]}–{keys[4]} {keys[5]}"
-            method_options[label] = ("imr", group)
-    tektro_pqc = view[(view["supplier"].eq("TEKTRO")) & (view["stage"].eq("PQC")) & view["measured_value"].notna()]
-    for keys, group in tektro_pqc.groupby(["model_item_code", "family", "order_po"], dropna=False):
-        if len(group) >= 5:
-            label = f"TEKTRO · I-MR 稳定性 · {keys[0]} · {keys[1]} · {keys[2]}"
-            method_options[label] = ("imr_stability", group)
-    tektro_lab = view[(view["supplier"].eq("TEKTRO")) & (view["stage"].eq("LAB")) & view["measured_value"].notna()]
-    if len(tektro_lab) >= 5:
-        method_options[t("TEKTRO · 拔脱力 · X̄-R（n=5）", "TEKTRO · Pull-out Force · X̄-R (n=5)")] = ("xbar", tektro_lab)
-    if not method_options:
-        with spc_heading_slot.container():
-            render_chart_heading(
-                "SPC（统计过程控制）", "SPC & Attribute Control",
-                "SPC 用连续数据判断生产过程是否稳定，帮助发现突然变化、持续偏移和需要回查的时间点。",
-                "Assess process stability and identify sudden changes, sustained shifts, and points requiring investigation.",
-                "先选择一个过程。控制图中的红点提示异常变化，但不等于产品一定不合格。",
-                "Select a process first. Red points indicate unusual process changes, not necessarily nonconforming products.",
-                "只有满足最小样本要求的同质过程才会进入选择列表。",
-                "Only homogeneous processes meeting the minimum sample requirement appear in the selector.",
-                "BME Database", "bme_v4_spc_info_empty",
-            )
-        st.info(t("当前筛选没有满足最小样本要求的 SPC 数据。", "No SPC source meets the minimum sample requirement under current filters."))
-    else:
-        spc_risk_summaries = {
-            label: summarize_spc_process_risk(method, data)
-            for label, (method, data) in method_options.items()
-        }
-
-        def spc_risk_key(label: str) -> tuple[float, float, float, float]:
-            summary = spc_risk_summaries[label]
-            specification_breaches = int(summary["specification_breaches"])
-            signal_events = int(summary["signal_count"])
-            stable = summary["stable"]
-            stability_rank = 0.0 if stable is False else 1.0 if stable is True else 2.0
-            capability = float(summary["capability"]) if summary["capability"] is not None else 999.0
-            return (
-                0.0 if specification_breaches else 1.0,
-                stability_rank,
-                capability,
-                -float(signal_events),
-            )
-
-        def compact_machine_text(value: object) -> str:
-            return re.sub(r"[^A-Z0-9\u4e00-\u9fff]+", "", str(value or "").upper())
-
-        focus_alias = compact_machine_text(selected_product_key.split("|", 1)[1]) if "|" in selected_product_key else ""
-        cmw_order_item_codes: dict[str, str] = {}
-        cmw_fqc_links = view[
-            view["supplier"].eq("CMW")
-            & view["stage"].isin(["AQL", "DKL"])
-            & view["order_po"].fillna("").astype(str).str.strip().ne("")
-            & view["model_item_code"].fillna("").astype(str).str.strip().ne("")
-        ][["order_po", "model_item_code"]].copy()
-        if not cmw_fqc_links.empty:
-            cmw_fqc_links["order_key"] = cmw_fqc_links["order_po"].map(compact_machine_text)
-            for order_key, order_rows in cmw_fqc_links.groupby("order_key"):
-                item_codes = {
-                    compact_machine_text(value)
-                    for value in order_rows["model_item_code"]
-                    if compact_machine_text(value)
-                }
-                if len(item_codes) == 1:
-                    cmw_order_item_codes[str(order_key)] = next(iter(item_codes))
-
-        def matches_selected_product(label: str) -> bool:
-            if not selected_product_supplier or selected_product_supplier not in {"CMW", "TEKTRO"}:
-                return False
-            if not label.startswith(f"{selected_product_supplier} ·"):
-                return False
-            option_data = method_options[label][1]
-            if selected_product_supplier == "CMW" and focus_alias:
-                option_item_codes = {
-                    cmw_order_item_codes[compact_machine_text(value)]
-                    for value in option_data.get("order_po", pd.Series(dtype=object)).dropna().unique()
-                    if compact_machine_text(value) in cmw_order_item_codes
-                }
-                if focus_alias in option_item_codes:
-                    return True
-            candidates = {
-                compact_machine_text(value)
-                for column in ["model_item_code", "item_name", "family"]
-                for value in option_data.get(column, pd.Series(dtype=object)).dropna().unique()
-                if compact_machine_text(value)
-            }
-            return bool(
-                focus_alias
-                and any(
-                    focus_alias == candidate
-                    or focus_alias in candidate
-                    or (len(candidate) >= 6 and candidate in focus_alias)
-                    for candidate in candidates
-                )
-            )
-
-        ranked_all_methods = sorted(
-            method_options,
-            key=lambda label: (*spc_risk_key(label), -len(method_options[label][1]), label),
-        )
-        linked_methods = [label for label in ranked_all_methods if matches_selected_product(label)]
-        if linked_methods:
-            # Keep the linked product first, while retaining the factory-wide
-            # process list so the matrix can open the same component in other
-            # models for comparison.
-            linked_method_set = set(linked_methods)
-            ranked_methods = linked_methods + [
-                label for label in ranked_all_methods if label not in linked_method_set
-            ]
-            machine_scope_linked = True
-            machine_scope_note_cn = "默认过程已与上方所选产品对应；也可从风险矩阵打开其他车型作比较。"
-            machine_scope_note_en = "The default process is linked to the selected product; the risk matrix can also open another model for comparison."
-        else:
-            linked_method_set = set()
-            ranked_methods = ranked_all_methods
-            machine_scope_note_cn = "当前控制图来自全厂 Machine Data，并按过程风险优先展示。"
-            machine_scope_note_en = "The control chart uses factory-wide Machine Data and prioritizes higher-risk processes."
-            if has_product_context:
-                st.warning(t(
-                    f"{selected_product_display or '所选产品'} 暂无可确认对应的 Machine Data；下面显示全厂高风险过程，不代表该款式。",
-                    f"No reliably linked Machine Data is available for {selected_product_display or 'the selected product'}. The factory-wide high-risk process below does not represent that product.",
-                ))
-
-        focus_signature = f"{selected_product_key or 'ALL'}|{'linked' if machine_scope_linked else 'factory'}"
-        if st.session_state.get("bme_v6_spc_focus") != focus_signature:
-            st.session_state["bme_v6_spc_focus"] = focus_signature
-            st.session_state["bme_v6_spc"] = ranked_methods[0]
-        if st.session_state.get("bme_v6_spc") not in ranked_methods:
-            st.session_state["bme_v6_spc"] = ranked_methods[0]
-
-        def compact_process_label(label: str) -> str:
-            parts = [part.strip() for part in str(label).split("·") if part.strip()]
-            if len(parts) >= 4 and parts[0] == "CMW":
-                parts[3] = torque_component_display_name(
-                    parts[3], "zh" if st.session_state.lang == "中文" else "en"
-                )
-            compact = " · ".join(parts[:4])
-            return compact if len(compact) <= 72 else compact[:71] + "…"
-
-        overview_rows: list[dict[str, object]] = []
-        for label in ranked_methods:
-            summary = spc_risk_summaries[label]
-            specification_breaches = int(summary["specification_breaches"])
-            signal_count = int(summary["signal_count"])
-            if specification_breaches > 0:
-                risk_key = "specification"
-                risk_label = t("规格超限", "Outside Specification")
-            elif signal_count > 0 or summary["stable"] is False:
-                risk_key = "spc"
-                risk_label = t("SPC 需排查", "SPC Investigation")
-            else:
-                continue
-            capability = summary["capability"]
-            overview_rows.append({
-                "full_label": label,
-                "display_label": compact_process_label(label),
-                "risk_key": risk_key,
-                "risk_rank": 0 if risk_key == "specification" else 1,
-                "risk_label": risk_label,
-                "attention_rate": float(summary["attention_rate"]),
-                "signal_display": f"{signal_count:,} / {int(summary['spc_observation_count']):,} ({float(summary['signal_rate']):.1%})",
-                "specification_display": (
-                    f"{specification_breaches:,} / {int(summary['measurement_count']):,} ({float(summary['specification_rate']):.1%})"
-                    if summary["has_specification"]
-                    else t("无产品规格，仅判断过程稳定性", "No product specification; stability only")
-                ),
-                "capability_display": f"{float(capability):.2f}" if capability is not None else "N/A",
-            })
-
-        risk_overview = (
-            pd.DataFrame(overview_rows)
-            .sort_values(["risk_rank", "attention_rate"], ascending=[True, False])
-            .head(10)
-            .reset_index(drop=True)
-            if overview_rows
-            else pd.DataFrame()
-        )
-        cmw_risk_matrix = build_spc_model_component_risk(
-            cmw_torque, spc_risk_summaries
-        )
-        if cmw_risk_matrix.empty and risk_overview.empty:
-            st.markdown(f"#### {t('车型 × 扭力料件风险矩阵', 'Model × Torque Component Risk Matrix')}")
-            st.success(t(
-                "当前筛选范围未发现规格超限或 SPC 异常信号；仍可通过下方过程列表查看全部明细。",
-                "No specification breach or SPC signal was found under the current filters. Use the process selector below to review all details.",
-            ))
-        elif not cmw_risk_matrix.empty:
-            model_count = int(cmw_risk_matrix["model_code"].nunique())
-            component_count = int(cmw_risk_matrix["component"].nunique())
-            recurring_component_count = int(
-                cmw_risk_matrix.loc[
-                    cmw_risk_matrix["recurs_across_models"], "component"
-                ].nunique()
-            )
-            risk_summary_items = [
-                (t("风险车型", "Models with Risk"), f"{model_count:,}", t("规格超限或 SPC 异常", "Specification or SPC risk")),
-                (t("风险扭力料件", "Components at Risk"), f"{component_count:,}", t("按源料件名称匹配", "Exact source names")),
-                (t("跨车型重复料件", "Cross-model Components"), f"{recurring_component_count:,}", t("已观察，不代表预测", "Observed, not forecast")),
-                (t("机器标定风险预测", "Machine Calibration Risk"), t("暂不可计算", "Unavailable"), t("缺少 Machine ID", "Machine ID missing")),
-            ]
-            risk_summary_html = "".join(
-                f'''<div class="bme-risk-summary-item">
-                  <div class="bme-risk-summary-label">{html.escape(label)}</div>
-                  <div class="bme-risk-summary-value" title="{html.escape(value)}">{html.escape(value)}</div>
-                  <div class="bme-risk-summary-note">{html.escape(note)}</div>
-                </div>'''
-                for label, value, note in risk_summary_items
-            )
-            st.markdown(
-                f'''<div class="bme-risk-overview-head">
-                  <div class="bme-risk-overview-copy">
-                    <div class="bme-risk-overview-title">{html.escape(t("车型 × 扭力料件风险矩阵", "Model × Torque Component Risk Matrix"))}</div>
-                    <div class="bme-risk-overview-note">{html.escape(t(
-                        "左侧锁定优先关注对象，右侧按系统查看风险关系。点击风险点可打开下方 SPC 明细。",
-                        "The priority rail focuses attention; the grouped matrix reveals risk relationships. Select a point to open SPC detail below.",
-                    ))}</div>
-                  </div>
-                  <div class="bme-risk-summary-strip">{risk_summary_html}</div>
-                </div>''',
-                unsafe_allow_html=True,
-            )
-
-            component_priority = (
-                cmw_risk_matrix.groupby("component", as_index=False)
-                .agg(
-                    risk_rank=("risk_rank", "min"),
-                    affected_models=("affected_model_count", "max"),
-                    specification_breaches=("specification_breaches", "sum"),
-                    max_attention=("attention_rate", "max"),
-                )
-                .sort_values(
-                    ["risk_rank", "specification_breaches", "affected_models", "max_attention"],
-                    ascending=[True, False, False, False],
-                )
-            )
-            priority_component_order = component_priority.head(15)["component"].tolist()
-            matrix_view = cmw_risk_matrix[
-                cmw_risk_matrix["component"].isin(priority_component_order)
-            ].copy().reset_index(drop=True)
-            group_definitions = {
-                "cockpit": t("操控 / 骑乘", "Cockpit / Contact"),
-                "brake": t("制动系统", "Braking"),
-                "drivetrain": t("传动系统", "Drivetrain"),
-                "chassis": t("轮组 / 车架", "Wheel / Chassis"),
-                "other": t("其他", "Other"),
-            }
-            group_order = list(group_definitions)
-            priority_position = {
-                component: position
-                for position, component in enumerate(priority_component_order)
-            }
-            component_groups = {
-                component: classify_torque_component_group(component)
-                for component in priority_component_order
-            }
-            component_order = sorted(
-                priority_component_order,
-                key=lambda component: (
-                    group_order.index(component_groups[component]),
-                    priority_position[component],
-                ),
-            )
-            matrix_view["component_group"] = matrix_view["component"].map(component_groups)
-            model_priority = (
-                matrix_view.groupby(["model_code", "model_display"], as_index=False)
-                .agg(
-                    risk_rank=("risk_rank", "min"),
-                    specification_breaches=("specification_breaches", "sum"),
-                    risk_components=("component", "nunique"),
-                    max_attention=("attention_rate", "max"),
-                )
-                .sort_values(
-                    ["risk_rank", "specification_breaches", "risk_components", "max_attention"],
-                    ascending=[True, False, False, False],
-                )
-            )
-            model_order = model_priority["model_display"].tolist()
-            matrix_view["risk_label"] = matrix_view["risk_key"].map({
-                "specification": t("规格超限", "Outside Specification"),
-                "spc": t("SPC 需排查", "SPC Investigation"),
-            })
-            matrix_view["recurrence_display"] = np.where(
-                matrix_view["recurs_across_models"],
-                matrix_view["affected_model_count"].map(
-                    lambda count: t(f"已在 {int(count)} 个 Model 观察到", f"Observed in {int(count)} models")
-                ),
-                t("当前仅在该 Model 观察到", "Currently observed only in this model"),
-            )
-            matrix_view["other_models_display"] = matrix_view["other_models"].replace(
-                "", t("当前未观察到其他 Model", "No other model currently observed")
-            )
-            matrix_view["capability_display"] = matrix_view["capability"].map(
-                lambda value: f"{float(value):.2f}" if pd.notna(value) else "N/A"
-            )
-            matrix_view["marker_size"] = 12 + matrix_view["attention_rate"].clip(0, 1) * 8
-            matrix_view["matrix_x"] = matrix_view["component"].map(
-                {component: index for index, component in enumerate(component_order)}
-            )
-            matrix_view["matrix_y"] = matrix_view["model_display"].map(
-                {model: index for index, model in enumerate(model_order)}
-            )
-            risk_overview_chart_key = "bme_spc_risk_overview"
-
-            def sync_spc_from_overview() -> None:
-                event = st.session_state.get(risk_overview_chart_key, {})
-                points = event.get("selection", {}).get("points", []) if isinstance(event, dict) else []
-                if not points:
-                    return
-                customdata = points[0].get("customdata", [])
-                label = str(customdata[0]) if isinstance(customdata, (list, tuple)) and customdata else ""
-                if label in ranked_methods:
-                    st.session_state["bme_v6_spc"] = label
-
-            def risk_customdata(frame: pd.DataFrame) -> np.ndarray:
-                component_display = frame["component"].map(
-                    lambda value: torque_component_display_name(
-                        value, "zh" if st.session_state.lang == "中文" else "en"
-                    )
-                )
-                return np.column_stack([
-                    frame["full_label"], frame["risk_label"], frame["model_code"],
-                    component_display, frame["signal_count"], frame["signal_rate"],
-                    frame["specification_breaches"], frame["measurement_count"],
-                    frame["specification_rate"], frame["recurrence_display"],
-                    frame["other_models_display"], frame["capability_display"],
-                    frame["model_display"],
-                ])
-
-            risk_hovertemplate = (
-                f"<b>Model  %{{customdata[12]}}</b><br>"
-                f"{t('整车料号', 'Model code')}  %{{customdata[2]}}<br>"
-                f"{t('扭力料件', 'Torque component')}  %{{customdata[3]}}<br>"
-                f"{t('风险类型', 'Risk type')}  %{{customdata[1]}}<br>"
-                f"{t('SPC 异常点', 'SPC signals')}  %{{customdata[4]}} (%{{customdata[5]:.1%}})<br>"
-                f"{t('规格超限', 'Specification breaches')}  %{{customdata[6]}} / %{{customdata[7]}} (%{{customdata[8]:.1%}})<br>"
-                f"{t('跨车型观察', 'Cross-model observation')}  %{{customdata[9]}}<br>"
-                f"{t('其他风险车型', 'Other models with risk')}  %{{customdata[10]}}<br>"
-                f"Ppk  %{{customdata[11]}}<extra></extra>"
-            )
-
-            def build_priority_rail(
-                rail_data: pd.DataFrame,
-                order: list[str],
-                *,
-                index_column: str,
-                count_column: str,
-                height: int,
-            ) -> go.Figure:
-                counts = (
-                    rail_data.groupby([index_column, "risk_key"])[count_column]
-                    .nunique()
-                    .unstack(fill_value=0)
-                    .reindex(index=order, fill_value=0)
-                )
-                specification = counts.get("specification", pd.Series(0, index=counts.index)).astype(int)
-                spc = counts.get("spc", pd.Series(0, index=counts.index)).astype(int)
-                maximum_total = max(1, int((specification + spc).max()))
-                remainder = (maximum_total - specification - spc).clip(lower=0)
-                def priority_display_label(value: object) -> str:
-                    label = str(value)
-                    if index_column == "component":
-                        label = torque_component_display_name(
-                            label, "zh" if st.session_state.lang == "中文" else "en"
-                        )
-                        return f"{label[:20]}…" if len(label) > 21 else label
-                    compact_model = label.upper().replace(" ", "")
-                    if "EXPL900HD" in compact_model:
-                        return "26” E900HD" if compact_model.startswith("26") else "E900HD"
-                    if "EXPL500" in compact_model:
-                        return "26” E500" if compact_model.startswith("26") else "E500"
-                    if "EXPL900" in compact_model:
-                        return "24” E900" if compact_model.startswith("24") else "E900"
-                    replacements = {"EXPL 100 MULTI": "EXPL 100"}
-                    label = replacements.get(label, label)
-                    return f"{label[:9]}…" if len(label) > 10 else label
-                figure = go.Figure()
-                figure.add_bar(
-                    x=specification,
-                    y=counts.index,
-                    orientation="h",
-                    name=t("规格超限", "Outside specification"),
-                    marker_color=BME_COLORS["alert"],
-                    hovertemplate=f"<b>%{{y}}</b><br>{t('规格风险料件/车型', 'Specification-risk components/models')}  %{{x}}<extra></extra>",
-                )
-                figure.add_bar(
-                    x=spc,
-                    y=counts.index,
-                    orientation="h",
-                    name=t("SPC 需排查", "SPC investigation"),
-                    marker_color=BME_COLORS["fqc"],
-                    hovertemplate=f"<b>%{{y}}</b><br>{t('SPC 风险料件/车型', 'SPC-risk components/models')}  %{{x}}<extra></extra>",
-                )
-                figure.add_bar(
-                    x=remainder,
-                    y=counts.index,
-                    orientation="h",
-                    marker_color="#E4E8F0",
-                    hoverinfo="skip",
-                    showlegend=False,
-                )
-                apply_bme_chart_style(figure)
-                figure.update_layout(
-                    barmode="stack",
-                    height=height,
-                    margin=dict(l=2, r=5, t=1, b=3),
-                    showlegend=False,
-                    bargap=0.63,
-                )
-                figure.update_xaxes(visible=False, fixedrange=True, range=[0, maximum_total])
-                figure.update_yaxes(
-                    categoryorder="array",
-                    categoryarray=order[::-1],
-                    tickmode="array",
-                    tickvals=order,
-                    ticktext=[priority_display_label(value) for value in order],
-                    fixedrange=True,
-                    gridcolor="rgba(0,0,0,0)",
-                    tickfont={"size": 10, "color": "#475467"},
-                    automargin=True,
-                )
-                return figure
-
-            top_models = model_order[:5]
-            top_components = priority_component_order[:5]
-            model_rail_fig = build_priority_rail(
-                matrix_view,
-                top_models,
-                index_column="model_display",
-                count_column="component",
-                height=168,
-            )
-            component_rail_fig = build_priority_rail(
-                matrix_view,
-                top_components,
-                index_column="component",
-                count_column="model_code",
-                height=188,
-            )
-
-            overview_fig = go.Figure()
-            selected_label = st.session_state.get("bme_v6_spc")
-            selected_matrix_row = matrix_view[matrix_view["full_label"].eq(selected_label)]
-            if not selected_matrix_row.empty:
-                overview_fig.add_trace(go.Scatter(
-                    x=selected_matrix_row["matrix_x"],
-                    y=selected_matrix_row["matrix_y"],
-                    mode="markers",
-                    marker={
-                        "size": selected_matrix_row["marker_size"] + 11,
-                        "color": "rgba(255,255,255,0)",
-                        "symbol": "square-open",
-                        "line": {"color": BME_COLORS["primary"], "width": 2.8},
-                    },
-                    hoverinfo="skip",
-                    showlegend=False,
-                ))
-            for risk_key, risk_name, color in [
-                ("specification", t("规格超限", "Outside Specification"), BME_COLORS["alert"]),
-                ("spc", t("SPC 需排查", "SPC Investigation"), BME_COLORS["fqc"]),
-            ]:
-                trace_data = matrix_view[matrix_view["risk_key"].eq(risk_key)].copy()
-                if trace_data.empty:
-                    continue
-                selected_points = np.flatnonzero(
-                    trace_data["full_label"].eq(selected_label).to_numpy()
-                ).tolist()
-                overview_fig.add_trace(go.Scatter(
-                    x=trace_data["matrix_x"],
-                    y=trace_data["matrix_y"],
-                    mode="markers",
-                    name=risk_name,
-                    marker={
-                        "size": trace_data["marker_size"],
-                        "color": color,
-                        "symbol": "square",
-                        "line": {
-                            "width": np.where(trace_data["recurs_across_models"], 2.0, 1.0),
-                            "color": np.where(trace_data["recurs_across_models"], "#7382B8", "rgba(255,255,255,.95)"),
-                        },
-                        "opacity": 0.94,
-                    },
-                    customdata=risk_customdata(trace_data),
-                    hovertemplate=risk_hovertemplate,
-                    selectedpoints=selected_points,
-                    selected={"marker": {"opacity": 1.0, "size": 24}},
-                    unselected={"marker": {"opacity": 0.78}},
-                ))
-
-            for row_index in range(len(model_order)):
-                if row_index % 2 == 0:
-                    overview_fig.add_hrect(
-                        y0=row_index - 0.5,
-                        y1=row_index + 0.5,
-                        fillcolor="#FBFCFE",
-                        line_width=0,
-                        layer="below",
-                    )
-
-            active_groups: list[tuple[str, list[int]]] = []
-            for group_key in group_order:
-                positions = [
-                    index
-                    for index, component in enumerate(component_order)
-                    if component_groups[component] == group_key
-                ]
-                if positions:
-                    active_groups.append((group_key, positions))
-            for group_index, (group_key, positions) in enumerate(active_groups):
-                start, end = min(positions), max(positions)
-                if group_index % 2 == 1:
-                    overview_fig.add_vrect(
-                        x0=start - 0.5,
-                        x1=end + 0.5,
-                        fillcolor="rgba(47,85,199,.018)",
-                        line_width=0,
-                        layer="below",
-                    )
-                overview_fig.add_annotation(
-                    x=(start + end) / 2,
-                    y=1.10,
-                    xref="x",
-                    yref="paper",
-                    text=f"<b>{group_definitions[group_key]} ({len(positions)})</b>",
-                    showarrow=False,
-                    font={"size": 12, "color": BME_COLORS["primary"]},
-                )
-                overview_fig.add_shape(
-                    type="line",
-                    x0=start - 0.42,
-                    x1=end + 0.42,
-                    y0=1.055,
-                    y1=1.055,
-                    xref="x",
-                    yref="paper",
-                    line={"color": "#AEBBEB", "width": 1.4},
-                )
-                if group_index < len(active_groups) - 1:
-                    overview_fig.add_vline(
-                        x=end + 0.5,
-                        line_width=1.1,
-                        line_color="#D3DAEA",
-                        layer="below",
-                    )
-
-            def wrap_component_label(value: str) -> str:
-                language_code = "zh" if st.session_state.lang == "中文" else "en"
-                label = torque_component_display_name(value, language_code)
-                if " / " in label:
-                    return label.replace(" / ", "<br>")
-                if language_code == "en" and len(label) > 16 and " " in label:
-                    words = label.split()
-                    split_at = max(1, len(words) // 2)
-                    return " ".join(words[:split_at]) + "<br>" + " ".join(words[split_at:])
-                if len(label) <= 6:
-                    return label
-                split_at = min(5, max(3, len(label) // 2))
-                return f"{label[:split_at]}<br>{label[split_at:]}"
-
-            apply_bme_chart_style(overview_fig)
-            overview_fig.update_layout(
-                height=max(485, 38 * len(model_order) + 135),
-                margin=dict(l=5, r=5, t=66, b=94),
-                clickmode="event+select",
-                showlegend=False,
-                hovermode="closest",
-            )
-            overview_fig.update_xaxes(
-                title_text=t("扭力料件（风险优先 Top 15）", "Torque Component (Risk-priority Top 15)"),
-                tickmode="array",
-                tickvals=list(range(len(component_order))),
-                ticktext=[wrap_component_label(component) for component in component_order],
-                tickangle=0,
-                range=[-0.55, len(component_order) - 0.45],
-                fixedrange=True,
-                automargin=True,
-                gridcolor="#EEF1F6",
-                tickfont={"size": 10, "color": "#667085"},
-            )
-            overview_fig.update_yaxes(
-                title_text="",
-                tickmode="array",
-                tickvals=list(range(len(model_order))),
-                ticktext=model_order,
-                range=[len(model_order) - 0.45, -0.55],
-                fixedrange=True,
-                automargin=True,
-                gridcolor="#EEF1F6",
-            )
-            with st.container(key="bme_spc_risk_workspace"):
-                priority_column, matrix_column = st.columns(
-                    [0.20, 0.80], gap="medium", vertical_alignment="top"
-                )
-                with priority_column:
-                    st.markdown(
-                        f'<div class="bme-risk-rail-heading">{html.escape(t("优先关注", "Priority Rail"))}'
-                        f'<span>TOP 5</span></div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(
-                        f'<div class="bme-risk-rail-subtitle">{html.escape(t("高风险车型", "Models requiring attention"))}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.plotly_chart(
-                        model_rail_fig,
-                        use_container_width=True,
-                        config={"displayModeBar": False, "staticPlot": False},
-                        key="bme_spc_priority_models",
-                    )
-                    st.markdown(
-                        f'<div class="bme-risk-rail-subtitle">{html.escape(t("高风险扭力料件", "Torque components requiring attention"))}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.plotly_chart(
-                        component_rail_fig,
-                        use_container_width=True,
-                        config={"displayModeBar": False, "staticPlot": False},
-                        key="bme_spc_priority_components",
-                    )
-                with matrix_column:
-                    st.markdown(
-                        f'''<div class="bme-risk-matrix-heading">
-                          <div class="bme-risk-matrix-title">{html.escape(t("分组风险矩阵", "Grouped Risk Matrix"))}</div>
-                          <div class="bme-risk-legend">
-                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch specification"></i>{html.escape(t("规格超限", "Outside specification"))}</span>
-                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch"></i>{html.escape(t("SPC 需排查", "SPC investigation"))}</span>
-                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch recurrence"></i>{html.escape(t("跨车型重复", "Cross-model recurrence"))}</span>
-                            <span class="bme-risk-legend-item"><i class="bme-risk-legend-swatch selected"></i>{html.escape(t("已选中", "Selected"))}</span>
-                          </div>
-                        </div>''',
-                        unsafe_allow_html=True,
-                    )
-                    st.plotly_chart(
-                        overview_fig,
-                        use_container_width=True,
-                        config={"displayModeBar": False},
-                        key=risk_overview_chart_key,
-                        on_select=sync_spc_from_overview,
-                        selection_mode="points",
-                    )
-        else:
-            st.markdown(f"#### {t('车型 × 扭力料件风险矩阵', 'Model × Torque Component Risk Matrix')}")
-            st.info(t(
-                "当前筛选没有 CMW 车型 × 扭力料件数据；下面保留其他 Machine Data 过程的风险排序。",
-                "No CMW model × torque-component data is available under the current filter; the other Machine Data processes remain ranked below.",
-            ))
-            if not risk_overview.empty:
-                dataframe_with_format(
-                    risk_overview[["display_label", "risk_label", "signal_display", "specification_display", "capability_display"]].rename(columns={
-                        "display_label": t("过程", "Process"), "risk_label": t("风险类型", "Risk Type"),
-                        "signal_display": t("SPC 异常", "SPC Signals"), "specification_display": t("规格超限", "Specification Breaches"),
-                        "capability_display": "Ppk / Ppl",
-                    }),
-                    height=330,
-                )
-
-        with st.container(key="bme_spc_filter"):
-            filter_label, filter_control = st.columns([0.13, 0.87], vertical_alignment="center")
-            with filter_label:
-                st.markdown(f'<div class="bme-spc-filter-label">{html.escape(t("查看过程", "Process"))}</div>', unsafe_allow_html=True)
-            with filter_control:
-                selected_method = st.selectbox(
-                    t(
-                        "选择过程（所选产品优先，可跨车型比较）" if linked_methods else "选择全厂过程（高风险优先）",
-                        "Select a process (selected product first; cross-model comparison available)" if linked_methods else "Select a factory process (high risk first)",
-                    ),
-                    ranked_methods,
-                    key="bme_v6_spc",
-                    label_visibility="collapsed",
-                    format_func=compact_process_label,
-                )
-        if selected_method:
-            machine_scope_linked = selected_method in linked_method_set
-            if machine_scope_linked:
-                machine_scope_note_cn = "当前控制图已与上方所选产品对应。"
-                machine_scope_note_en = "The current control chart is linked to the product selected above."
-            else:
-                machine_scope_note_cn = "当前控制图来自全厂 Machine Data，并按过程风险优先展示。"
-                machine_scope_note_en = "The current control chart uses factory-wide Machine Data and prioritizes higher-risk processes."
-        if not selected_method:
-            method = ""
-            data = pd.DataFrame()
-        else:
-            method, data = method_options[selected_method]
-            selected_machine_label = selected_method
-            selected_machine_data = data.copy()
-        if not method:
-            spc_read_cn = "只有产品标识、供应商和过程数据能够可靠对应时，才显示控制图。"
-            spc_read_en = "A control chart is shown only when product identity, supplier, and process data can be linked reliably."
-            spc_logic_cn = "不会把其他产品的机器数据自动放到所选产品下面。"
-            spc_logic_en = "Machine data from another product is never shown as if it belonged to the selected product."
-        elif method == "imr":
-            spc_read_cn = "图中显示每次扭力实测值：蓝点是实测值，青色 CL 是过程平均值，橙色 USL/LSL 是产品规格上下限。只有红点表示需要调查的异常规律。看到红点后，应先核对对应工单、设备、人员和物料批次，再判断原因；不能只凭红点判定产品报废。"
-            spc_read_en = "The chart shows each measured torque value: blue points are measurements, the teal CL is the process average, and orange USL/LSL lines are product specifications. Only red points indicate patterns requiring investigation. A red point alone does not mean the product must be rejected."
-            spc_logic_cn = "同一车型、产品描述、工序、规格和单位形成同质序列；I-MR 控制限为均值 ± 2.66×平均移动极差，并检查超出 3σ、连续 8 点同侧和连续 6 点单调趋势。疑似录入错误保留在源数据中，但不参与图表、SPC 信号、规格超限、稳定性和默认排序。只有过程稳定、样本不少于 25 且规格完整时才显示 Ppk。"
-            spc_logic_en = "A homogeneous sequence uses the same model, product description, process, specification, and unit. I-MR limits are mean ± 2.66×average moving range, with 3σ, eight-on-one-side, and six-point-trend rules. Suspected data-entry errors remain in the source data but are excluded from the chart, SPC signals, specification breaches, stability, and ranking. Ppk is shown only for a stable process with at least 25 observations and complete specifications."
-        elif method == "imr_stability":
-            spc_read_cn = "图中显示每次实测值是否围绕平均值稳定波动。红点表示过程出现了不寻常的变化，需要回查工单、设备、人员和物料批次。因为源数据没有规格线，这张图只能判断过程是否稳定，不能判断产品是否合格。"
-            spc_read_en = "The chart shows whether measurements vary consistently around the average. Red points require investigation. Because source specifications are unavailable, this chart assesses stability only and cannot judge product conformity."
-            spc_logic_cn = "同一 TEKTRO 型号、油管长度和订单形成一个 I-MR 序列。源数据没有规格，因此只判断过程稳定性，不判 NG，也不计算能力指数。"
-            spc_logic_en = "One I-MR sequence uses the same TEKTRO model, hose length, and order. Source specifications are unavailable, so the chart assesses stability only without NG decisions or capability indices."
-        elif method == "pchart":
-            spc_read_cn = "蓝线是每周 NC率，青色线是整个期间的平均 NC率，灰色 UCL/LCL 是根据每周检验数量自动变化的控制限。只有红点表示该周的不合格率或连续走势异常，需要回查当周产品、人员、工序和物料变化；它不是固定的合格标准。"
-            spc_read_en = "The blue line is weekly NC rate, the teal line is the overall average, and grey UCL/LCL lines are control limits that change with weekly sample size. Only red points indicate an unusual week or trend requiring investigation; they are not fixed acceptance specifications."
-            spc_logic_cn = "按周汇总检验数和 NC 数，中心线为总 NC÷总检验数；每周控制限随当周样本量变化，并应用 3σ、连续 8 点同侧和连续 6 点趋势规则。"
-            spc_logic_en = "Weekly inspected and NC quantities are aggregated. The center line is total NC divided by total inspected; weekly limits vary with sample size and apply the 3σ, eight-on-one-side, and six-point-trend rules."
-        else:
-            spc_read_cn = "上半图 X̄ 看每组5件产品的平均拔脱力是否稳定，下半图 R 看同组5件之间的差异是否突然变大。红点表示组平均值或组内波动异常，应回查对应试验批次和测试条件。橙色 LSL 200 kgf 是产品最低规格，控制限和规格线不能混为一谈。"
-            spc_read_en = "The X̄ chart shows whether each five-piece subgroup average is stable, while the R chart shows whether within-subgroup variation suddenly increases. Red points require batch and test-condition investigation. The orange 200 kgf LSL is the product minimum specification and must not be confused with statistical control limits."
-            spc_logic_cn = "拔脱力按连续 5 件组成子组，使用 A2=0.577、D3=0、D4=2.114 的 X̄-R 控制图；不完整子组不参与控制限估计。只有稳定时才显示单边 PPL。"
-            spc_logic_en = "Pull-out force uses consecutive subgroups of five with X̄-R constants A2=0.577, D3=0, and D4=2.114. Incomplete subgroups are excluded from limit estimation, and one-sided PPL is shown only when stable."
-        if method:
-            spc_logic_cn = f"{machine_scope_note_cn}{spc_logic_cn}"
-            spc_logic_en = f"{machine_scope_note_en} {spc_logic_en}"
-        scope_conclusion_cn = "" if machine_scope_linked or not has_product_context else "本图为全厂高风险过程，不代表上方所选款式。"
-        scope_conclusion_en = "" if machine_scope_linked or not has_product_context else "This is a factory-wide high-risk process and does not represent the product selected above. "
-        with spc_heading_slot.container():
-            render_chart_heading(
-                "SPC（统计过程控制）",
-                "SPC & Attribute Control",
-                "SPC 用连续数据判断生产过程是否稳定，帮助发现突然变化、持续偏移和需要回查的时间点。",
-                "Assess process stability while separating control limits from product specifications.",
-                spc_read_cn,
-                spc_read_en,
-                spc_logic_cn,
-                spc_logic_en,
-                bme_chart_source(data),
-                "bme_v4_spc_info",
-            )
-        if not method:
-            pass
-        elif method.startswith("imr"):
-            chart, limits = build_imr_chart_data(data)
-            chart["spc_time"] = pd.to_datetime(chart["event_timestamp"], errors="coerce").fillna(pd.to_datetime(chart["date"], errors="coerce"))
-            chart["trace_number"] = chart.get("trace_number", pd.Series("", index=chart.index)).fillna("").astype(str).replace("", "-")
-            chart["comments"] = chart.get("comments", pd.Series("", index=chart.index)).fillna("").astype(str).replace("", "-")
-            chart["mr_signal"] = chart["moving_range"].gt(limits.get("mr_ucl", np.inf))
-            chart["spc_event_signal"] = chart.get("signal", False) | chart["mr_signal"]
-            chart["spc_signal_label"] = np.where(chart["spc_event_signal"], t("需要排查", "Investigate"), t("正常波动", "Common-cause variation"))
-            chart_plot = chart[~chart.get("is_data_quality_suspect", pd.Series(False, index=chart.index))].copy()
-            measured_label = t("扭力 / 实测值", "Torque / Measured Value") if method == "imr" else t("实测值", "Measured Value")
-            time_label = t("时间", "Time")
-            hover_template = (
-                f"{time_label}  %{{x|%Y-%m-%d %H:%M}}<br>"
-                f"{t('整车追溯号', 'Bike Trace No.')}  %{{customdata[0]}}<br>"
-                f"{measured_label}  %{{y:.2f}} %{{customdata[1]}}<br>"
-                f"{t('备注', 'Comments')}  %{{customdata[2]}}<br>"
-                f"SPC  %{{customdata[3]}}<extra></extra>"
-            )
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=chart_plot["spc_time"], y=chart_plot["value"], mode="lines+markers", name=t("实测值", "Measured"),
-                marker=dict(color=np.where(chart_plot["spc_event_signal"], BME_COLORS["alert"], BME_COLORS["primary"])),
-                line=dict(color=BME_COLORS["primary"]),
-                customdata=np.column_stack([chart_plot["trace_number"], chart_plot["unit"].fillna(""), chart_plot["comments"], chart_plot["spc_signal_label"]]),
-                hovertemplate=hover_template,
-            ))
-            if limits:
-                line_specs = [
-                    (limits["center"], "CL", BME_COLORS["machine"], "solid", "bottom left"),
-                ]
-                for value, name, color, dash, position in line_specs:
-                    fig.add_hline(y=value, line_color=color, line_dash=dash, annotation_text=name, annotation_position=position)
-            if method == "imr":
-                if data["spec_low"].notna().any(): fig.add_hline(y=float(data["spec_low"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL", annotation_position="top right")
-                if data["spec_high"].notna().any(): fig.add_hline(y=float(data["spec_high"].dropna().median()), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL", annotation_position="bottom right")
-            fig.update_xaxes(title_text=time_label, tickangle=0)
-            fig.update_yaxes(title_text=None, tickangle=0)
-            fig.update_layout(height=430, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
-            apply_bme_chart_style(fig)
-            if limits:
-                signal_count = int(chart_plot["spc_event_signal"].sum())
-                if method == "imr":
-                    below_spec = chart_plot["spec_low"].notna() & chart_plot["value"].lt(chart_plot["spec_low"])
-                    above_spec = chart_plot["spec_high"].notna() & chart_plot["value"].gt(chart_plot["spec_high"])
-                    spec_breaches = int((below_spec | above_spec).sum())
-                    spec_text_cn = f"，{spec_breaches} 个实测值超出产品规格"
-                    spec_text_en = f", and {spec_breaches} measurement{'s' if spec_breaches != 1 else ''} outside product specifications"
-                else:
-                    spec_text_cn = "；源数据没有产品规格，本图只判断过程是否稳定"
-                    spec_text_en = "; source specifications are unavailable, so the chart assesses stability only"
-                render_bme_chart_conclusion(
-                    f"{scope_conclusion_cn}本期 {len(chart_plot):,} 个有效测量点，发现 {signal_count} 个 SPC 异常点{spec_text_cn}。请优先回查红点对应的工单、设备、人员和物料批次。",
-                    f"{scope_conclusion_en}This period has {len(chart_plot):,} valid measurements, {signal_count} SPC signal points{spec_text_en}. Review the related order, equipment, operator, and material batch first.",
-                )
-            else:
-                render_bme_chart_conclusion(
-                    f"当前选择共 {len(chart):,} 个测量点，但有效数据不足以计算控制限；本图只能查看原始变化，不能判断过程稳定性。",
-                    f"The selected scope contains {len(chart):,} measurements, but valid data is insufficient for control limits. The chart shows raw variation only and cannot assess process stability.",
-                )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
-        elif method == "pchart":
-            chart, limits = build_p_chart_data(data)
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=chart["date"], y=chart["rate"], mode="lines+markers", name="NC rate", line=dict(color=BME_COLORS["primary"]), marker=dict(color=np.where(chart["signal"], BME_COLORS["alert"], BME_COLORS["primary"]))))
-            fig.add_trace(go.Scatter(x=chart["date"], y=chart["ucl"], mode="lines", name="UCL", line=dict(color=BME_COLORS["control"], dash="dot")))
-            fig.add_trace(go.Scatter(x=chart["date"], y=chart["lcl"], mode="lines", name="LCL", line=dict(color=BME_COLORS["control"], dash="dot")))
-            fig.add_hline(y=limits["center"], line_color=BME_COLORS["machine"], annotation_text="CL")
-            fig.update_xaxes(tickangle=0)
-            fig.update_yaxes(tickformat=".1%", title_text=None, tickangle=0)
-            fig.update_layout(height=460, margin=dict(l=20, r=20, t=25, b=30), legend=dict(orientation="h"))
-            apply_bme_chart_style(fig)
-            peak = chart.loc[chart["rate"].idxmax()]
-            peak_date = pd.Timestamp(peak["date"]).strftime("%Y-%m-%d")
-            signal_count = int(chart["signal"].sum())
-            render_bme_chart_conclusion(
-                f"{scope_conclusion_cn}本期 {len(chart)} 个检验周期，平均 NC 率 {limits['center']:.2%}，发现 {signal_count} 个 SPC 异常点。最高点为 {peak_date} 的 {peak['rate']:.2%}，请优先回查该周期。",
-                f"{scope_conclusion_en}This period has {len(chart)} inspection periods, an average NC rate of {limits['center']:.2%}, and {signal_count} SPC signal points. The peak is {peak['rate']:.2%} on {peak_date}; review that period first.",
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        else:
-            chart, limits = build_xbar_r_chart_data(data)
-            fig = make_subplots(
-                rows=2,
-                cols=1,
-                shared_xaxes=True,
-                row_heights=[.68, .32],
-                vertical_spacing=.12,
-                subplot_titles=[t("组平均值 X̄", "Subgroup Mean X̄"), t("组内极差 R", "Within-subgroup Range R")],
-            )
-            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["mean"], mode="lines+markers", name="X̄", line=dict(color=BME_COLORS["primary"]), marker=dict(color=np.where(chart["signal"], BME_COLORS["alert"], BME_COLORS["primary"]))), row=1, col=1)
-            fig.add_trace(go.Scatter(x=chart.index + 1, y=chart["range"], mode="lines+markers", name="R", line=dict(color=BME_COLORS["pqc"]), marker=dict(color=np.where(chart["range_signal"], BME_COLORS["alert"], BME_COLORS["pqc"]))), row=2, col=1)
-            for value, name in [(limits["center"], "CL"), (limits["ucl"], "UCL"), (limits["lcl"], "LCL")]: fig.add_hline(y=value, annotation_text=name, line_color=BME_COLORS["machine"] if name == "CL" else BME_COLORS["control"], line_dash="dot" if name != "CL" else "solid", row=1, col=1)
-            fig.add_hline(y=200, annotation_text="LSL", line_color=BME_COLORS["fqc"], line_dash="dash", row=1, col=1)
-            fig.add_hline(y=limits["r_ucl"], annotation_text="R UCL", line_color=BME_COLORS["control"], line_dash="dot", row=2, col=1)
-            fig.update_xaxes(tickangle=0)
-            fig.update_yaxes(title_text=None, tickangle=0)
-            fig.update_layout(height=560, margin=dict(l=20, r=20, t=25, b=25), legend=dict(orientation="h"))
-            apply_bme_chart_style(fig)
-            mean_signals = int(chart["signal"].sum())
-            range_signals = int(chart["range_signal"].sum())
-            below_lsl = int(data["measured_value"].lt(200).sum())
-            incomplete_groups = int(limits.get("incomplete_groups", 0))
-            render_bme_chart_conclusion(
-                f"{scope_conclusion_cn}本期 {len(chart)} 个完整子组，发现 {mean_signals + range_signals} 个 SPC 异常子组，{below_lsl} 个单件结果低于 200 kgf 规格。请优先回查异常子组的试验批次和测试条件。",
-                f"{scope_conclusion_en}This period has {len(chart)} complete subgroups, {mean_signals + range_signals} SPC signal subgroups, and {below_lsl} individual results below the 200 kgf specification. Review the related test batches and conditions first.",
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    # I-MR and p charts already contain the measured trend, so a second trend
-    # chart would repeat the same signal. Keep it only for X-bar/R, where the
-    # SPC view is based on subgroup averages rather than individual results.
-    if not selected_machine_data.empty and method == "xbar":
-        parameter_view = selected_machine_data.copy()
-        parameter_view = parameter_view[
-            parameter_view.get(
-                "data_quality_flag", pd.Series("", index=parameter_view.index)
-            ).fillna("").astype(str).eq("")
-        ].copy()
-        parameter_view["time"] = pd.to_datetime(parameter_view["event_timestamp"], errors="coerce").fillna(
-            pd.to_datetime(parameter_view["date"], errors="coerce")
-        )
-        parameter_view = parameter_view.sort_values(["time", "source_row"], na_position="last")
-        render_chart_heading(
-            "同一过程的实测趋势",
-            "Measured Trend for the Same Process",
-            "查看上方 SPC 所选过程的实测值，并与源规格直接比较。",
-            "Review measurements for the process selected in the SPC chart against source specifications.",
-            "横轴是时间，纵轴是实测值；橙色虚线是源数据中的规格上下限。",
-            "The x-axis is time and the y-axis is the measured value; orange dashed lines are source specification limits.",
-            f"{machine_scope_note_cn}本图与上方 SPC 共用一个过程选择，不再使用第二套筛选。只显示源数据已有的规格；疑似录入错误不进入趋势和规格超限判断。",
-            f"{machine_scope_note_en} This chart shares the process selector above. It shows source specifications only, and suspected data-entry errors are excluded from the trend and specification-breach check.",
-            bme_chart_source(parameter_view),
-            "bme_v6_parameter_trend_info",
-        )
-        unit_text = next((str(value) for value in parameter_view["unit"].dropna().astype(str) if value.strip()), "")
-        parameter_fig = px.line(
-            parameter_view,
-            x="time",
-            y="measured_value",
-            markers=True,
-            hover_data={
-                "supplier": True,
-                "model_item_code": True,
-                "item_name": True,
-                "process": True,
-                "order_po": True,
-                "trace_number": True,
-                "comments": True,
-                "unit": True,
-                "time": "|%Y-%m-%d %H:%M",
-                "measured_value": ":.2f",
-            },
-            labels={
-                "time": t("时间", "Time"),
-                "measured_value": t(f"实测值（{unit_text}）" if unit_text else "实测值", f"Measured Value ({unit_text})" if unit_text else "Measured Value"),
-                "supplier": t("供应商", "Supplier"),
-                "model_item_code": t("型号 / 料号", "Model / Item Code"),
-                "item_name": t("产品", "Product"),
-                "process": t("工序 / 参数", "Process / Parameter"),
-                "order_po": t("工单 / PO", "Order / PO"),
-                "trace_number": t("追溯号", "Trace Number"),
-                "comments": t("备注", "Comments"),
-                "unit": t("单位", "Unit"),
-            },
-            color_discrete_sequence=[BME_COLORS["primary"]],
-        )
-        if parameter_view["spec_low"].notna().any():
-            parameter_fig.add_hline(y=float(parameter_view["spec_low"].dropna().iloc[0]), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="LSL")
-        if parameter_view["spec_high"].notna().any():
-            parameter_fig.add_hline(y=float(parameter_view["spec_high"].dropna().iloc[0]), line_color=BME_COLORS["fqc"], line_dash="dash", annotation_text="USL")
-        parameter_fig.update_layout(height=410, margin=dict(l=20, r=25, t=25, b=40), showlegend=False)
-        apply_bme_chart_style(parameter_fig)
-        parameter_fig.update_xaxes(tickangle=0)
-        parameter_fig.update_yaxes(title_text=None, tickangle=0)
-        measured_min = float(parameter_view["measured_value"].min())
-        measured_max = float(parameter_view["measured_value"].max())
-        limits_available = parameter_view["spec_low"].notna().any() or parameter_view["spec_high"].notna().any()
-        render_bme_chart_conclusion(
-            f"{'' if machine_scope_linked or not has_product_context else '本图为全厂高风险过程，不代表上方所选款式。'}本期 {len(parameter_view):,} 个实测点，范围 {measured_min:,.2f}–{measured_max:,.2f}{'；已与源规格对比' if limits_available else '；源数据没有规格，只能查看变化'}。",
-            f"{'' if machine_scope_linked or not has_product_context else 'This is a factory-wide high-risk process and does not represent the product selected above. '}This period has {len(parameter_view):,} measurements ranging from {measured_min:,.2f} to {measured_max:,.2f}{'; source specifications are shown' if limits_available else '; source specifications are unavailable, so only the trend is shown'}.",
-        )
-        st.plotly_chart(parameter_fig, use_container_width=True, config={"displayModeBar": False})
+    render_unified_spc(events, DashboardScope(start=start_date, end=end_date))
 
     # The current BME product ends after SPC. Historical supplementary and AI
     # sections stay in source for possible future reuse but are not rendered.
@@ -20635,9 +20761,503 @@ def _clear_global_cc_focus(model_filter_key: str) -> None:
     st.session_state[model_filter_key] = ALL_FILTER_VALUE
 
 
+def _safe_ai_value(value):
+    if isinstance(value, dict):
+        return {str(k): _safe_ai_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+        return [_safe_ai_value(v) for v in value]
+    if isinstance(value, (dt.date, dt.datetime, pd.Timestamp, pd.Period, np.datetime64, np.timedelta64)):
+        return str(value)
+    if isinstance(value, (np.integer, np.floating, np.bool_)):
+        value = value.item()
+    if value is None or isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _ai_fingerprint(facts: dict) -> str:
+    return hashlib.sha256(json.dumps(_safe_ai_value(facts), ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def render_chart_ai(facts: dict) -> None:
+    """A small, current-scope explanation below every shared dashboard chart."""
+    community = st.session_state.get("_active_ai_community")
+    if not community:
+        return
+    facts = _safe_ai_value({**facts, "scope": st.session_state.get("_active_spc_scope", st.session_state.get("_unified_scope", {}))})
+    st.session_state.setdefault("_unified_chart_facts", {}).setdefault(community, []).append(facts)
+    fingerprint = _ai_fingerprint({"facts": facts, "language": st.session_state.lang})
+    saved = st.session_state.get("_unified_chart_ai", {}).get(fingerprint)
+    if saved:
+        label, message = t("AI 解读", "AI insight"), saved
+    elif facts.get("empty"):
+        label, message = t("AI 解读 · 数据摘要", "AI insight · Data summary"), t("当前范围没有可用数据，暂不判断趋势、风险或根因。", "No data is available in this scope; trend, risk and root cause cannot be assessed.")
+    else:
+        label = t("AI 解读 · 数据摘要", "AI insight · Data summary")
+        message = facts.get("summary") or t(
+            f"当前筛选显示 {facts.get('points', 0):,} 个数据点。请结合检验数量及源数据口径判断，图表不能单独证明根因。",
+            f"The current selection shows {facts.get('points', 0):,} data points. Review inspection volume and source definitions; the chart alone does not establish a root cause.",
+        )
+    st.markdown(f'<div class="quality-inline-ai"><span class="quality-inline-ai-label">{html.escape(label)}</span>{html.escape(str(message))}</div>', unsafe_allow_html=True)
+
+
+def render_unified_plotly(fig, *args, **kwargs):
+    # Preserve the shared TU/BME palette instead of letting the Streamlit
+    # theme replace explicit Plotly colours on different chart types.
+    kwargs.setdefault("theme", None)
+    kwargs.setdefault("use_container_width", True)
+    result = st.plotly_chart(fig, *args, **kwargs)
+    if not st.session_state.get("_active_ai_community"):
+        return result
+    figures = st.session_state.setdefault("_unified_chart_facts", {}).setdefault(st.session_state["_active_ai_community"], [])
+    chart_id = str(kwargs.get("key") or f"chart_{len(figures)}")
+    traces, points = [], 0
+    for trace in fig.data:
+        x = list(trace.x) if getattr(trace, "x", None) is not None else []
+        y = list(trace.y) if getattr(trace, "y", None) is not None else []
+        points += len(x) * len(y) if trace.type == "heatmap" else max(len(x), len(y))
+        trace_facts = {"name": str(trace.name or ""), "type": trace.type, "x": x[:12] if trace.type == "bar" else x[-24:], "y": y[:12] if trace.type == "bar" else y[-24:]}
+        for field in ("text", "customdata", "z"):
+            value = getattr(trace, field, None)
+            if value is not None:
+                trace_facts[field] = _safe_ai_value(list(value)[:12] if not isinstance(value, str) else value)
+        traces.append(trace_facts)
+    summary = st.session_state.pop("_pending_chart_summary", None)
+    if not summary and len(fig.data) == 1 and getattr(fig.data[0], "mode", "") in {"lines", "lines+markers"}:
+        values = pd.to_numeric(pd.Series(list(fig.data[0].y)), errors="coerce").dropna()
+        if len(values):
+            is_rate = "%" in str(fig.layout.yaxis.tickformat or "")
+            formatter = (lambda v: f"{v:.2%}") if is_rate else (lambda v: f"{v:,.2f}".rstrip("0").rstrip("."))
+            direction = t("上升", "increased") if values.iloc[-1] > values.iloc[0] else t("下降", "decreased") if values.iloc[-1] < values.iloc[0] else t("持平", "unchanged")
+            summary = t(f"当前范围 {len(values)} 个月，首月 {formatter(values.iloc[0])}，末月 {formatter(values.iloc[-1])}，首末比较{direction}。各月按当前筛选汇总，月内样本量变化仍需结合分母判断。", f"The selection covers {len(values)} months: first {formatter(values.iloc[0])}, latest {formatter(values.iloc[-1])}, {direction}. Monthly values aggregate the selection; check the denominator for changes in sample volume.")
+    render_chart_ai({"id": chart_id, "points": points, "traces": traces, "summary": summary, "empty": points == 0, "y_format": str(fig.layout.yaxis.tickformat or "")})
+    return result
+
+
+def render_unified_ai_report(community: str, facts: dict, cards: list[dict], risks: pd.DataFrame) -> None:
+    charts = st.session_state.get("_unified_chart_facts", {}).get(community, [])
+    payload = _safe_ai_value({**facts, "charts": charts, "metrics": cards, "risk_top5": risks.head(5).to_dict("records")})
+    fingerprint = _ai_fingerprint({"facts": payload, "language": st.session_state.lang})
+    reports = st.session_state.setdefault("_unified_reports", {})
+    report = reports.get(fingerprint)
+    with st.container(border=True, key=f"{community.lower()}_overall_ai_report"):
+        st.header(t(f"{community} · AI 总结报告", f"{community} · AI Summary Report"))
+        st.caption(t("报告和图表解读共享当前筛选；更改筛选后会重新读取对应数据摘要。", "The report and chart insights share the current selection. Changing filters replaces the displayed data summary."))
+        api_key = get_qwen_api_key()
+        generate = st.button(t("生成 AI 总结与图表解读", "Generate AI report and chart insights"), key=f"{community.lower()}_generate_unified_ai", type="primary", disabled=not bool(api_key))
+        if generate:
+            try:
+                model = get_secret_value(["QWEN_MODEL"], default="qwen-flash")
+                instruction = (
+                    "你是质量分析助手。只依据给定事实，输出 JSON 对象：overall（约300字的管理报告，含结果、数据缺口和建议），charts（数组，每项含id和text，text为该图约60字的解读）。"
+                    if st.session_state.lang == "中文" else
+                    "You are a quality analyst. Use only the supplied facts. Return a JSON object with overall (a concise management report with findings, gaps and actions) and charts (an array of id and text, one short insight per chart)."
+                )
+                instruction += " Keep chart ids exactly. Do not invent data, infer causation, combine mixed units, treat missing data as zero, or interpret a risk score as defect probability. Customer metrics are N0 export snapshots, not daily time series. SPC uses independent supplier/process filters."
+                with st.spinner(t("正在生成当前范围的 AI 总结…", "Generating insights for this selection…")):
+                    response = post_json(
+                        get_secret_value(["DASHSCOPE_BASE_URL", "QWEN_BASE_URL"], default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"),
+                        {"model": model, "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}], "temperature": 0.1, "max_tokens": 4000, "response_format": {"type": "json_object"}},
+                        {"Authorization": f"Bearer {api_key}"},
+                    )
+                parsed = json.loads(response["choices"][0]["message"]["content"])
+                if not isinstance(parsed.get("overall"), str) or not parsed["overall"].strip():
+                    raise ValueError("Empty AI report")
+                by_id = {str(c.get("id")): c.get("text") for c in parsed.get("charts", []) if isinstance(c, dict) and isinstance(c.get("text"), str)}
+                if any(not by_id.get(chart["id"], "").strip() for chart in charts):
+                    raise ValueError("AI report is missing chart insights")
+                reports[fingerprint] = {"text": parsed["overall"], "generated_at": beijing_timestamp(), "model": model}
+                cache = st.session_state.setdefault("_unified_chart_ai", {})
+                for chart in charts:
+                    if by_id.get(chart["id"]):
+                        cache[_ai_fingerprint({"facts": chart, "language": st.session_state.lang})] = by_id[chart["id"]]
+                st.rerun()
+            except Exception:
+                st.warning(t("AI 服务暂时未返回有效报告，保留当前数据摘要；可以稍后重试。", "The AI service did not return a valid report. The current data summary is retained; try again later."))
+        if report:
+            st.markdown(report["text"])
+            st.caption(f"{report['model']} · {report['generated_at']} · " + t("当前筛选快照", "Current selection snapshot"))
+        else:
+            st.markdown(t("**当前数据摘要**", "**Current data summary**"))
+            for card in cards:
+                st.markdown(f"- **{card['label']}：{card['value']}** — {card.get('note', '')}")
+            if not risks.empty:
+                top = risks.sort_values("risk_score", ascending=False).iloc[0]
+                st.markdown(t(f"优先复核 CC **{top['cc']}**（风险分 **{top['risk_score']:.1f}**），结合对应原始检验记录确认问题范围。", f"Review CC **{top['cc']}** first (risk score **{top['risk_score']:.1f}**), using source inspection records to confirm the affected scope."))
+            st.caption(t("以上为当前数据摘要。生成 AI 报告后，这里显示管理总结，每张图下显示对应的 AI 解读。", "This is the current data summary. Generating an AI report adds the management report here and an AI insight below each chart."))
+
+
+@st.cache_data(show_spinner=False)
+def load_unified_zx_iv(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.DataFrame:
+    path = ROOT / FACTORIES["ZX"]["intern_voice_file"]
+    if not path.exists():
+        return pd.DataFrame(columns=["date", "case_id", "product_code", "model_code", "responsibility_stage"])
+    frames = []
+    with pd.ExcelFile(path, engine="openpyxl") as workbook:
+        for sheet_name in workbook.sheet_names:
+            raw = pd.read_excel(workbook, sheet_name=sheet_name)
+            if "FEEDBACK No." not in raw:
+                continue
+            models = raw.get("MODEL CODE", pd.Series("", index=raw.index)).map(extract_decathlon_model)
+            frames.append(pd.DataFrame({
+                "date": pd.to_datetime(raw.get("CREATED DATE"), errors="coerce"),
+                "case_id": identifiers(raw["FEEDBACK No."]),
+                "model_code": models,
+                "product_code": models.map(load_zx_production_model_cc_map(cache_version)).fillna(""),
+                "product_name": raw.get("MODEL NAME", ""),
+                "responsibility_stage": raw.get("Before or after Sales", ""),
+            }))
+    return pd.concat(frames, ignore_index=True).loc[lambda d: d["case_id"].ne("")].drop_duplicates(["case_id", "model_code"]) if frames else pd.DataFrame()
+
+
+def _unified_filter_options(frame: pd.DataFrame, column: str) -> list[str]:
+    if column not in frame:
+        return []
+    return sorted(set(identifiers(frame[column])) - {"", "Unrecorded", "未记录", "nan"})
+
+
+def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, fsd_fqc, fsd_rpm, fsd_mapping) -> DashboardScope:
+    default = ["BME"] if get_active_scope_key() == "BME_CMW" else ["TU"]
+    if "quality_communities" not in st.session_state:
+        st.session_state["quality_communities"] = default
+    if st.session_state.get("_unified_url_scope") != get_active_scope_key():
+        st.session_state["quality_communities"] = default
+        st.session_state["_unified_url_scope"] = get_active_scope_key()
+
+    def reset_filters():
+        for key in ["quality_suppliers", "quality_ccs", "quality_models", "quality_stages", "quality_owners"]:
+            st.session_state[key] = []
+        st.session_state["quality_period"] = "R12M"
+
+    def switch_community():
+        choices = st.session_state.get("quality_communities", [])
+        target = "BME_CMW" if choices == ["BME"] else "ZX"
+        st.query_params["scope"] = target
+        st.session_state["_unified_url_scope"] = target
+        for key in ["quality_suppliers", "quality_ccs", "quality_models"]:
+            st.session_state[key] = []
+
+    def switch_language():
+        st.session_state.lang = st.session_state["quality_language"]
+        lang = "en" if st.session_state.lang == "English" else "zh"
+        st.query_params["lang"] = lang
+        st.session_state._language_query_seen = lang
+
+    def multi_filter(label, options, key, format_func=None, on_change=None):
+        selected = [v for v in st.session_state.get(key, []) if v in options]
+        st.session_state[key] = selected
+        suffix = t("全部", "All") if not selected else str(len(selected)) + t(" 项", " selected")
+        if key == "quality_communities":
+            suffix = " / ".join(selected) if selected else t("未选择", "None")
+        with st.popover(f"{label} · {suffix}", icon=":material/filter_alt:", use_container_width=True):
+            return st.multiselect(label, options, key=key, format_func=format_func or str, on_change=on_change, placeholder=t("全部（可多选）", "All (multi-select)"))
+
+    with st.container(key="quality_unified_filter"):
+        brand, language = st.columns([0.78, 0.22], vertical_alignment="center")
+        with brand:
+            st.markdown('<div class="quality-brand">DECATHLON · NEA QUALITY</div><div class="quality-brand-sub">TU / BME · Quality Dashboard</div>', unsafe_allow_html=True)
+        with language:
+            if st.session_state.get("quality_language") != st.session_state.lang:
+                st.session_state["quality_language"] = st.session_state.lang
+            st.segmented_control("Language", ["中文", "English"], key="quality_language", on_change=switch_language, label_visibility="collapsed")
+        st.markdown('<span class="quality-default-view">Default</span>', unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4, gap="small")
+        with c1:
+            communities = multi_filter("Community", ["TU", "BME"], "quality_communities", on_change=switch_community)
+        suppliers = (["ZX"] if "TU" in communities else []) + (_unified_filter_options(bme_events, "supplier") if "BME" in communities else [])
+        with c2:
+            selected_suppliers = multi_filter(t("供应商", "Supplier Code"), suppliers, "quality_suppliers", lambda v: "49425 · ZX" if v == "ZX" else v)
+        tu_visible = "TU" in communities and (not selected_suppliers or "ZX" in selected_suppliers)
+        bme_visible = "BME" in communities and (not selected_suppliers or any(v != "ZX" for v in selected_suppliers))
+        cc_options, model_options = set(), set()
+        if tu_visible:
+            for d, col in [(tu_finished, "product_code"), (tu_voice, "product_code"), (jdy, "cc")]:
+                cc_options.update(code for code in _unified_filter_options(d, col) if normalize_decathlon_cc(code))
+            model_options.update(_unified_filter_options(tu_voice, "model_code"))
+            model_options.update(_unified_filter_options(tu_finished, "model_code"))
+            model_options.update(jdy.get("model", pd.Series(dtype=str)).map(extract_decathlon_model).loc[lambda d: d.ne("")])
+        if bme_visible:
+            d = bme_events if not selected_suppliers else bme_events[bme_events["supplier"].isin(selected_suppliers)]
+            coded = d.loc[d.stage.isin(["IQC", "AQL", "DKL", "LAB"]) & ~(d.supplier.eq("TEKTRO") & d.stage.eq("LAB"))]
+            cc_options.update(_unified_filter_options(coded, "model_item_code"))
+            model_options.update(_unified_filter_options(d, "model_item_code"))
+            if not selected_suppliers or "FSD" in selected_suppliers:
+                cc_options.update(_unified_filter_options(fsd_fqc, "item_code"))
+                model_options.update(_unified_filter_options(fsd_rpm, "product_code"))
+        with c3:
+            ccs = multi_filter("CC", sorted(cc_options), "quality_ccs")
+        if ccs and tu_visible and not bme_visible:
+            model_options = {m for m in model_options if load_zx_production_model_cc_map(DATA_SCOPE_CACHE_VERSION).get(m) in ccs}
+        with c4:
+            models = multi_filter("Model", sorted(model_options), "quality_models")
+        dated = []
+        for visible, frames in [(tu_visible, [tu_finished, tu_incoming, jdy]), (bme_visible, [bme_events])]:
+            if visible:
+                for frame in frames:
+                    if "date" in frame:
+                        dated.extend(business_dates(frame["date"]).dropna().tolist())
+        today = dt.date.today()
+        eligible = [d.date() for d in dated if d.date() <= today]
+        anchor = max(eligible) if eligible else today
+        with st.container(key="quality_filter_details"):
+            p1, p2, p3, p4 = st.columns(4, gap="small")
+            with p1:
+                period = st.selectbox(t("日期周期", "Period"), ["R12M", "YTD", "Custom"], key="quality_period")
+            start = dt.date(anchor.year, 1, 1) if period == "YTD" else (pd.Timestamp(anchor) - pd.DateOffset(years=1) + pd.Timedelta(days=1)).date()
+            end = anchor
+            with p2:
+                if period == "Custom":
+                    dates = st.date_input(t("日期范围", "Date Range"), value=(start, end), key="quality_dates", format="YYYY-MM-DD")
+                    if isinstance(dates, (list, tuple)) and len(dates) == 2:
+                        start, end = dates
+                    else:
+                        st.caption(t("请选择结束日期", "Select an end date"))
+                else:
+                    st.text_input(t("日期范围", "Date Range"), value=f"{start} → {end}", disabled=True, key=f"quality_range_{period}_{start}_{end}")
+            with p3:
+                stages = multi_filter(t("检验阶段", "Inspection Stage"), ["IQC", "PQC", "FQC"], "quality_stages")
+            with p4:
+                owners = multi_filter(t("TU FQC 归属", "TU FQC Owner"), ["Decathlon", "ZX Factory"], "quality_owners")
+        actions, context = st.columns([0.18, 0.82], vertical_alignment="center")
+        with actions:
+            st.button(t("重置筛选", "Reset Filters"), icon=":material/restart_alt:", key="quality_reset_filters", on_click=reset_filters, use_container_width=True)
+        with context:
+            st.markdown(f'<div class="quality-filter-context">{html.escape(t("请先选择 Community；其他字段空选表示全部。同一字段可多选，不同字段同时生效，筛选自动应用。", "Choose a Community. Other empty filters mean all. Multi-select within each field; different fields apply together. Changes apply automatically."))}</div>', unsafe_allow_html=True)
+    return DashboardScope(tuple(communities), tuple(selected_suppliers), tuple(ccs), tuple(models), tuple(stages), tuple(owners), period, start, end)
+
+
+def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFrame:
+    render_chart_heading(
+        "Top 风险 CC 帕累托", "Top Risk CC Pareto",
+        "按聚类风险分定位优先复核的 CC。", "Rank CCs for investigation using cluster risk scores.",
+        "按风险分降序排列，可查看 Top 20% 或全部 CC；BME 使用源 code 作为 CC。", "Descending cluster risk score; choose Top 20% or all CCs. BME retains source codes as CCs.",
+        "直接沿用当前筛选后的聚类结果。Top 20% 数量向上取整，占比为所展示风险分合计 ÷ 全部可计算 CC 风险分合计。", "Reuse the filtered cluster results. Top 20% rounds up; contribution = displayed score sum / total scored CC score sum.",
+        "TU PQC + Customer N0 + IV" if community == "TU" else "BME FSD / CMW Cluster",
+        f"{community.lower()}_unified_pareto_info",
+    )
+    mode = st.segmented_control("CC", ["top", "all"], default="top", format_func=lambda v: "Top 20% CC" if v == "top" else t("全部 CC", "All CC"), key=f"{community.lower()}_risk_pareto_mode", label_visibility="collapsed")
+    ranked, stats = ranked_cc_risk(risks, "cc", "risk_score", top_only=mode != "all")
+    if ranked.empty:
+        st.info(t("当前范围没有具备 CC / code 和聚类风险分的数据。", "No CC/code with a cluster risk score is available in this selection."))
+        render_chart_ai({"id": f"{community.lower()}_risk_pareto_empty", "empty": True})
+        return ranked
+    share = f"{stats['share']:.0%}" if stats["share"] is not None else "—"
+    chip = t(f"{stats['selected']} 个 CC 贡献 {share} 的风险分", f"{stats['selected']} CCs contribute {share} of the risk score")
+    st.markdown(f'<span class="quality-risk-chip">{html.escape(chip)}</span>', unsafe_allow_html=True)
+    fig = px.bar(ranked, x="risk_score", y="cc", orientation="h", text="risk_score", color_discrete_sequence=["#363dc6"], labels={"risk_score": t("风险分", "Risk Score"), "cc": "CC"})
+    fig.update_traces(texttemplate="%{text:.1f}", textposition="outside", cliponaxis=False)
+    fig.update_xaxes(range=[0, max(105, float(ranked.risk_score.max()) * 1.15)])
+    fig.update_yaxes(autorange="reversed", type="category", title_text="CC")
+    fig.update_layout(height=min(1000, max(310, 105 + 50 * len(ranked))), margin=dict(l=15, r=50, t=20, b=40), showlegend=False)
+    apply_bme_chart_style(fig)
+    fig.update_layout(plot_bgcolor="rgba(0,0,0,0)")
+    fig.update_yaxes(showgrid=False, zeroline=False)
+    st.session_state["_pending_chart_summary"] = t(f"当前 {stats['total']} 个可计算 CC 中，展示 {stats['selected']} 个，贡献 {share} 风险分；最高为 {ranked.iloc[0]['cc']}（{ranked.iloc[0]['risk_score']:.1f}）。风险分沿用聚类结果，仅用于调查排序。", f"Showing {stats['selected']} of {stats['total']} scored CCs, contributing {share} of the risk score. Highest: {ranked.iloc[0]['cc']} ({ranked.iloc[0]['risk_score']:.1f}). Cluster scores rank investigations only.")
+    render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{community.lower()}_unified_risk_pareto")
+    return risks
+
+
+def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_cases):
+    st.session_state["_active_ai_community"] = "TU"
+    st.markdown('<div class="quality-community-heading">TU · Textile Unit</div>', unsafe_allow_html=True)
+    st.caption(t("ZX · 中兴（49425）", "ZX · Zhongxing (49425)"))
+    jdy = render_scope_data_map("ZX", finished_all, voice_all, incoming_all, start_date=scope.start, end_date=scope.end, jdy_owners=list(scope.owners) or None)
+    finished = filter_records(finished_all, scope, supplier="ZX")
+    incoming = filter_records(incoming_all, scope, supplier="ZX")
+    jdy = jdy.copy()
+    jdy["product_code"] = jdy.get("cc", pd.Series("", index=jdy.index)).map(normalize_decathlon_cc)
+    jdy["model_code"] = jdy.get("model", pd.Series("", index=jdy.index)).map(extract_decathlon_model)
+    jdy = filter_records(jdy, scope, supplier="ZX")
+    if scope.stages:
+        if "PQC" not in scope.stages:
+            finished = finished.iloc[0:0]
+        if "IQC" not in scope.stages:
+            incoming = incoming.iloc[0:0]
+        if "FQC" not in scope.stages:
+            jdy = jdy.iloc[0:0]
+    customer = select_customer_grain(voice_all, scope)
+    metrics = {**customer_totals(customer), "period": t("源快照 N0", "N0 snapshot")}
+    # A custom calendar range cannot be applied to an undated customer export.
+    if scope.period == "Custom":
+        metrics = {"period": t("自定义期间", "Custom period")}
+    current_iv = count_iv_cases(iv_cases, scope)
+    previous_scope = DashboardScope(scope.communities, scope.suppliers, scope.ccs, scope.models, start=(pd.Timestamp(scope.start) - pd.DateOffset(years=1)).date(), end=(pd.Timestamp(scope.end) - pd.DateOffset(years=1)).date())
+    previous_dates = pd.to_datetime(iv_cases.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce")
+    previous_coverage = previous_dates.between(pd.Timestamp(previous_scope.start), pd.Timestamp(previous_scope.end)).any()
+    previous_iv = count_iv_cases(iv_cases, previous_scope) if previous_coverage else None
+    eol = filter_records(load_zx_pqc_endline_qc(DATA_SCOPE_CACHE_VERSION), scope, supplier="ZX")
+    if scope.stages and "PQC" not in scope.stages:
+        eol = eol.iloc[0:0]
+    cards = build_zx_kpi_cards(finished, customer, jdy, scope.period, customer_metrics=metrics, end_qc=eol, iv_metrics={"current": current_iv, "previous": previous_iv})
+    st.subheader("Problem Card")
+    render_kpi_cards(cards, variant="zx-top")
+    st.caption(t("检验和 IV 使用所选日期；RPM/NQC 使用已接入的 N0 明细快照，按 CC 或 Model 重新汇总。快照没有日期字段，自定义日期时不推算 RPM/NQC。", "Inspections and IV use the selected dates. RPM/NQC are recomputed from the connected N0 snapshot at CC or Model grain. The snapshot has no dates, so custom-period RPM/NQC are unavailable."))
+    risk_voice = customer.iloc[0:0].copy() if scope.period == "Custom" else customer.copy()
+    cases = filter_records(iv_cases, scope, supplier="ZX")
+    cases = cases.loc[cases.get("responsibility_stage", pd.Series("", index=cases.index)).fillna("").str.casefold().str.startswith("before")]
+    if not cases.empty:
+        iv = cases.groupby(["product_code", "model_code", "product_name"], as_index=False).agg(intern_voice_count=("case_id", "nunique"))
+        for name in voice_all.columns:
+            if name not in iv:
+                iv[name] = np.nan
+        iv["factory_code"], iv["factory_name"], iv["supplier"] = "ZX", FACTORIES["ZX"]["name"], FACTORIES["ZX"]["supplier"]
+        iv["product_key"] = iv["product_code"].map(extract_product_key)
+        iv["voice_source"] = "Intern Voice"
+        iv["intern_voice_prev_available"] = False
+        risk_voice = pd.concat([risk_voice, iv], ignore_index=True)
+    settings = current_risk_settings()
+    products = compute_product_summary(finished, risk_voice, settings, include_client_only=True)
+    cluster = render_zx_high_risk_cluster(products, settings, "ZX PQC + Customer N0 + IV", "zx_unified")
+    risks = pd.DataFrame({"cc": cluster.product_code, "risk_score": cluster.cluster_score}) if not cluster.empty else pd.DataFrame(columns=["cc", "risk_score"])
+    risks = render_unified_risk_pareto(risks, "TU")
+    summary, pareto = build_zx_quality_gates(incoming, finished, jdy)
+    render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU")
+    render_unified_spc(pd.DataFrame(), scope, "TU")
+    render_unified_ai_report("TU", {"community": "TU", "scope": scope.facts(), "customer": metrics, "iv": current_iv, "inspected_qty": float(finished.qty_inspected.sum()), "defect_points": float(finished.defect_qty.sum()), "customer_period": "N0 snapshot: source contains no calendar dates", "iqc_scope": "Exception records only; no overall pass-rate denominator"}, cards, risks)
+
+
+def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
+    st.session_state["_active_ai_community"] = "BME"
+    st.markdown('<div class="quality-community-heading">BME · Bike Mobility</div>', unsafe_allow_html=True)
+    with st.expander(t("数据地图", "Data Map"), expanded=False):
+        _render_bme_data_map(events, customer_nc, orders)
+    fqc, rpm, mapping = cluster_inputs
+    links = fsd_item_model_links(mapping, rpm.product_code) if not mapping.empty and not rpm.empty else {}
+    view = filter_records(events, scope, cc_col="model_item_code", model_col="model_item_code", item_models=links)
+    if scope.stages:
+        stage_map = {"AQL": "FQC", "DKL": "FQC"}
+        view = view.loc[view.stage.map(lambda v: stage_map.get(v, v)).isin(scope.stages)]
+    customer = select_fsd_customer(rpm, scope, links) if not rpm.empty else rpm.copy()
+    customer = customer.rename(columns={"returned_qty": "returned_now", "sold_qty": "sold_now"})
+    metrics = customer_totals(customer) if scope.period != "Custom" else {}
+    cards = []
+    cmw = view.loc[view.supplier.eq("CMW") & view.stage.eq("IQC")]
+    if scope.includes_supplier("CMW"):
+        denominator = cmw.inspected_qty.sum()
+        incoming_rpm = float(cmw.defect_qty.sum() / denominator * 1_000_000) if denominator > 0 else np.nan
+        cards.append({"label": t("CMW 来料退货 RPM", "CMW Incoming Return RPM"), "value": num(incoming_rpm, 0) if pd.notna(incoming_rpm) else "—", "note": t("退货数量 ÷ 来料数量 × 1,000,000", "Returned qty / incoming qty × 1,000,000"), "level": "medium"})
+        final = view.loc[view.supplier.eq("CMW") & view.stage.eq("AQL") & view.inspected_qty.gt(0)]
+        rate = final.defect_qty.sum() / final.inspected_qty.sum() if not final.empty else np.nan
+        cards.append({"label": t("CMW FQC NC 率", "CMW FQC NC Rate"), "value": pct(rate) if pd.notna(rate) else "—", "note": t("期间疵点数量 ÷ 检验数量", "Period defect points / inspected qty"), "level": "medium"})
+    if scope.includes_supplier("FSD"):
+        for metric, label, currency in [("rpm_now", "FSD RPM", ""), ("nqc_now", "FSD NQC", "€")]:
+            value = metrics.get(metric)
+            cards.append({"label": label + t("（源快照 N0）", " (N0 snapshot)"), "value": currency + num(value, 0 if metric == "rpm_now" else 2) if value is not None else "—", "note": t("按精确 FSD Item → Model 映射汇总", "Aggregated through exact FSD Item → Model mapping"), "level": "medium"})
+        attr = view.loc[view.supplier.eq("FSD") & view.stage.isin(["AQL", "DKL"]) & view.inspected_qty.gt(0)]
+        rate = attr.defect_qty.sum() / attr.inspected_qty.sum() if not attr.empty else np.nan
+        cards.append({"label": t("FSD 检验 NC 率", "FSD Inspection NC Rate"), "value": pct(rate) if pd.notna(rate) else "—", "note": t("期间不良数量 ÷ 检验数量", "Period NC qty / inspected qty"), "level": "medium"})
+    if scope.includes_supplier("TEKTRO"):
+        lab = view.loc[view.supplier.eq("TEKTRO") & view.stage.eq("LAB") & view.inspected_qty.gt(0) & view.spec_low.notna()]
+        rate = lab.defect_qty.sum() / lab.inspected_qty.sum() if not lab.empty else np.nan
+        cards.extend([
+            {"label": t("TEKTRO 零部件 RPM", "TEKTRO Component RPM"), "value": "—", "note": t("缺少订单量分母", "Order denominator unavailable"), "level": "medium"},
+            {"label": t("TEKTRO LAB 检验 NC 率", "TEKTRO LAB Inspection NC Rate"), "value": pct(rate) if pd.notna(rate) else "—", "note": t("按源检验规格判断", "Assessed against source inspection specifications"), "level": "medium"},
+        ])
+    cards.append({"label": "BME IV", "value": "—", "note": t("暂无可关联 CC / Model 的 IV 数据源", "No IV source linked to CC / Model"), "level": "medium"})
+    st.subheader("Problem Card")
+    render_kpi_cards(cards, variant="bme-overall")
+    st.caption(t("RPM 统一为每百万件口径；客户 RPM/NQC 使用 N0 快照及精确 CC → Model 映射，关联的同一 Model 只计一次。源净销量包含正负调整，总销量非正时不计算 RPM。自定义期间不推算无日期快照。", "RPM uses a per-million basis. Customer RPM/NQC use the N0 snapshot and exact CC → Model mapping; each model is counted once. Net sales retain signed source adjustments; RPM requires a positive total denominator. Undated snapshots cannot be estimated for custom dates."))
+    risks = []
+    if scope.includes_supplier("FSD") and not fqc.empty:
+        scoped_fqc = filter_records(fqc, scope, supplier="FSD", cc_col="item_code", model_col="model_code", item_models=links)
+        if scope.stages and "FQC" not in scope.stages:
+            scoped_fqc = scoped_fqc.iloc[0:0]
+        # Code is the displayed BME CC. The cluster and Pareto share this grain
+        # and the same scores, rather than assigning family scores to each item.
+        scoped_fqc["family"] = scoped_fqc["item_code"]
+        cluster_rpm = customer.rename(columns={"returned_now": "returned_qty", "sold_now": "sold_qty"})
+        if scope.period == "Custom":
+            cluster_rpm = cluster_rpm.iloc[0:0]
+        analysis, meta = build_fsd_rpm_cluster_analysis(scoped_fqc, cluster_rpm, mapping, scope.start, scope.end)
+        render_fsd_rpm_cluster_analysis(analysis, meta)
+        if not analysis.empty:
+            risks.append(analysis.rename(columns={"fsd_model": "cc", "priority_score": "risk_score"})[["cc", "risk_score"]])
+    if scope.includes_supplier("CMW"):
+        clusters = render_cmw_product_cluster_analysis(view.loc[view.supplier.eq("CMW")])
+        if not clusters.empty:
+            # Source keys contain the code used by the cluster. Retain gate
+            # qualification because different gates lack a lifecycle bridge.
+            master = build_bme_product_master(view.loc[view.supplier.eq("CMW")])
+            native_codes = {}
+            for key, rows in master.groupby(["quality_gate", "product_key"]):
+                # CMW PQC records carry Model names, not item/CC codes. Keep
+                # those objects in the cluster, but do not relabel names as CC.
+                if key[0] not in {"IQC", "FQC"}:
+                    continue
+                codes = set(identifiers(rows.model_item_code)) - {"", "Unrecorded", "未记录"}
+                if len(codes) == 1:
+                    native_codes[key] = next(iter(codes))
+            cmw_risk = clusters.copy()
+            cmw_risk["cc"] = [native_codes.get((row.quality_gate, row.product_key), "") for row in cmw_risk.itertuples()]
+            cmw_risk = cmw_risk.loc[cmw_risk.cc.ne("")].copy()
+            cmw_risk["cc"] = cmw_risk["cc"] + " · " + cmw_risk.quality_gate
+            risks.append(cmw_risk[["cc", "risk_score"]])
+    risk_table = pd.concat(risks, ignore_index=True) if risks else pd.DataFrame(columns=["cc", "risk_score"])
+    render_unified_risk_pareto(risk_table, "BME")
+    if scope.includes_supplier("CMW"):
+        st.caption(t("CMW PQC 源只有车型名称，尚无可核对的 code；保留在聚类中，暂不进入 CC 排序。IQC/FQC 的 code 保留环节标记。", "CMW PQC has Model names without auditable item codes: these remain in the cluster and are excluded from CC ranking. IQC/FQC codes retain gate labels."))
+    fingerprint = bme_source_fingerprint(ROOT)
+    for supplier, kind, loader in [("CMW", "FG", load_fg_quality_analysis_cached), ("FSD", "CPT", load_cpt_quality_analysis_cached)]:
+        if not scope.includes_supplier(supplier):
+            continue
+        summary, pareto = loader(fingerprint, _BME_QUALITY_LOGIC_VERSION)
+        # CPT is the source's category label; FSD is its supplier in the toolbar.
+        summary = filter_records(summary, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
+        pareto = filter_records(pareto, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
+        if scope.stages:
+            summary = summary.loc[summary.stage.isin(scope.stages)]
+            pareto = pareto.loc[pareto.stage.isin(scope.stages)]
+        render_quality_gate_analysis(summary, pareto, ["CMW"] if supplier == "CMW" else ["CPT"], scope.start, scope.end, analysis_kind=kind)
+    # SPC intentionally receives the full source, with date filters only.
+    render_unified_spc(events, scope, "BME")
+    with st.expander(t("更多分析 · 返工与明细", "More Analysis · Rework and Detail"), expanded=False):
+        rework_tab, detail_tab = st.tabs([t("返工状态", "Rework Status"), t("可审计明细", "Auditable Detail")])
+        with rework_tab:
+            rework = view.loc[view.stage.eq("REWORK")]
+            if rework.empty:
+                st.info(t("当前筛选没有返工数据。", "No rework data under the current filters."))
+            else:
+                st.caption(t("保留源处理状态，未记录的状态不推断为已关闭。", "Source workflow statuses are retained; missing status is not inferred as closed."))
+                dataframe_with_format(rework[["supplier", "date", "order_po", "model_item_code", "item_name", "issue_driver", "status", "source_file"]], height=350)
+        with detail_tab:
+            columns = ["supplier", "stage", "date", "order_po", "model_item_code", "item_name", "process", "issue_driver", "inspected_qty", "defect_qty", "result", "spec_text", "measured_value", "status", "metric_scope", "source_file", "source_sheet", "source_row"]
+            dataframe_with_format(view[columns].sort_values("date", ascending=False), height=450)
+            st.download_button(t("下载当前 BME 明细", "Download Current BME Detail"), view[columns].to_csv(index=False).encode("utf-8-sig"), file_name=f"BME_quality_detail_{dt.date.today():%Y%m%d}.csv", mime="text/csv", key="bme_unified_detail_export")
+    render_unified_ai_report("BME", {"community": "BME", "scope": scope.facts(), "customer": metrics, "source_rows": len(view), "customer_period": "N0 snapshot: source contains no calendar dates", "iv": None, "spc": "Independent supplier/process filters; stability is distinct from product conformity"}, cards, risk_table)
+
+
+def render_unified_dashboard():
+    st.markdown(f"<style>{(ROOT / 'unified_dashboard.css').read_text()}</style>", unsafe_allow_html=True)
+    st.session_state["_unified_chart_facts"] = {}
+    with st.spinner(t("正在读取质量数据…", "Loading quality data…")):
+        finished, voice, incoming = load_all_data(DATA_SCOPE_CACHE_VERSION, ("ZX",))
+        finished = finished.copy()
+        finished["product_code"] = finished.product_code.map(normalize_decathlon_cc)
+        finished["model_code"] = finished.product_label.map(extract_decathlon_model)
+        jdy, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+        fingerprint = bme_source_fingerprint(ROOT)
+        events = load_bme_quality_events_cached(fingerprint, _BME_QUALITY_LOGIC_VERSION)
+        nc, orders = load_bme_customer_quality_cached(fingerprint, _BME_QUALITY_LOGIC_VERSION)
+        fqc, rpm, mapping = load_fsd_rpm_cluster_inputs_cached(fingerprint, _BME_QUALITY_LOGIC_VERSION)
+        iv = load_unified_zx_iv(DATA_SCOPE_CACHE_VERSION)
+    scope = render_unified_filters(finished, voice, incoming, jdy, events, fqc, rpm, mapping)
+    st.session_state["_unified_scope"] = scope.facts()
+    if not scope.communities:
+        st.info(t("请选择 TU 或 BME 查看质量分析。", "Select TU or BME to view quality analysis."))
+    if "TU" in scope.communities:
+        render_unified_tu(scope, finished, voice, incoming, jdy, iv)
+    if "BME" in scope.communities:
+        render_unified_bme(scope, events, nc, orders, (fqc, rpm, mapping))
+    st.session_state.pop("_active_ai_community", None)
+
+
 # ==========================================
-# 5. Load data and sidebar filters
+# 5. Unified dashboard entry; legacy routes remain available for hidden scopes.
 # ==========================================
+if get_active_scope_key() in {"ZX", "BME_CMW"}:
+    render_unified_dashboard()
+    st.stop()
+
 active_scope_key = get_active_scope_key()
 if active_scope_key == "ZX" and get_active_zx_page(active_scope_key) == "alert":
     # Backward-compatible alias for shared/bookmarked ZX Alert links.
