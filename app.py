@@ -12204,8 +12204,9 @@ def render_tu_jiandaoyun_ytd_cp(
 @st.cache_data(show_spinner=False)
 def load_zx_pqc_endline_qc(
     cache_version: int = DATA_SCOPE_CACHE_VERSION,
+    source_stamp: tuple[int, int] | None = None,
 ) -> pd.DataFrame:
-    _ = cache_version
+    _ = (cache_version, source_stamp)
     path = ROOT / FACTORIES["ZX"]["pqc_endline"]
     if not path.exists():
         return pd.DataFrame(columns=["date", "qty_inspected", "defect_qty", "source_file"])
@@ -12245,6 +12246,9 @@ def build_zx_kpi_cards(
     eol_trend_note = t(
         f"Excel · 检验 {compact_num(eol_qty)} / 疵点 {compact_num(eol_defects)}",
         f"Excel · inspected {compact_num(eol_qty)} / defects {compact_num(eol_defects)}",
+    ) if eol_qty > 0 else t(
+        "当前范围缺少有效检验数量，暂不计算 RFT。",
+        "No valid inspection denominator in this selection; RFT is unavailable.",
     )
     if not end_qc.empty and end_qc.get("date", pd.Series(dtype="datetime64[ns]")).notna().any():
         monthly_eol = end_qc.dropna(subset=["date"]).copy()
@@ -21085,7 +21089,10 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
     previous_dates = pd.to_datetime(iv_cases.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce")
     previous_coverage = previous_dates.between(pd.Timestamp(previous_scope.start), pd.Timestamp(previous_scope.end)).any()
     previous_iv = count_iv_cases(iv_cases, previous_scope) if previous_coverage else None
-    eol = filter_records(load_zx_pqc_endline_qc(DATA_SCOPE_CACHE_VERSION), scope, supplier="ZX")
+    endline_path = ROOT / FACTORIES["ZX"]["pqc_endline"]
+    source_stat = endline_path.stat() if endline_path.is_file() else None
+    source_stamp = (source_stat.st_mtime_ns, source_stat.st_size) if source_stat else None
+    eol = filter_records(load_zx_pqc_endline_qc(DATA_SCOPE_CACHE_VERSION, source_stamp), scope, supplier="ZX")
     if scope.stages and "PQC" not in scope.stages:
         eol = eol.iloc[0:0]
     cards = build_zx_kpi_cards(finished, customer, jdy, scope.period, customer_metrics=metrics, end_qc=eol, iv_metrics={"current": current_iv, "previous": previous_iv})
