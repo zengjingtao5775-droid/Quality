@@ -29,6 +29,14 @@ from openpyxl import load_workbook
 from plotly.subplots import make_subplots
 
 import bme_quality as _bme_quality
+from tu_quality import build_zx_quality_gates
+from quality_chart_ui import (
+    QUALITY_SERIES_COLORS,
+    apply_quality_chart_style,
+    build_quality_pareto,
+    quality_pareto_rows_html,
+    style_quality_trend,
+)
 
 
 # Streamlit Cloud can hot-reload app.py while retaining an already-imported
@@ -1142,7 +1150,10 @@ st.markdown(
     .st-key-bme_fg_fqc,
     .st-key-bme_cpt_iqc,
     .st-key-bme_cpt_pqc,
-    .st-key-bme_cpt_fqc {
+    .st-key-bme_cpt_fqc,
+    .st-key-tu_zx_iqc,
+    .st-key-tu_zx_pqc,
+    .st-key-tu_zx_fqc {
         min-height: 690px;
         padding: 15px 15px 8px;
         border: 1px solid #dbe2ec;
@@ -1157,6 +1168,29 @@ st.markdown(
         font-weight: 860;
         line-height: 1.25;
         text-align: center;
+    }
+    @media (max-width: 850px) {
+        .st-key-tu_zx_quality_gates [data-testid="stHorizontalBlock"],
+        .st-key-fg_quality_gates [data-testid="stHorizontalBlock"],
+        .st-key-cpt_quality_gates [data-testid="stHorizontalBlock"] {
+            flex-direction: column;
+        }
+        .st-key-tu_zx_quality_gates [data-testid="stColumn"],
+        .st-key-fg_quality_gates [data-testid="stColumn"],
+        .st-key-cpt_quality_gates [data-testid="stColumn"] {
+            flex: 1 1 100%;
+            width: 100%;
+        }
+    }
+    .st-key-tu_defect_pareto_panel,
+    .st-key-tu_defect_trend_panel {
+        padding: 15px 15px 8px;
+        border: 1px solid #dbe2ec;
+        border-top: 4px solid #2855c5;
+        border-radius: 10px;
+        background: #ffffff;
+        box-shadow: 0 5px 16px rgba(15, 23, 42, .055);
+        margin-bottom: 18px;
     }
     .bme-fg-stage-scope {
         margin: 4px 0 12px;
@@ -9000,6 +9034,7 @@ def plot_chart(
     enable_box_zoom: bool = False,
     localize_values: bool = True,
     stretch_width: bool = False,
+    preserve_layout: bool = False,
 ):
     st.session_state["_plot_chart_counter"] = int(st.session_state.get("_plot_chart_counter", 0)) + 1
     prepared_fig = clean_plotly_hover(fig)
@@ -9039,7 +9074,7 @@ def plot_chart(
     if stretch_width:
         chart_kwargs["use_container_width"] = True
     st.plotly_chart(
-        chart_layout(prepared_fig, height),
+        prepared_fig.update_layout(height=height) if preserve_layout else chart_layout(prepared_fig, height),
         config=chart_config,
         key=chart_key,
         **chart_kwargs,
@@ -9290,20 +9325,7 @@ BME_SUPPLIER_COLORS = {
 
 def apply_bme_chart_style(fig: go.Figure, *, height: int | None = None, showlegend: bool | None = None) -> go.Figure:
     """Apply one restrained, readable chart system without changing data."""
-    layout: dict[str, object] = {
-        "paper_bgcolor": "rgba(0,0,0,0)",
-        "plot_bgcolor": "#FFFFFF",
-        "font": {"family": "Inter, PingFang SC, Microsoft YaHei, sans-serif", "size": 14, "color": "#475467"},
-        "hoverlabel": {"align": "left", "font_size": 14},
-    }
-    if height is not None:
-        layout["height"] = height
-    if showlegend is not None:
-        layout["showlegend"] = showlegend
-    fig.update_layout(**layout)
-    fig.update_xaxes(gridcolor=BME_COLORS["grid"], zerolinecolor=BME_COLORS["grid"], tickfont={"size": 13})
-    fig.update_yaxes(gridcolor=BME_COLORS["grid"], zerolinecolor=BME_COLORS["grid"], tickfont={"size": 13})
-    return fig
+    return apply_quality_chart_style(fig, height=height, showlegend=showlegend)
 
 
 def bme_display_text(value: object) -> str:
@@ -13008,45 +13030,19 @@ def render_community_cockpit(
             show_caption=False,
         )
 
-        top_risk_ccs = pareto_risk_cc_codes(zx_cluster_risk_view)
-        top_risk_finished_df = finished_df[
-            finished_df.get("product_code", pd.Series("", index=finished_df.index))
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .isin(top_risk_ccs)
-        ].copy()
-        render_chart_heading(
-            "Top 疵点类型 Pareto",
-            "Top Defect Type Pareto",
-            "找出 Top 风险 CC 中贡献最大的疵点类型。",
-            "Find the defect types contributing most within the top-risk CCs.",
-            "先沿用 Top Risk CC Pareto 的 Top 20% CC，再按疵点数量做 Pareto 排序。",
-            "Reuse the Top 20% CCs from Top Risk CC Pareto, then rank defect types by defect quantity.",
-            "同一疵点类型的疵点数仅在这些 Top 风险 CC 内求和。",
-            "Sum each defect type only within those top-risk CCs.",
-            zx_qc_source,
-            "zx_pareto",
+        final_scope = jdy_fqc.copy()
+        selected_cc = st.session_state.get(GLOBAL_CC_FILTER_STATE_KEY, ALL_FILTER_VALUE)
+        selected_model = st.session_state.get("ZX_model_filter", ALL_FILTER_VALUE)
+        if not final_scope.empty:
+            if selected_cc != ALL_FILTER_VALUE:
+                final_scope = final_scope[final_scope["cc"].astype(str).str.strip().eq(str(selected_cc))]
+            if selected_model != ALL_FILTER_VALUE:
+                final_scope = final_scope[final_scope["model"].map(extract_decathlon_model).eq(selected_model)]
+        gate_summary, gate_pareto = build_zx_quality_gates(incoming_df, finished_df, final_scope)
+        render_quality_gate_analysis(
+            gate_summary, gate_pareto, ["ZX"],
+            start_date or dt.date.min, end_date or dt.date.max, analysis_kind="TU",
         )
-        st.markdown(
-            f"<span class='zx-pareto-chip'>{t('范围', 'Scope')} · Top Risk CC Pareto · {len(top_risk_ccs)} {t('个 CC', 'CCs')}</span>",
-            unsafe_allow_html=True,
-        )
-        render_defect_pareto(top_risk_finished_df, zx_qc_source, show_caption=False, focus_mode=True)
-
-        render_chart_heading(
-            "CC 不良率趋势",
-            "CC Defect-Rate Trend",
-            "按周跟踪综合风险排名 Top 20% CC 的不良率变化。",
-            "Track weekly defect-rate movement for the top 20% of CCs by overall risk.",
-            "从当前筛选范围中选出综合风险 Top 20% CC，并按周分别绘制。",
-            "Select the top 20% of CCs by overall risk in the current scope and plot each one weekly.",
-            "每个 CC 的周不良率为当周疵点数除以当周检验数；悬停同时显示疵点数和检验数。",
-            "Weekly defect rate per CC is weekly defects divided by weekly inspected quantity; hover also shows both values.",
-            zx_qc_source,
-            "zx_trend",
-        )
-        render_zx_cc_defect_rate_trend_v1(finished_df, zx_cluster_risk_view)
 
         with st.expander(t("更多分析", "More Analysis"), expanded=True):
             analysis_labels = {
@@ -14125,7 +14121,32 @@ def load_fsd_rpm_cluster_inputs_cached(
     return load_fsd_rpm_cluster_inputs(ROOT)
 
 
-def render_fg_quality_gate_analysis(
+def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False) -> None:
+    """Keep the three-column template visible without inventing zero data."""
+    label = t("异常记录数", "Exception records") if is_tu and stage == "IQC" else t("疵点率", "Defect-point rate") if is_tu else t("问题率", "Defect rate")
+    metric_items = [(label, "—")]
+    if stage != "IQC":
+        metric_items.append((t("返工率", "Rework rate"), "—"))
+    metric_html = "".join(
+        f'<div class="bme-fg-metric"><div class="bme-fg-metric-label">{html.escape(name)}</div>'
+        f'<div class="bme-fg-metric-value">{value}</div></div>' for name, value in metric_items
+    )
+    metric_class = "bme-fg-metrics one" if len(metric_items) == 1 else "bme-fg-metrics"
+    st.markdown(f'<div class="{metric_class}">{metric_html}</div>', unsafe_allow_html=True)
+    for kind, title, height in [("trend", t("月度趋势", "Monthly trend"), 225),
+                                ("pareto", t("问题 Pareto", "Defect Pareto"), 245)]:
+        st.markdown(f'<div class="bme-fg-chart-label">{html.escape(title)}</div>', unsafe_allow_html=True)
+        fig = go.Figure()
+        apply_quality_chart_style(fig, height=height, showlegend=False)
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+        fig.add_annotation(text=t("暂无数据", "No data available"), x=.5, y=.5, xref="paper", yref="paper",
+                           showarrow=False, font=dict(color="#98a2b3", size=14))
+        fig.update_layout(margin=dict(l=8, r=8, t=25, b=25))
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key}_{kind}_empty")
+
+
+def render_quality_gate_analysis(
     summary: pd.DataFrame,
     pareto: pd.DataFrame,
     selected_suppliers: list[str],
@@ -14134,7 +14155,17 @@ def render_fg_quality_gate_analysis(
     analysis_kind: str = "FG",
 ) -> None:
     is_cpt = analysis_kind.upper() == "CPT"
-    if is_cpt:
+    is_tu = analysis_kind.upper() == "TU"
+    if is_tu:
+        heading_cn, heading_en = "ZX质量分析", "ZX Quality Analysis"
+        subheading_cn = "按照 ZX IQC、ZX PQC、ZX FQC 查看来料、制程和成品的问题趋势与问题结构。"
+        subheading_en = "Review ZX incoming, process, and final inspection trends and defect structure."
+        stage_meta = {
+            "IQC": {"key": "tu_zx_iqc", "title": "ZX IQC", "scope_cn": "中兴 · 来料异常记录", "scope_en": "ZX · Incoming exception log"},
+            "PQC": {"key": "tu_zx_pqc", "title": "ZX PQC", "scope_cn": "中兴 · 工厂过程检验", "scope_en": "ZX · Factory process inspection"},
+            "FQC": {"key": "tu_zx_fqc", "title": "ZX FQC", "scope_cn": "中兴 · 简道云验货", "scope_en": "ZX · Jiandaoyun final inspection"},
+        }
+    elif is_cpt:
         heading_cn, heading_en = "CPT质量分析", "CPT Quality Analysis"
         subheading_cn = "按照 CPT IQC、CPT PQC、CPT FQC 查看 FSD（CPT）的问题趋势与问题结构。"
         subheading_en = "Review FSD (CPT) issue trends and structure across CPT IQC, CPT PQC, and CPT FQC."
@@ -14157,8 +14188,14 @@ def render_fg_quality_gate_analysis(
         f'<div class="bme-fg-subheading">{html.escape(t(subheading_cn, subheading_en))}</div>',
         unsafe_allow_html=True,
     )
-    stage_columns = st.columns(3, gap="medium")
-    chart_key_prefix = "cpt" if is_cpt else "fg"
+    chart_key_prefix = "tu_zx" if is_tu else "cpt" if is_cpt else "fg"
+    with st.container(key=f"{chart_key_prefix}_quality_gates"):
+        stage_columns = st.columns(3, gap="medium")
+    tu_notes = {
+        "IQC": t("原辅料不合格记录：按异常记录条数统计，材料数量单位不同，不合计为不良数量。缺少总体检验分母，不计算合格率。IQC 按工厂及日期展示，未建立 CC / Model 追溯。", "Incoming exception records are counted, without adding mixed material units. No complete inspection denominator exists, so no pass rate is calculated. IQC follows factory/date scope; CC / Model traceability is unavailable."),
+        "PQC": t("工厂检验记录（中间及产线末端）：疵点率 = 疵点个数合计 ÷ 检验数量合计，不代表不良件率。未提供结构化返工数量。", "Factory intermediate and end-of-line records: defect-point rate = total defect points / total inspected units, not defective-unit rate. Structured rework quantities are unavailable."),
+        "FQC": t("简道云 FQC：疵点率 = 疵点数量合计 ÷ 抽检数量合计，与卡片的 PASS 检验记录通过率不同。问题描述保留原始组合，不拆分推算每种疵点数量；未提供结构化返工数量。", "Jiandaoyun FQC: defect-point rate = total defect points / total sampled units, distinct from the card's inspection PASS rate. Composite descriptions remain intact; per-defect counts and structured rework quantities are unavailable."),
+    }
 
     def rate_text(value: float) -> str:
         return f"{value:.2%}" if pd.notna(value) else "—"
@@ -14185,13 +14222,15 @@ def render_fg_quality_gate_analysis(
                     & pareto["date"].dt.date.between(start_date, end_date)
                 ].copy()
                 if stage_summary.empty:
-                    st.info(t("当前筛选没有该环节数据。", "No data is available for this gate under the current filters."))
+                    render_empty_quality_gate(stage, f"{chart_key_prefix}_{stage}", is_tu=is_tu)
+                    if is_tu:
+                        st.markdown(f'<div class="bme-fg-data-note">{html.escape(tu_notes[stage])}</div>', unsafe_allow_html=True)
                     continue
 
                 po_total = float(stage_summary["po_qty"].sum(min_count=1))
                 defect_total = float(stage_summary["defect_qty"].sum(min_count=1))
-                defect_rate = defect_total / po_total if po_total > 0 else np.nan
-                has_denominator = bool(stage_summary["po_qty"].fillna(0).gt(0).any())
+                has_denominator = bool(stage_summary["po_qty"].gt(0).all()) if is_tu else bool(stage_summary["po_qty"].fillna(0).gt(0).any())
+                defect_rate = defect_total / po_total if po_total > 0 and has_denominator else np.nan
                 rework_rows = stage_summary[stage_summary["rework_available"]].copy()
                 rework_rate = np.nan
                 if not rework_rows.empty:
@@ -14199,10 +14238,12 @@ def render_fg_quality_gate_analysis(
                     rework_total = float(rework_rows["rework_qty"].sum(min_count=1))
                     rework_rate = rework_total / rework_denominator if rework_denominator > 0 else np.nan
 
+                rate_label = t("疵点率", "Defect-point rate") if is_tu else t("问题率", "Defect rate")
+                count_label = t("异常记录数", "Exception records") if is_tu and stage == "IQC" else t("疵点数量", "Defect points") if is_tu else t("问题数量", "Issue count")
                 metric_items = [
-                    (t("问题率", "Defect rate"), rate_text(defect_rate))
+                    (rate_label, rate_text(defect_rate))
                     if has_denominator
-                    else (t("问题数量", "Issue count"), f"{defect_total:,.0f}")
+                    else (count_label, f"{defect_total:,.0f}" if pd.notna(defect_total) else "—")
                 ]
                 if stage != "IQC":
                     metric_items.append((t("返工率", "Rework rate"), rate_text(rework_rate)))
@@ -14220,7 +14261,7 @@ def render_fg_quality_gate_analysis(
                     defect_qty=("defect_qty", "sum"),
                 )
                 monthly["defect_rate"] = monthly["defect_qty"].div(monthly["po_qty"].replace(0, np.nan))
-                primary_metric = t("问题率", "Defect rate") if has_denominator else t("问题数量", "Issue count")
+                primary_metric = rate_label if has_denominator else count_label
                 trend = pd.DataFrame({
                     "month": monthly.index.to_timestamp(),
                     primary_metric: monthly["defect_rate"].values if has_denominator else monthly["defect_qty"].values,
@@ -14240,23 +14281,17 @@ def render_fg_quality_gate_analysis(
                 trend_fig = px.line(
                     trend_long, x="month", y="value", color="metric", markers=True,
                     color_discrete_map={
+                        primary_metric: "#2855c5",
                         t("问题率", "Defect rate"): "#2855c5",
                         t("问题数量", "Issue count"): "#2855c5",
                         t("返工率", "Rework rate"): "#d98200",
                     },
                     labels={"month": t("月份", "Month"), "value": t("比例", "Rate") if has_denominator else t("数量", "Quantity"), "metric": ""},
                 )
-                apply_bme_chart_style(trend_fig, height=225, showlegend=len(trend_long["metric"].unique()) > 1)
-                trend_fig.update_layout(margin=dict(l=8, r=8, t=25, b=25), legend=dict(orientation="h", y=1.12, x=0))
-                trend_fig.update_xaxes(
-                    title_text=None,
-                    tickformat="%b",
-                    dtick="M1",
-                    tickangle=0,
-                    automargin=True,
-                    tickfont=dict(size=10 if stage == "FQC" else 11),
-                )
-                trend_fig.update_yaxes(title_text=None, tickformat=".2%" if has_denominator else ",.0f", rangemode="tozero")
+                style_quality_trend(trend_fig, height=225, is_rate=has_denominator,
+                                    monthly=True, tick_size=10 if stage == "FQC" else 11,
+                                    month_step=2 if len(monthly) > 8 else 1,
+                                    show_year=monthly.index.year.nunique() > 1)
                 st.plotly_chart(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}")
 
                 category_type = (
@@ -14265,6 +14300,8 @@ def render_fg_quality_gate_analysis(
                     else "defect"
                 )
                 pareto_title = t("受影响产品族 Pareto", "Affected product family Pareto") if category_type == "product_family" else t("问题 Pareto", "Defect Pareto")
+                if is_tu and stage == "FQC":
+                    pareto_title = t("检验问题描述 Pareto", "Inspection issue description Pareto")
                 st.markdown(f'<div class="bme-fg-chart-label">{html.escape(pareto_title)}</div>', unsafe_allow_html=True)
                 ranked = (
                     stage_pareto[
@@ -14273,69 +14310,31 @@ def render_fg_quality_gate_analysis(
                     ]
                     .groupby("defect_name", as_index=False)["defect_qty"].sum()
                     .sort_values("defect_qty", ascending=False)
-                    .head(5)
                 )
                 if ranked.empty:
                     st.info(t("源数据没有可排名的问题名称。", "The source does not contain rankable defect names."))
                 else:
                     ranked = ranked.reset_index(drop=True)
                     ranked["rank_label"] = [str(rank) for rank in range(1, len(ranked) + 1)]
-                    ranked["cumulative"] = ranked["defect_qty"].cumsum() / ranked["defect_qty"].sum()
-                    pareto_fig = make_subplots(specs=[[{"secondary_y": True}]])
-                    pareto_fig.add_trace(
-                        go.Bar(
-                            x=ranked["rank_label"], y=ranked["defect_qty"], name=t("数量", "Quantity"),
-                            marker_color="#4f6edb", text=ranked["defect_qty"], texttemplate="%{text:,.0f}", textposition="outside",
-                            cliponaxis=False,
-                            customdata=ranked[["defect_name"]],
-                            hovertemplate=t("问题：%{customdata[0]}<br>数量：%{y:,.0f}<extra></extra>", "Issue: %{customdata[0]}<br>Quantity: %{y:,.0f}<extra></extra>"),
-                        ), secondary_y=False,
+                    pareto_denominator = defect_total if is_tu else float(ranked.head(5)["defect_qty"].sum())
+                    ranked = ranked.head(5).copy()
+                    ranked["cumulative"] = ranked["defect_qty"].cumsum() / pareto_denominator
+                    pareto_fig = build_quality_pareto(
+                        ranked, name_col="defect_name", qty_col="defect_qty", cumulative_col="cumulative",
+                        quantity_label=t("数量", "Quantity"), cumulative_label=t("累计占比", "Cumulative share"),
+                        issue_label=t("问题", "Issue"),
                     )
-                    pareto_fig.add_trace(
-                        go.Scatter(
-                            x=ranked["rank_label"], y=ranked["cumulative"], name=t("累计占比", "Cumulative share"),
-                            mode="lines+markers", line=dict(color="#d98200", width=2), marker=dict(size=6),
-                            hovertemplate="%{y:.1%}<extra></extra>",
-                        ), secondary_y=True,
-                    )
-                    apply_bme_chart_style(pareto_fig, height=245, showlegend=False)
-                    pareto_fig.update_layout(margin=dict(l=8, r=8, t=28, b=30), bargap=.28)
-                    pareto_fig.update_xaxes(
-                        title_text=None,
-                        tickangle=0,
-                        automargin=True,
-                        tickfont=dict(size=10),
-                        tickmode="array",
-                        tickvals=ranked["rank_label"].tolist(),
-                        ticktext=ranked["rank_label"].tolist(),
-                        ticklabelstep=1,
-                        nticks=len(ranked),
-                    )
-                    max_defect_qty = float(ranked["defect_qty"].max())
-                    pareto_fig.update_yaxes(
-                        title_text=None,
-                        range=[0, max_defect_qty * 1.16],
-                        secondary_y=False,
-                    )
-                    pareto_fig.update_yaxes(title_text=None, tickformat=".0%", range=[0, 1.08], secondary_y=True)
                     st.plotly_chart(pareto_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_pareto_{stage}")
-                    pareto_rows = []
-                    for row_index, row in ranked.iterrows():
-                        full_name = re.sub(r"\s+", " ", str(row["defect_name"])).strip()
-                        display_name = re.sub(r"^\s*\d+[.、]\s*", "", full_name)
-                        pareto_rows.append(
-                            '<div class="bme-fg-pareto-row">'
-                            f'<span class="bme-fg-pareto-rank">#{row_index + 1}</span>'
-                            f'<span class="bme-fg-pareto-name" title="{html.escape(full_name, quote=True)}">{html.escape(display_name)}</span>'
-                            f'<span class="bme-fg-pareto-qty">{float(row["defect_qty"]):,.0f}</span>'
-                            '</div>'
-                        )
                     st.markdown(
-                        f'<div class="bme-fg-pareto-list">{"".join(pareto_rows)}</div>',
+                        quality_pareto_rows_html(ranked, name_col="defect_name", qty_col="defect_qty"),
                         unsafe_allow_html=True,
                     )
 
-                if stage == "IQC":
+                if is_tu:
+                    note = tu_notes[stage] + t(" Pareto 显示 Top 5，累计占比以当前环节全部问题为分母。", " Pareto shows Top 5; cumulative share uses all issues in this gate.")
+                    if not has_denominator and stage != "IQC":
+                        note += t(" 当前范围检验分母不完整，展示疵点数量。", " Inspection denominators are incomplete in this scope; defect counts are shown.")
+                elif stage == "IQC":
                     if is_cpt:
                         note = t(
                             "问题率 = 异常记录中的不良笔数 ÷ 对应数量；该源是 IQC 异常记录，不能解释为全部来料总体不良率。",
@@ -15822,14 +15821,14 @@ def render_bme_bike_quality_dashboard_v3(
         fg_summary, fg_pareto = load_fg_quality_analysis_cached(
             source_fingerprint, _BME_QUALITY_LOGIC_VERSION
         )
-        render_fg_quality_gate_analysis(
+        render_quality_gate_analysis(
             fg_summary, fg_pareto, ["CMW"], start_date, end_date, analysis_kind="FG"
         )
     if "FSD" in selected_suppliers:
         cpt_summary, cpt_pareto = load_cpt_quality_analysis_cached(
             source_fingerprint, _BME_QUALITY_LOGIC_VERSION
         )
-        render_fg_quality_gate_analysis(
+        render_quality_gate_analysis(
             cpt_summary, cpt_pareto, ["CPT"], start_date, end_date, analysis_kind="CPT"
         )
 
