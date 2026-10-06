@@ -30,14 +30,18 @@ from plotly.subplots import make_subplots
 
 import bme_quality as _bme_quality
 import dashboard_scope as _dashboard_scope
-if getattr(_dashboard_scope, "LOGIC_VERSION", "") != "2026-10-06-v2-net-sales":
+if getattr(_dashboard_scope, "LOGIC_VERSION", "") != "2026-10-06-v4-fg-cpt-pareto":
     importlib.reload(_dashboard_scope)
 from dashboard_scope import (
     DashboardScope, filter_records, identifiers, customer_totals, business_dates,
     select_customer_grain, count_iv_cases, fsd_item_model_links,
-    select_fsd_customer, ranked_cc_risk,
+    select_fsd_customer, ranked_cc_risk, build_iv_issue_pareto,
+    SUPPLIER_PRODUCT_TYPES,
 )
 from tu_quality import build_zx_quality_gates
+import quality_chart_ui as _quality_chart_ui
+if getattr(_quality_chart_ui, "QUALITY_CHART_UI_VERSION", "") != "2026-10-06-v2-risk-score-pareto":
+    importlib.reload(_quality_chart_ui)
 from quality_chart_ui import (
     QUALITY_SERIES_COLORS,
     apply_quality_chart_style,
@@ -20912,6 +20916,7 @@ def load_unified_zx_iv(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Data
                 "product_code": models.map(load_zx_production_model_cc_map(cache_version)).fillna(""),
                 "product_name": raw.get("MODEL NAME", ""),
                 "responsibility_stage": raw.get("Before or after Sales", ""),
+                "issue_type": raw.get("问题类型", ""),
             }))
     return pd.concat(frames, ignore_index=True).loc[lambda d: d["case_id"].ne("")].drop_duplicates(["case_id", "model_code"]) if frames else pd.DataFrame()
 
@@ -20931,7 +20936,7 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         st.session_state["_unified_url_scope"] = get_active_scope_key()
 
     def reset_filters():
-        for key in ["quality_suppliers", "quality_ccs", "quality_models", "quality_stages", "quality_owners"]:
+        for key in ["quality_suppliers", "quality_ccs", "quality_models", "quality_product_types"]:
             st.session_state[key] = []
         st.session_state["quality_period"] = "R12M"
 
@@ -20970,11 +20975,14 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         c1, c2, c3, c4 = st.columns(4, gap="small")
         with c1:
             communities = multi_filter("Community", ["TU", "BME"], "quality_communities", on_change=switch_community)
+        selected_types = [v for v in st.session_state.get("quality_product_types", []) if v in ["FG", "CPT"]]
         suppliers = (["ZX"] if "TU" in communities else []) + (_unified_filter_options(bme_events, "supplier") if "BME" in communities else [])
+        if selected_types:
+            suppliers = [v for v in suppliers if SUPPLIER_PRODUCT_TYPES.get(v) in selected_types]
         with c2:
             selected_suppliers = multi_filter(t("供应商", "Supplier Code"), suppliers, "quality_suppliers", lambda v: "49425 · ZX" if v == "ZX" else v)
-        tu_visible = "TU" in communities and (not selected_suppliers or "ZX" in selected_suppliers)
-        bme_visible = "BME" in communities and (not selected_suppliers or any(v != "ZX" for v in selected_suppliers))
+        tu_visible = "TU" in communities and "ZX" in suppliers and (not selected_suppliers or "ZX" in selected_suppliers)
+        bme_visible = "BME" in communities and any(v != "ZX" for v in suppliers) and (not selected_suppliers or any(v != "ZX" for v in selected_suppliers))
         cc_options, model_options = set(), set()
         if tu_visible:
             for d, col in [(tu_finished, "product_code"), (tu_voice, "product_code"), (jdy, "cc")]:
@@ -20983,11 +20991,11 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
             model_options.update(_unified_filter_options(tu_finished, "model_code"))
             model_options.update(jdy.get("model", pd.Series(dtype=str)).map(extract_decathlon_model).loc[lambda d: d.ne("")])
         if bme_visible:
-            d = bme_events if not selected_suppliers else bme_events[bme_events["supplier"].isin(selected_suppliers)]
+            d = bme_events[bme_events["supplier"].isin(selected_suppliers or suppliers)]
             coded = d.loc[d.stage.isin(["IQC", "AQL", "DKL", "LAB"]) & ~(d.supplier.eq("TEKTRO") & d.stage.eq("LAB"))]
             cc_options.update(_unified_filter_options(coded, "model_item_code"))
             model_options.update(_unified_filter_options(d, "model_item_code"))
-            if not selected_suppliers or "FSD" in selected_suppliers:
+            if "FSD" in (selected_suppliers or suppliers):
                 cc_options.update(_unified_filter_options(fsd_fqc, "item_code"))
                 model_options.update(_unified_filter_options(fsd_rpm, "product_code"))
         with c3:
@@ -21006,7 +21014,7 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         eligible = [d.date() for d in dated if d.date() <= today]
         anchor = max(eligible) if eligible else today
         with st.container(key="quality_filter_details"):
-            p1, p2, p3, p4 = st.columns(4, gap="small")
+            p1, p2, p3 = st.columns([1, 1, 2], gap="small")
             with p1:
                 period = st.selectbox(t("日期周期", "Period"), ["R12M", "YTD", "Custom"], key="quality_period")
             start = dt.date(anchor.year, 1, 1) if period == "YTD" else (pd.Timestamp(anchor) - pd.DateOffset(years=1) + pd.Timedelta(days=1)).date()
@@ -21021,15 +21029,14 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
                 else:
                     st.text_input(t("日期范围", "Date Range"), value=f"{start} → {end}", disabled=True, key=f"quality_range_{period}_{start}_{end}")
             with p3:
-                stages = multi_filter(t("检验阶段", "Inspection Stage"), ["IQC", "PQC", "FQC"], "quality_stages")
-            with p4:
-                owners = multi_filter(t("TU FQC 归属", "TU FQC Owner"), ["Decathlon", "ZX Factory"], "quality_owners")
+                product_type_labels = {"FG": t("FG · 成品业务", "FG · Finished goods"), "CPT": t("CPT · 零部件业务", "CPT · Components")}
+                product_types = multi_filter("FG / CPT", ["FG", "CPT"], "quality_product_types", lambda v: product_type_labels[v])
         actions, context = st.columns([0.18, 0.82], vertical_alignment="center")
         with actions:
             st.button(t("重置筛选", "Reset Filters"), icon=":material/restart_alt:", key="quality_reset_filters", on_click=reset_filters, use_container_width=True)
         with context:
             st.markdown(f'<div class="quality-filter-context">{html.escape(t("请先选择 Community；其他字段空选表示全部。同一字段可多选，不同字段同时生效，筛选自动应用。", "Choose a Community. Other empty filters mean all. Multi-select within each field; different fields apply together. Changes apply automatically."))}</div>', unsafe_allow_html=True)
-    return DashboardScope(tuple(communities), tuple(selected_suppliers), tuple(ccs), tuple(models), tuple(stages), tuple(owners), period, start, end)
+    return DashboardScope(communities=tuple(communities), suppliers=tuple(selected_suppliers), ccs=tuple(ccs), models=tuple(models), period=period, start=start, end=end, product_types=tuple(product_types))
 
 
 def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFrame:
@@ -21050,44 +21057,73 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
     share = f"{stats['share']:.0%}" if stats["share"] is not None else "—"
     chip = t(f"{stats['selected']} 个 CC 贡献 {share} 的风险分", f"{stats['selected']} CCs contribute {share} of the risk score")
     st.markdown(f'<span class="quality-risk-chip">{html.escape(chip)}</span>', unsafe_allow_html=True)
-    fig = px.bar(ranked, x="risk_score", y="cc", orientation="h", text="risk_score", color_discrete_sequence=["#363dc6"], labels={"risk_score": t("风险分", "Risk Score"), "cc": "CC"})
-    fig.update_traces(texttemplate="%{text:.1f}", textposition="outside", cliponaxis=False)
-    fig.update_xaxes(range=[0, max(105, float(ranked.risk_score.max()) * 1.15)])
-    fig.update_yaxes(autorange="reversed", type="category", title_text="CC")
-    fig.update_layout(height=min(1000, max(310, 105 + 50 * len(ranked))), margin=dict(l=150 if community == "BME" else 90, r=50, t=20, b=40), showlegend=False)
-    apply_bme_chart_style(fig)
-    fig.update_layout(plot_bgcolor="rgba(0,0,0,0)")
-    fig.update_yaxes(showgrid=False, zeroline=False, automargin=True)
+    fig = build_quality_pareto(ranked, name_col="cc", qty_col="risk_score", cumulative_col="cumulative_share", height=360, quantity_label=t("风险分", "Risk Score"), cumulative_label=t("累计风险占比", "Cumulative Risk Share"), issue_label="CC", value_format=".1f")
+    fig.update_xaxes(ticklabelstep=max(1, math.ceil(len(ranked) / 12)))
+    if len(ranked) > 12:
+        fig.data[0].text = None
     st.session_state["_pending_chart_summary"] = t(f"当前 {stats['total']} 个可计算 CC 中，展示 {stats['selected']} 个，贡献 {share} 风险分；最高为 {ranked.iloc[0]['cc']}（{ranked.iloc[0]['risk_score']:.1f}）。风险分沿用聚类结果，仅用于调查排序。", f"Showing {stats['selected']} of {stats['total']} scored CCs, contributing {share} of the risk score. Highest: {ranked.iloc[0]['cc']} ({ranked.iloc[0]['risk_score']:.1f}). Cluster scores rank investigations only.")
     render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{community.lower()}_unified_risk_pareto")
+    st.markdown(quality_pareto_rows_html(ranked, name_col="cc", qty_col="risk_score", value_format=".1f"), unsafe_allow_html=True)
+    st.caption(t("蓝柱：CC 风险分；橙线：累计风险分 ÷ 当前范围全部 CC 风险分。横轴编号对应下方 CC。", "Blue bars: CC risk score. Orange line: cumulative score / all scored CCs in the selection. Axis numbers map to the CC list below."))
     return risks
+
+
+def render_unified_iv_pareto(cases: pd.DataFrame, scope: DashboardScope, community: str) -> None:
+    render_chart_heading(
+        "IV 疵点帕累托", "IV Defect Pareto",
+        "按 IV 问题类型查看问题结构。", "Review IV cases by defect type.",
+        "与 IV 卡片使用相同的供应商、CC、Model 及日期筛选。", "Uses the same supplier, CC, Model and date selection as the IV card.",
+        "统计 Before Sales 的唯一反馈编号，按源问题类型分类；累计占比以当前范围全部案例为分母。空类型保留为未分类，不推算疵点件数。", "Count unique Before Sales feedback IDs by source defect type. Cumulative share uses all selected cases. Blank types remain unclassified; case counts do not estimate defective pieces.",
+        "ZX intervoice.xlsx · 问题类型 / FEEDBACK No." if community == "TU" else "BME IV · Pending source",
+        f"{community.lower()}_iv_pareto_info",
+    )
+    mode = st.segmented_control("IV", ["top", "all"], default="top", format_func=lambda v: t("Top 5 疵点", "Top 5 Defects") if v == "top" else t("全部疵点", "All Defects"), key=f"{community.lower()}_iv_pareto_mode", label_visibility="collapsed")
+    ranked = build_iv_issue_pareto(cases, scope) if community == "TU" else pd.DataFrame()
+    if ranked.empty:
+        st.info(t("当前范围没有可用的 IV 疵点数据。", "No IV defect data is available in this selection."))
+        render_chart_ai({"id": f"{community.lower()}_iv_pareto_empty", "empty": True})
+        return
+    total = int(ranked.case_count.sum())
+    shown = ranked.head(5) if mode != "all" else ranked
+    share = float(shown.case_count.sum() / total)
+    chip = t(f"{total} 个 IV 案例 · 展示 {share:.0%}", f"{total} IV cases · Showing {share:.0%}")
+    st.markdown(f'<span class="quality-risk-chip">{html.escape(chip)}</span>', unsafe_allow_html=True)
+    display = shown.copy()
+    display["issue_type"] = display.issue_type.replace({"未分类": t("未分类", "Unclassified"), "分类不一致": t("分类不一致", "Conflicting classification")})
+    fig = build_quality_pareto(display, name_col="issue_type", qty_col="case_count", cumulative_col="cumulative_share", height=360, quantity_label=t("IV 案例数", "IV Cases"), cumulative_label=t("累计案例占比", "Cumulative Case Share"), issue_label=t("问题类型", "Defect Type"))
+    st.session_state["_pending_chart_summary"] = t(f"当前范围共 {total} 个 Before Sales IV 案例；首位为{display.iloc[0].issue_type}（{int(display.iloc[0].case_count)} 个），当前展示类型占 {share:.0%}。按反馈编号去重，未分类案例仍计入分母。", f"The selection contains {total} Before Sales IV cases. Leading type: {display.iloc[0].issue_type} ({int(display.iloc[0].case_count)} cases); displayed types cover {share:.0%}. Feedback IDs are deduplicated and unclassified cases remain in the denominator.")
+    render_unified_plotly(fig, config={"displayModeBar": False}, key=f"{community.lower()}_unified_iv_pareto")
+    st.markdown(quality_pareto_rows_html(display, name_col="issue_type", qty_col="case_count"), unsafe_allow_html=True)
+    st.caption(t("按源“问题类型”统计 IV 案例数，与 Problem Card 的 IV 口径一致。", "IV case counts use the source defect type and match the Problem Card IV population."))
+
+
+def render_unified_pareto_pair(risks: pd.DataFrame, cases: pd.DataFrame, scope: DashboardScope, community: str) -> pd.DataFrame:
+    left, right = st.columns(2, gap="large")
+    with left, st.container(border=True, key=f"{community.lower()}_cc_pareto_panel"):
+        result = render_unified_risk_pareto(risks, community)
+    with right, st.container(border=True, key=f"{community.lower()}_iv_pareto_panel"):
+        render_unified_iv_pareto(cases, scope, community)
+    return result
 
 
 def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_cases):
     st.session_state["_active_ai_community"] = "TU"
     st.markdown('<div class="quality-community-heading">TU · Textile Unit</div>', unsafe_allow_html=True)
     st.caption(t("ZX · 中兴（49425）", "ZX · Zhongxing (49425)"))
-    jdy = render_scope_data_map("ZX", finished_all, voice_all, incoming_all, start_date=scope.start, end_date=scope.end, jdy_owners=list(scope.owners) or None)
+    jdy = render_scope_data_map("ZX", finished_all, voice_all, incoming_all, start_date=scope.start, end_date=scope.end)
     finished = filter_records(finished_all, scope, supplier="ZX")
     incoming = filter_records(incoming_all, scope, supplier="ZX")
     jdy = jdy.copy()
     jdy["product_code"] = jdy.get("cc", pd.Series("", index=jdy.index)).map(normalize_decathlon_cc)
     jdy["model_code"] = jdy.get("model", pd.Series("", index=jdy.index)).map(extract_decathlon_model)
     jdy = filter_records(jdy, scope, supplier="ZX")
-    if scope.stages:
-        if "PQC" not in scope.stages:
-            finished = finished.iloc[0:0]
-        if "IQC" not in scope.stages:
-            incoming = incoming.iloc[0:0]
-        if "FQC" not in scope.stages:
-            jdy = jdy.iloc[0:0]
     customer = select_customer_grain(voice_all, scope)
     metrics = {**customer_totals(customer), "period": t("源快照 N0", "N0 snapshot")}
     # A custom calendar range cannot be applied to an undated customer export.
     if scope.period == "Custom":
         metrics = {"period": t("自定义期间", "Custom period")}
     current_iv = count_iv_cases(iv_cases, scope)
-    previous_scope = DashboardScope(scope.communities, scope.suppliers, scope.ccs, scope.models, start=(pd.Timestamp(scope.start) - pd.DateOffset(years=1)).date(), end=(pd.Timestamp(scope.end) - pd.DateOffset(years=1)).date())
+    previous_scope = DashboardScope(scope.communities, scope.suppliers, scope.ccs, scope.models, start=(pd.Timestamp(scope.start) - pd.DateOffset(years=1)).date(), end=(pd.Timestamp(scope.end) - pd.DateOffset(years=1)).date(), product_types=scope.product_types)
     previous_dates = pd.to_datetime(iv_cases.get("date", pd.Series(dtype="datetime64[ns]")), errors="coerce")
     previous_coverage = previous_dates.between(pd.Timestamp(previous_scope.start), pd.Timestamp(previous_scope.end)).any()
     previous_iv = count_iv_cases(iv_cases, previous_scope) if previous_coverage else None
@@ -21095,9 +21131,11 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
     source_stat = endline_path.stat() if endline_path.is_file() else None
     source_stamp = (source_stat.st_mtime_ns, source_stat.st_size) if source_stat else None
     eol = filter_records(load_zx_pqc_endline_qc(DATA_SCOPE_CACHE_VERSION, source_stamp), scope, supplier="ZX")
-    if scope.stages and "PQC" not in scope.stages:
-        eol = eol.iloc[0:0]
     cards = build_zx_kpi_cards(finished, customer, jdy, scope.period, customer_metrics=metrics, end_qc=eol, iv_metrics={"current": current_iv, "previous": previous_iv})
+    if not scope.includes_supplier("ZX"):
+        for card in cards:
+            card.update(value="—", note=t("当前筛选未包含 ZX 成品业务。", "ZX finished-goods data is outside the selection."))
+            card.pop("trend_label", None)
     st.subheader("Problem Card")
     render_kpi_cards(cards, variant="zx-top")
     st.caption(t("检验和 IV 使用所选日期；RPM/NQC 使用已接入的 N0 明细快照，按 CC 或 Model 重新汇总。快照没有日期字段，自定义日期时不推算 RPM/NQC。", "Inspections and IV use the selected dates. RPM/NQC are recomputed from the connected N0 snapshot at CC or Model grain. The snapshot has no dates, so custom-period RPM/NQC are unavailable."))
@@ -21118,7 +21156,7 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
     products = compute_product_summary(finished, risk_voice, settings, include_client_only=True)
     cluster = render_zx_high_risk_cluster(products, settings, "ZX PQC + Customer N0 + IV", "zx_unified")
     risks = pd.DataFrame({"cc": cluster.product_code, "risk_score": cluster.cluster_score}) if not cluster.empty else pd.DataFrame(columns=["cc", "risk_score"])
-    risks = render_unified_risk_pareto(risks, "TU")
+    risks = render_unified_pareto_pair(risks, iv_cases, scope, "TU")
     summary, pareto = build_zx_quality_gates(incoming, finished, jdy)
     render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU")
     render_unified_spc(pd.DataFrame(), scope, "TU")
@@ -21133,9 +21171,6 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
     fqc, rpm, mapping = cluster_inputs
     links = fsd_item_model_links(mapping, rpm.product_code) if not mapping.empty and not rpm.empty else {}
     view = filter_records(events, scope, cc_col="model_item_code", model_col="model_item_code", item_models=links)
-    if scope.stages:
-        stage_map = {"AQL": "FQC", "DKL": "FQC"}
-        view = view.loc[view.stage.map(lambda v: stage_map.get(v, v)).isin(scope.stages)]
     customer = select_fsd_customer(rpm, scope, links) if not rpm.empty else rpm.copy()
     customer = customer.rename(columns={"returned_qty": "returned_now", "sold_qty": "sold_now"})
     metrics = customer_totals(customer) if scope.period != "Custom" else {}
@@ -21169,8 +21204,6 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
     risks = []
     if scope.includes_supplier("FSD") and not fqc.empty:
         scoped_fqc = filter_records(fqc, scope, supplier="FSD", cc_col="item_code", model_col="model_code", item_models=links)
-        if scope.stages and "FQC" not in scope.stages:
-            scoped_fqc = scoped_fqc.iloc[0:0]
         # Code is the displayed BME CC. The cluster and Pareto share this grain
         # and the same scores, rather than assigning family scores to each item.
         scoped_fqc["family"] = scoped_fqc["item_code"]
@@ -21202,7 +21235,7 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
             cmw_risk["cc"] = cmw_risk["cc"] + " · " + cmw_risk.quality_gate
             risks.append(cmw_risk[["cc", "risk_score"]])
     risk_table = pd.concat(risks, ignore_index=True) if risks else pd.DataFrame(columns=["cc", "risk_score"])
-    render_unified_risk_pareto(risk_table, "BME")
+    render_unified_pareto_pair(risk_table, pd.DataFrame(), scope, "BME")
     if scope.includes_supplier("CMW"):
         st.caption(t("CMW PQC 源只有车型名称，尚无可核对的 code；保留在聚类中，暂不进入 CC 排序。IQC/FQC 的 code 保留环节标记。", "CMW PQC has Model names without auditable item codes: these remain in the cluster and are excluded from CC ranking. IQC/FQC codes retain gate labels."))
     fingerprint = bme_source_fingerprint(ROOT)
@@ -21213,9 +21246,6 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
         # CPT is the source's category label; FSD is its supplier in the toolbar.
         summary = filter_records(summary, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
         pareto = filter_records(pareto, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
-        if scope.stages:
-            summary = summary.loc[summary.stage.isin(scope.stages)]
-            pareto = pareto.loc[pareto.stage.isin(scope.stages)]
         render_quality_gate_analysis(summary, pareto, ["CMW"] if supplier == "CMW" else ["CPT"], scope.start, scope.end, analysis_kind=kind)
     # SPC intentionally receives the full source, with date filters only.
     render_unified_spc(events, scope, "BME")

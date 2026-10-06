@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 
 
 QUALITY_SERIES_COLORS = ["#2855C5", "#148A83", "#6B5CC5", "#D98200", "#C83C55", "#475467"]
+QUALITY_CHART_UI_VERSION = "2026-10-06-v2-risk-score-pareto"
 
 
 def apply_quality_chart_style(fig: go.Figure, *, height: int | None = None,
@@ -53,15 +54,16 @@ def build_quality_pareto(ranked: pd.DataFrame, *, name_col: str,
                          qty_col: str, cumulative_col: str, height: int = 245,
                          quantity_label: str = "Quantity",
                          cumulative_label: str = "Cumulative share",
-                         issue_label: str = "Issue") -> go.Figure:
+                         issue_label: str = "Issue",
+                         value_format: str = ",.0f") -> go.Figure:
     """Render supplied cumulative shares without renormalizing a Top-N subset."""
     labels = [str(i) for i in range(1, len(ranked) + 1)]
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(
         x=labels, y=ranked[qty_col], name=quantity_label,
-        marker_color="#4f6edb", text=ranked[qty_col], texttemplate="%{text:,.0f}",
+        marker_color="#4f6edb", text=ranked[qty_col], texttemplate=f"%{{text:{value_format}}}",
         textposition="outside", cliponaxis=False, customdata=ranked[[name_col]],
-        hovertemplate=f"{issue_label}: %{{customdata[0]}}<br>{quantity_label}: %{{y:,.0f}}<extra></extra>",
+        hovertemplate=f"{issue_label}: %{{customdata[0]}}<br>{quantity_label}: %{{y:{value_format}}}<extra></extra>",
     ), secondary_y=False)
     fig.add_trace(go.Scatter(
         x=labels, y=ranked[cumulative_col], name=cumulative_label,
@@ -79,7 +81,8 @@ def build_quality_pareto(ranked: pd.DataFrame, *, name_col: str,
     return fig
 
 
-def quality_pareto_rows_html(ranked: pd.DataFrame, *, name_col: str, qty_col: str) -> str:
+def quality_pareto_rows_html(ranked: pd.DataFrame, *, name_col: str, qty_col: str,
+                             value_format: str = ",.0f") -> str:
     rows = []
     for index, (_, row) in enumerate(ranked.iterrows(), 1):
         full_name = re.sub(r"\s+", " ", str(row[name_col])).strip()
@@ -88,6 +91,6 @@ def quality_pareto_rows_html(ranked: pd.DataFrame, *, name_col: str, qty_col: st
             '<div class="bme-fg-pareto-row">'
             f'<span class="bme-fg-pareto-rank">#{index}</span>'
             f'<span class="bme-fg-pareto-name" title="{html.escape(full_name, quote=True)}">{html.escape(display_name)}</span>'
-            f'<span class="bme-fg-pareto-qty">{float(row[qty_col]):,.0f}</span></div>'
+            f'<span class="bme-fg-pareto-qty">{format(float(row[qty_col]), value_format)}</span></div>'
         )
     return f'<div class="bme-fg-pareto-list">{"".join(rows)}</div>'

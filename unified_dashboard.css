@@ -20,6 +20,7 @@
 .quality-inline-ai-label {color:#343bc3; font-weight:750; margin-right:5px;}
 .quality-ai-report {background:#fff; border:1px solid #e1e5ee; border-top:4px solid #363dc6; border-radius:10px; padding:20px; margin-top:22px;}
 .quality-risk-chip {display:inline-block; padding:8px 14px; color:#343bc3; background:#eef0ff; border:1px solid #ccd2ff; border-radius:24px; font-size:13px; font-weight:750; margin:8px 0 15px;}
+.st-key-tu_cc_pareto_panel, .st-key-tu_iv_pareto_panel, .st-key-bme_cc_pareto_panel, .st-key-bme_iv_pareto_panel {background:#fff; border:1px solid #dce3f2; border-top:4px solid #2855c5; border-radius:12px;}
 [data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {max-width:100%; min-width:0;}
 @media(max-width:760px) {
  .st-key-quality_unified_filter {padding:14px;}

@@ -12,7 +12,12 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-LOGIC_VERSION = "2026-10-06-v2-net-sales"
+LOGIC_VERSION = "2026-10-06-v4-fg-cpt-pareto"
+
+# Business categories follow the connected FG/CPT sources, not QC stages.
+# ZX makes finished textile products; CMW assembles bikes. FSD and TEKTRO
+# provide components. A supplier without a verified category stays unmapped.
+SUPPLIER_PRODUCT_TYPES = {"ZX": "FG", "CMW": "FG", "FSD": "CPT", "TEKTRO": "CPT"}
 
 
 @dataclass(frozen=True)
@@ -26,19 +31,22 @@ class DashboardScope:
     period: str = "R12M"
     start: object | None = None
     end: object | None = None
+    product_types: tuple[str, ...] = ()
 
     @property
     def product_filtered(self) -> bool:
         return bool(self.ccs or self.models)
 
     def includes_supplier(self, supplier: str) -> bool:
-        return not self.suppliers or supplier in self.suppliers
+        return (not self.suppliers or supplier in self.suppliers) and (
+            not self.product_types or SUPPLIER_PRODUCT_TYPES.get(supplier) in self.product_types
+        )
 
     def facts(self) -> dict:
         return {
             "communities": list(self.communities), "suppliers": list(self.suppliers),
             "ccs": list(self.ccs), "models": list(self.models),
-            "stages": list(self.stages), "owners": list(self.owners),
+            "product_types": list(self.product_types),
             "period": self.period, "start": str(self.start), "end": str(self.end),
         }
 
@@ -72,6 +80,13 @@ def filter_records(
     if frame.empty:
         return frame.copy()
     keep = pd.Series(True, index=frame.index)
+    if scope.product_types:
+        if supplier is not None:
+            keep &= SUPPLIER_PRODUCT_TYPES.get(supplier) in scope.product_types
+        elif supplier_col in frame:
+            keep &= identifiers(frame[supplier_col]).map(SUPPLIER_PRODUCT_TYPES).isin(scope.product_types)
+        else:
+            keep &= False
     if scope.suppliers:
         if supplier is not None:
             keep &= supplier in scope.suppliers
@@ -128,11 +143,42 @@ def select_customer_grain(voice: pd.DataFrame, scope: DashboardScope) -> pd.Data
 
 
 def count_iv_cases(cases: pd.DataFrame, scope: DashboardScope) -> int | None:
-    if cases.empty:
+    if cases.empty or not scope.includes_supplier("ZX"):
         return None  # no connected case source; different from zero matches
     selected = filter_records(cases, scope, supplier="ZX")
     before = selected.get("responsibility_stage", pd.Series("", index=selected.index)).fillna("").astype(str).str.casefold().str.startswith("before")
-    return int(selected.loc[before, "case_id"].nunique())
+    case_ids = identifiers(selected.loc[before, "case_id"])
+    return int(case_ids.loc[case_ids.ne("")].nunique())
+
+
+def build_iv_issue_pareto(cases: pd.DataFrame, scope: DashboardScope) -> pd.DataFrame:
+    """Count Before Sales cases once, using the source's defect type.
+
+    Blank types remain unclassified. Conflicting types on duplicate case
+    records remain explicitly unresolved rather than inflating the case count.
+    Cumulative shares use every case in the selection, before any Top-N view.
+    """
+    columns = ["issue_type", "case_count", "cumulative_share"]
+    selected = filter_records(cases, scope, supplier="ZX")
+    if selected.empty:
+        return pd.DataFrame(columns=columns)
+    before = selected.get("responsibility_stage", pd.Series("", index=selected.index)).fillna("").astype(str).str.casefold().str.startswith("before")
+    selected = selected.loc[before].copy()
+    selected["case_id"] = identifiers(selected["case_id"])
+    selected["issue_type"] = identifiers(selected.get("issue_type", pd.Series("", index=selected.index)))
+    selected = selected.loc[selected.case_id.ne("")]
+    if selected.empty:
+        return pd.DataFrame(columns=columns)
+
+    def case_type(values):
+        types = sorted(set(values) - {""})
+        return types[0] if len(types) == 1 else "分类不一致" if types else "未分类"
+
+    unique = selected.groupby("case_id")["issue_type"].agg(case_type)
+    ranked = unique.value_counts().rename_axis("issue_type").reset_index(name="case_count")
+    ranked = ranked.sort_values(["case_count", "issue_type"], ascending=[False, True]).reset_index(drop=True)
+    ranked["cumulative_share"] = ranked.case_count.cumsum() / len(unique)
+    return ranked[columns]
 
 
 def fsd_item_model_links(mapping: pd.DataFrame, rpm_codes: Iterable[str]) -> dict[str, frozenset[str]]:
@@ -179,6 +225,7 @@ def ranked_cc_risk(frame: pd.DataFrame, code_col: str, score_col: str, top_only:
     result = result.loc[result["cc"].ne("") & result["risk_score"].notna()].sort_values(["risk_score", "cc"], ascending=[False, True]).reset_index(drop=True)
     total = len(result)
     count = max(1, int(np.ceil(total * 0.2))) if total else 0
-    selected = result.head(count) if top_only else result
     denominator = result["risk_score"].sum()
+    result["cumulative_share"] = result["risk_score"].cumsum() / denominator if denominator > 0 else np.nan
+    selected = result.head(count) if top_only else result
     return selected, {"total": total, "selected": len(selected), "share": float(selected["risk_score"].sum() / denominator) if denominator > 0 else None}
