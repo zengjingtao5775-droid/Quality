@@ -28,8 +28,8 @@ def apply_quality_chart_style(fig: go.Figure, *, height: int | None = None,
     if showlegend is not None:
         layout["showlegend"] = showlegend
     fig.update_layout(**layout)
-    fig.update_xaxes(gridcolor="#E7EAF0", zerolinecolor="#E7EAF0", tickfont={"size": 13})
-    fig.update_yaxes(gridcolor="#E7EAF0", zerolinecolor="#E7EAF0", tickfont={"size": 13})
+    fig.update_xaxes(gridcolor="#E7EAF0", zerolinecolor="#E7EAF0", tickfont={"size": 13}, automargin=True)
+    fig.update_yaxes(gridcolor="#E7EAF0", zerolinecolor="#E7EAF0", tickfont={"size": 13}, automargin=True)
     return fig
 
 
