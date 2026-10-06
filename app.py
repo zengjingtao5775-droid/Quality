@@ -20810,6 +20810,8 @@ def render_unified_plotly(fig, *args, **kwargs):
     # theme replace explicit Plotly colours on different chart types.
     kwargs.setdefault("theme", None)
     kwargs.setdefault("use_container_width", True)
+    fig.update_xaxes(automargin=True)
+    fig.update_yaxes(automargin=True)
     result = st.plotly_chart(fig, *args, **kwargs)
     if not st.session_state.get("_active_ai_community"):
         return result
