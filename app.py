@@ -10017,50 +10017,156 @@ def render_zx_high_risk_cluster(
         example_options = view.sort_values("cluster_score", ascending=False)["product_code"].astype(str).tolist()
         default_example = example_options.index("335330") if "335330" in example_options else 0
         example_cc = st.selectbox(
-            "CC",
-            example_options,
-            index=default_example,
+            "CC", example_options, index=default_example,
             key=f"{widget_key}_cluster_formula_example",
         )
         example = view[view["product_code"].astype(str).eq(example_cc)].iloc[0]
-        benchmark_pct = cluster_qc_benchmark
-        pseudo_defects = cluster_prior_defects
-        shrunk_rate = shrunk_defect_rate(
-            example.get("defect_qty", 0),
-            example.get("qty_inspected", 0),
-            benchmark_pct,
-            cluster_pseudo_count,
-            cluster_prior_defects,
-        )
-        rpm_value = float(example.get("rpm_now")) if pd.notna(example.get("rpm_now")) else 0.0
-        iv_value = float(example.get("intern_voice_count")) if pd.notna(example.get("intern_voice_count")) else 0.0
-        if bool(example.get("has_production_record", False)):
-            production_score = float(example.get("production_axis", 0))
-            production_step_cn = f"`({example.get('defect_qty', 0):,.0f} 疵点 + {pseudo_defects:.1f} 先验疵点) ÷ ({example.get('qty_inspected', 0):,.0f} 检验 + {cluster_pseudo_count} 先验样本) = {shrunk_rate:.2%}`；按 `{benchmark_pct:.1f}% = 50分 / {cluster_qc_critical:.1f}% = 100分` 两段换算 → **生产端 {production_score:.1f} 分**。先验数据仅用于平滑小样本。"
-            production_step_en = f"`({example.get('defect_qty', 0):,.0f} defects + {pseudo_defects:.1f} prior defects) / ({example.get('qty_inspected', 0):,.0f} inspected + {cluster_pseudo_count} prior samples) = {shrunk_rate:.2%}`; piecewise mapping uses `{benchmark_pct:.1f}% = 50 / {cluster_qc_critical:.1f}% = 100` → **production {production_score:.1f}**. Prior data only smooths small samples."
-        else:
-            production_step_cn = "无生产检验记录 → **生产端按 0 分显示**；该 CC 仅用于查看 RPM / IV 客户端信号。"
-            production_step_en = "No production inspection record → **production displays as 0**; this CC is included only for its RPM / IV client signal."
-        st.markdown(
-            t(
-                f"""
-**CC {example_cc} · Model {example.get('model_display', '-')}**
 
-1. 生产端：{production_step_cn}
-2. RPM：`{example.get('rpm_cap', 1500):,.0f} = 50分 / {example.get('rpm_critical', 3000):,.0f} = 100分 → {example.get('rpm_score', 0):.1f}`；IV：`{example.get('iv_cap', 30):,.0f} = 50分 / {example.get('iv_critical', 60):,.0f} = 100分 → {example.get('intern_voice_score', 0):.1f}`。
-3. 客户端：`RPM {example.get('rpm_score', 0):.1f} × {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} × {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`。
-4. Risk Score：`生产端 {example.get('production_axis', 0):.1f} × {production_weight}% + 客户端 {example.get('client_signal', 0):.1f} × {secondary_weight}% = {example.get('cluster_score', 0):.1f}`。
-""",
-                f"""
-**CC {example_cc} · Model {example.get('model_display', '-')}**
+        def numeric(field: str) -> float:
+            value = pd.to_numeric(example.get(field, np.nan), errors="coerce")
+            return float(value) if pd.notna(value) else np.nan
 
-1. Production: {production_step_en}
-2. RPM: `{example.get('rpm_cap', 1500):,.0f} = 50 / {example.get('rpm_critical', 3000):,.0f} = 100 → {example.get('rpm_score', 0):.1f}`; IV: `{example.get('iv_cap', 30):,.0f} = 50 / {example.get('iv_critical', 60):,.0f} = 100 → {example.get('intern_voice_score', 0):.1f}`.
-3. Client: `RPM {example.get('rpm_score', 0):.1f} x {example.get('rpm_client_weight_pct', 0):.0f}% + IV {example.get('intern_voice_score', 0):.1f} x {example.get('iv_client_weight_pct', 0):.0f}% = {example.get('client_signal', 0):.1f}`.
-4. Risk Score: `production {example.get('production_axis', 0):.1f} x {production_weight}% + client {example.get('client_signal', 0):.1f} x {secondary_weight}% = {example.get('cluster_score', 0):.1f}`.
-""",
+        def precise(value: float, unit: str = "") -> str:
+            return f"{value:,.6f}{unit}" if pd.notna(value) else "—"
+
+        def formula_step(title_cn: str, title_en: str, paragraphs: list[str], equations: list[str]) -> None:
+            # Keep the detailed explanation inside the chart's existing info
+            # popover, with readable type and short, wrapping equation lines.
+            body = "".join(f"<p style='margin:8px 0'>{html.escape(value)}</p>" for value in paragraphs)
+            maths = "<br>".join(html.escape(value) for value in equations)
+            st.markdown(
+                "<section class='quality-risk-formula-step' style='font-size:16px;line-height:1.7;"
+                "margin:16px 0;padding:18px;border:1px solid #dce4f2;border-radius:10px'>"
+                f"<h4 style='font-size:18px;line-height:1.5;color:#244aaa;margin:0 0 10px'>{html.escape(t(title_cn, title_en))}</h4>"
+                f"{body}<div style='padding:12px 14px;background:#f2f5fc;border-radius:8px;"
+                f"font-size:16px;font-weight:600;overflow-wrap:anywhere'>{maths}</div></section>",
+                unsafe_allow_html=True,
             )
+
+        def mapped_steps(value: float, warning: float, critical: float, unit: str = "") -> tuple[str, list[str]]:
+            """Explain the current piecewise mapping; do not alter stored scores."""
+            if pd.isna(value):
+                return t("当前输入缺失，不能把它当成真实的 0。", "The input is missing; it is not an observed zero."), []
+            value = max(value, 0.0)
+            warning = max(warning, 0.0001)
+            critical = max(critical, warning + 0.0001)
+            score = threshold_risk_score(value, warning, critical)
+            if value <= warning:
+                return (
+                    t("没有超过 50 分参考线，按已走到参考线的比例计算：走到一半，就是 25 分。", "Below the 50-point anchor: score the fraction of that anchor reached. Halfway means 25 points."),
+                    [
+                        f"{precise(value, unit)} ≤ {num(warning, 2)}{unit}",
+                        t(f"达到参考线的比例 = {precise(value, unit)} ÷ {num(warning, 2)}{unit} = {value / warning:.6%}", f"Fraction of anchor = {precise(value, unit)} / {num(warning, 2)}{unit} = {value / warning:.6%}"),
+                        t(f"分数 = {value / warning:.6%} × 50 = {precise(score)} → 显示 {score:.1f} 分", f"Score = {value / warning:.6%} × 50 = {precise(score)} → displayed {score:.1f}"),
+                    ],
+                )
+            progress = (value - warning) / (critical - warning)
+            if value < critical:
+                return (
+                    t("已经超过 50 分线，但还没到 100 分线。先给 50 分，再按两条线之间走了多远，加上剩余的分数。", "Between the 50- and 100-point anchors: start with 50, then add a share of the remaining 50 points."),
+                    [
+                        f"{num(warning, 2)}{unit} < {precise(value, unit)} < {num(critical, 2)}{unit}",
+                        t(f"超过 50 分线的量 = {precise(value, unit)} − {num(warning, 2)}{unit} = {precise(value - warning, unit)}", f"Amount above 50-point anchor = {precise(value, unit)} − {num(warning, 2)}{unit} = {precise(value - warning, unit)}"),
+                        t(f"两条线之间的距离 = {num(critical, 2)}{unit} − {num(warning, 2)}{unit} = {num(critical - warning, 2)}{unit}", f"Distance between anchors = {num(critical, 2)}{unit} − {num(warning, 2)}{unit} = {num(critical - warning, 2)}{unit}"),
+                        t(f"走过的比例 = {precise(value - warning, unit)} ÷ {num(critical - warning, 2)}{unit} = {progress:.6%}", f"Fraction of interval = {precise(value - warning, unit)} / {num(critical - warning, 2)}{unit} = {progress:.6%}"),
+                        t(f"增加的分数 = {progress:.6%} × 50 = {precise(progress * 50)}", f"Extra points = {progress:.6%} × 50 = {precise(progress * 50)}"),
+                        t(f"分数 = 50 + {precise(progress * 50)} = {precise(score)} → 显示 {score:.1f} 分", f"Score = 50 + {precise(progress * 50)} = {precise(score)} → displayed {score:.1f}"),
+                    ],
+                )
+            return (
+                t("已经达到或超过 100 分参考线。这一项最多计 100 分，超过的部分不继续加分。", "At or above the 100-point anchor: this component is capped at 100."),
+                [f"{precise(value, unit)} ≥ {num(critical, 2)}{unit}", t("分数 = 100 分（封顶）", "Score = 100 (capped)")],
+            )
+
+        inspected, defects = numeric("qty_inspected"), numeric("defect_qty")
+        returned, sold = numeric("returned_now"), numeric("sold_now")
+        rpm_value, iv_value = numeric("rpm_now"), numeric("intern_voice_count")
+        production_score, rpm_score = numeric("production_axis"), numeric("rpm_score")
+        iv_score, client_score, total_score = numeric("intern_voice_score"), numeric("client_signal"), numeric("cluster_score")
+        st.markdown(f"<p style='font-size:18px;font-weight:700'>CC {html.escape(example_cc)} · Model {html.escape(str(example.get('model_display', '-')))}</p>", unsafe_allow_html=True)
+        introduction = t(
+            "先汇总当前筛选下同一 CC 的原始数量，再计算比例；不直接平均每条记录的疵点率或 RPM。以下显示六位小数方便核对，程序保留完整精度到最后一步。",
+            "Sum the current selection's quantities for this CC before calculating ratios; do not average row-level DPU or RPM. Six decimal places are shown for checking; computation keeps full precision until the end.",
         )
+        st.markdown(f"<p style='font-size:16px;line-height:1.7'>{html.escape(introduction)}</p>", unsafe_allow_html=True)
+        input_rows = [
+            (t("检验数量（件次）", "Inspected quantity"), num(inspected), t("工厂检验数量合计", "Sum of factory inspected quantities")),
+            (t("疵点个数", "Defect points"), num(defects), t("工厂疵点个数合计；一件可能有多个疵点", "Sum of factory defect points; one unit may have multiple points")),
+            (t("N0 退货数量", "N0 returned quantity"), num(returned), t("客户源快照中的 Qty returned", "Qty returned in the customer snapshot")),
+            (t("N0 销售数量", "N0 sold quantity"), num(sold), t("客户源快照中的 Qty sold (RPM)", "Qty sold (RPM) in the customer snapshot")),
+            (t("IV 案例数", "IV cases"), num(iv_value), t("当前范围匹配的售前案例，按案例去重", "Matched Before Sales cases, deduplicated by case")),
+        ]
+        rows_html = "".join("<tr>" + "".join(f"<td style='padding:9px;border-bottom:1px solid #e4eaf3'>{html.escape(value)}</td>" for value in row) + "</tr>" for row in input_rows)
+        st.markdown(
+            "<div style='overflow:auto'><table class='quality-risk-formula-inputs' style='font-size:16px;line-height:1.6;width:100%;border-collapse:collapse'>"
+            f"<thead><tr><th>{t('原始输入', 'Raw input')}</th><th>{t('当前数值', 'Current value')}</th><th>{t('来源 / 含义', 'Source / meaning')}</th></tr></thead><tbody>{rows_html}</tbody></table></div>",
+            unsafe_allow_html=True,
+        )
+
+        if bool(example.get("has_production_record", False)):
+            shrunk_rate = shrunk_defect_rate(defects, inspected, cluster_qc_benchmark, cluster_pseudo_count, cluster_prior_defects)
+            prior_note = t(
+                "先验是一份只用于算分的参考量，避免少量检验把结果推得太极端；它不会写入真实检验记录。真实样本越多，参考量影响越小。",
+                "The prior is a calculation-only reference that moderates sparse inspection results. It adds no real inspection records. Its influence shrinks as real sample quantity grows.",
+            )
+            equations = [
+                t(f"① 真实 DPU = {num(defects)} ÷ {num(inspected)} = {defects / inspected:.6%}", f"① Observed DPU = {num(defects)} / {num(inspected)} = {defects / inspected:.6%}")
+                if pd.notna(inspected) and inspected > 0 else
+                t("① 真实 DPU：缺少有效检验分母，不能计算。", "① Observed DPU: cannot calculate without a valid inspection denominator.")
+            ]
+            if cluster_pseudo_count > 0:
+                equations.append(t(
+                    f"② 当前参考量 = {num(cluster_pseudo_count)} 件次 × {cluster_prior_defects / cluster_pseudo_count:.6%} = {num(cluster_prior_defects, 2)} 个先验疵点",
+                    f"② Current prior = {num(cluster_pseudo_count)} samples × {cluster_prior_defects / cluster_pseudo_count:.6%} = {num(cluster_prior_defects, 2)} prior defects",
+                ))
+            else:
+                equations.append(t(f"② 当前先验样本 = 0；先验疵点 = {num(cluster_prior_defects, 2)}", f"② Prior samples = 0; prior defects = {num(cluster_prior_defects, 2)}"))
+            equations.extend([
+                t(f"③ 评分用 DPU = ({num(defects)} + {num(cluster_prior_defects, 2)}) ÷ ({num(inspected)} + {num(cluster_pseudo_count)})", f"③ DPU for scoring = ({num(defects)} + {num(cluster_prior_defects, 2)}) / ({num(inspected)} + {num(cluster_pseudo_count)})"),
+                f"= {num(defects + cluster_prior_defects, 2)} ÷ {num(inspected + cluster_pseudo_count)} = {shrunk_rate:.6%}",
+                t(f"④ 分数参考线：{cluster_qc_benchmark:g}% 对应 50 分；{cluster_qc_critical:g}% 对应 100 分。", f"④ Score anchors: {cluster_qc_benchmark:g}% → 50; {cluster_qc_critical:g}% → 100."),
+            ])
+            branch_note, mapping = mapped_steps(shrunk_rate * 100, cluster_qc_benchmark, cluster_qc_critical, "%")
+            equations.extend(mapping)
+            formula_step("1 · 生产端：原始 DPU → 平滑 → 换成分数", "1 · Production: observed DPU → smoothing → score", [prior_note, branch_note], equations)
+        else:
+            formula_step("1 · 生产端：当前缺少检验记录", "1 · Production: inspection records unavailable", [t("生产轴按现有规则显示 0，仅用于展示客户信号；这个 0 不能解释为已证明生产质量良好。", "The existing display uses a production axis of zero to show customer signals. Zero does not establish good production quality.")], [t(f"生产端分 = {precise(production_score)}", f"Production score = {precise(production_score)}")])
+
+        rpm_note, rpm_mapping = mapped_steps(rpm_value, numeric("rpm_cap"), numeric("rpm_critical"))
+        if pd.notna(sold) and sold > 0 and pd.notna(returned):
+            rpm_equations = [t("① RPM = 退货数量 ÷ 销售数量 × 1,000,000", "① RPM = returned quantity / sold quantity × 1,000,000"), f"= {num(returned)} ÷ {num(sold)} × 1,000,000 = {precise(rpm_value)}"]
+        else:
+            rpm_equations = [t(f"当前源 RPM = {precise(rpm_value)}；缺少有效销量分母，不能展开退货数 / 销量计算。", f"Source RPM = {precise(rpm_value)}; without a valid sold denominator, returns / sales cannot be expanded.")]
+        rpm_equations.append(t(f"② 分数参考线：{num(numeric('rpm_cap'))} 对应 50 分；{num(numeric('rpm_critical'))} 对应 100 分。", f"② Score anchors: {num(numeric('rpm_cap'))} → 50; {num(numeric('rpm_critical'))} → 100."))
+        formula_step("2 · RPM：先统一到每百万件，再换成分数", "2 · RPM: per million sold → score", [t("可以理解为：假如卖出一百万件，按相同退货比例会退回多少件。RPM 和 RPM 风险分是两个数。N0 为源快照，不能当作自定义日期内的销量。", "RPM expresses returns per million sold. The RPM quantity and its risk score are different numbers. N0 is a source snapshot, not sales for an arbitrary date selection."), rpm_note], rpm_equations + rpm_mapping)
+
+        iv_note, iv_mapping = mapped_steps(iv_value, numeric("iv_cap"), numeric("iv_critical"))
+        formula_step("3 · IV：案例数量 → 换成分数", "3 · IV: case count → score", [t("这里直接使用当前范围匹配的案例数；没有除以销量，也没有另加严重度分。", "Use the matched case count directly, without dividing by sales or adding severity weights."), iv_note], [t(f"真实 IV = {num(iv_value)} 个案例", f"Observed IV = {num(iv_value)} cases"), t(f"分数参考线：{num(numeric('iv_cap'))} 个对应 50 分；{num(numeric('iv_critical'))} 个对应 100 分。", f"Score anchors: {num(numeric('iv_cap'))} cases → 50; {num(numeric('iv_critical'))} cases → 100.")] + iv_mapping)
+
+        rpm_weight, iv_weight = numeric("rpm_client_weight_pct"), numeric("iv_client_weight_pct")
+        if has_client_signal:
+            rpm_part = (0 if pd.isna(rpm_score) else rpm_score) * rpm_weight / 100
+            iv_part = (0 if pd.isna(iv_score) else iv_score) * iv_weight / 100
+            formula_step("4 · 客户端：把 RPM 分和 IV 分合起来", "4 · Client: combine RPM and IV scores", [t("两项都有分数时，各占客户端的一半；若只接入一项，有效项占客户端的全部。注意：这里相加的是风险分，不是原始 RPM 数量和 IV 案例数。", "When both scores exist, each carries half the client weight. If only one exists, it carries all the client weight. Combine scores, not raw RPM and IV counts.")], [t(f"RPM 客户端贡献 = {precise(rpm_score)} × {rpm_weight:g}% = {precise(rpm_part)}", f"RPM contribution to client = {precise(rpm_score)} × {rpm_weight:g}% = {precise(rpm_part)}"), t(f"IV 客户端贡献 = {precise(iv_score)} × {iv_weight:g}% = {precise(iv_part)}", f"IV contribution to client = {precise(iv_score)} × {iv_weight:g}% = {precise(iv_part)}"), t(f"客户端分 = {precise(rpm_part)} + {precise(iv_part)} = {precise(client_score)} → 显示 {client_score:.1f} 分", f"Client score = {precise(rpm_part)} + {precise(iv_part)} = {precise(client_score)} → displayed {client_score:.1f}")])
+        else:
+            formula_step("4 · 检验量强度：客户分缺失时的替代轴", "4 · Volume strength: fallback without client signals", [t("当前没有客户端信号，纵轴使用 log(1 + 检验数量) 相对当前范围最大值的强度，不是 RPM / IV 客户分。", "Without client signals, the vertical axis uses log(1 + inspected quantity), scaled to the current selection's maximum. This is not a client score.")], [t(f"检验量强度 = {precise(client_score)}", f"Volume strength = {precise(client_score)}")])
+
+        production_contribution = numeric("production_risk_contribution")
+        client_contribution = numeric("client_risk_contribution")
+        final_equations = [
+            t(f"生产端贡献 = {precise(production_score)} × {production_weight}% = {precise(production_contribution)}", f"Production contribution = {precise(production_score)} × {production_weight}% = {precise(production_contribution)}"),
+            t(f"另一轴贡献 = {precise(client_score)} × {secondary_weight}% = {precise(client_contribution)}", f"Other-axis contribution = {precise(client_score)} × {secondary_weight}% = {precise(client_contribution)}") if not has_client_signal else t(f"客户端贡献 = {precise(client_score)} × {secondary_weight}% = {precise(client_contribution)}", f"Client contribution = {precise(client_score)} × {secondary_weight}% = {precise(client_contribution)}"),
+            f"Risk Score = {precise(production_contribution)} + {precise(client_contribution)} = {precise(total_score)}",
+            t(f"最后才保留一位小数 → 页面显示 {total_score:.1f} 分。", f"Round to one decimal only at the end → displayed {total_score:.1f}."),
+        ]
+        if has_client_signal:
+            final_equations.extend([
+                t(f"等价拆法：QC 占 {production_weight}%；RPM 占 {secondary_weight * rpm_weight / 100:g}%；IV 占 {secondary_weight * iv_weight / 100:g}%。", f"Equivalent weights: QC {production_weight}%; RPM {secondary_weight * rpm_weight / 100:g}%; IV {secondary_weight * iv_weight / 100:g}%."),
+                f"= {precise(production_contribution)} + {precise(numeric('rpm_risk_contribution'))} + {precise(numeric('iv_risk_contribution'))} = {precise(total_score)}",
+            ])
+        formula_step("5 · Risk Score：乘权重，再把贡献相加", "5 · Risk Score: weight and add contributions", [t("像一张有不同科目权重的成绩单。70% / 30% 是这张图的默认配置，调整权重后，本例会跟随重算。不能先把中间分数四舍五入再代入，否则最后一位可能不同。", "Think of a report card with subject weights. 70% / 30% are this chart's defaults; this example follows weight changes. Rounding intermediate scores before substitution can change the final displayed digit.")], final_equations)
+        interpretation = t("怎样解释这个结果：分数越高，当前规则下越应优先复核；它不是不合格概率。打分参考线由当前配置决定，不是实际检验条数或由本次 K-means 自动生成的门槛。聚类再根据两条风险轴的二维位置分组，分组与这一步加权总分是两个过程。", "How to read the result: a higher score means higher review priority under the current rules, not a probability of defects. Score anchors come from current configuration, not inspection counts or thresholds generated by K-means. Clustering groups two-axis positions; grouping and this weighted score are separate processes.")
+        st.markdown(f"<p style='font-size:16px;line-height:1.7'>{html.escape(interpretation)}</p>", unsafe_allow_html=True)
 
     def render_cluster_parameters() -> None:
         with st.container(key="zx_cluster_parameter_button"):
@@ -10157,10 +10263,10 @@ def render_zx_high_risk_cluster(
         heading_content = (
             "先看当前 community 哪些产品或款号处在高风险区域。",
             "Start by identifying which products/styles are in the high-risk area.",
-            "使用 K-means 对产品风险进行聚类；没有客户端信号时，用生产端风险和检验量强度聚类。",
-            "Use K-means for product risk clustering; when client signals are missing, use production risk and inspection-volume strength.",
-            "生产端风险来自 QC 不良率；检验量强度用于判断样本可信度。",
-            "Production risk comes from QC defect rate; inspection-volume strength indicates sample confidence.",
+            "横轴是生产端 QC 风险分，纵轴是 RPM / IV 客户端风险分；K-means 把二维位置相近的 CC 分在一组。",
+            "The horizontal axis is production QC risk; the vertical axis is RPM / IV client risk. K-means groups nearby two-axis positions.",
+            "先分别打分，再按生产端与客户端权重计算总分；缺少客户信号时，纵轴改用检验量强度。下方逐步展开原始输入、平滑、分段打分与加权。",
+            "Score the inputs, then combine production and client weights. Without client signals, use volume strength. The example below expands inputs, smoothing, piecewise scores and contributions.",
         )
     render_chart_heading(
         "高风险产品聚类分析",
