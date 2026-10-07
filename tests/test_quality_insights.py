@@ -1,14 +1,46 @@
 import unittest
+import json
+from unittest.mock import Mock
 
 import pandas as pd
 
 from quality_insights import (
-    chart_evidence, build_chart_insight, gate_totals,
-    supplier_summary, validate_ai_response,
+    chart_evidence, chart_signal, inspection_signal, build_chart_insight, gate_totals,
+    supplier_summary, validate_ai_response, validate_with_repair,
 )
 
 
 class QualityInsightTests(unittest.TestCase):
+    def test_readable_signal_tracks_latest_rebound_not_first_last(self):
+        traces = [{"type": "scatter", "mode": "lines", "x": ["Jan", "Feb", "Mar"], "y": [19, 6, 16]}]
+        facts = {"evidence": chart_evidence(traces, context={"exception_only": True})}
+        self.assertEqual(chart_signal(facts)["tone"], "danger")
+        self.assertIn("近期回升", chart_signal(facts)["label"])
+
+    def test_green_signal_needs_comparable_complete_rate_coverage(self):
+        evidence = {"kind": "trend", "change": -.01, "is_rate": True,
+                    "latest_volume": {"denominator": 200}, "previous_volume": {"denominator": 100}}
+        self.assertEqual(chart_signal({"evidence": evidence})["tone"], "good")
+        for change in [{"partial_latest": True}, {"latest_volume": {"denominator": 50}},
+                       {"latest_volume": {}}, {"exception_only": True}]:
+            self.assertEqual(chart_signal({"evidence": {**evidence, **change}})["tone"], "warning")
+        self.assertEqual(chart_signal({"evidence": {"kind": "trend", "change": -3}})["tone"], "warning")
+
+    def test_missing_or_single_period_is_neutral_and_pareto_is_not_improvement(self):
+        self.assertEqual(chart_signal({"empty": True})["tone"], "neutral")
+        self.assertEqual(chart_signal({"evidence": {"kind": "trend", "change": None}})["tone"], "neutral")
+        self.assertEqual(chart_signal({"evidence": {"kind": "pareto", "ranked": [["A", 50]]}})["tone"], "danger")
+        self.assertIn("Relative priority", chart_signal({"evidence": {"kind": "cluster"}}, "English")["label"])
+
+    def test_inspection_status_uses_recorded_pass_denominator_not_target(self):
+        signal = inspection_signal(116, 127)
+        self.assertEqual(signal["not_passed"], 11)
+        self.assertEqual(signal["tone"], "danger")
+        self.assertIn("11 条未通过", signal["label"])
+        self.assertEqual(inspection_signal(20, 20)["tone"], "good")
+        for passed, total in [(None, 20), (0, 0), (21, 20), (-1, 20)]:
+            self.assertEqual(inspection_signal(passed, total)["tone"], "neutral")
+
     def test_exception_trend_detects_rebound_instead_of_first_last_only(self):
         trace = {"type": "scatter", "mode": "lines+markers", "x": ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"], "y": [19, 6, 11, 14, 14, 16]}
         e = chart_evidence([trace], context={"exception_only": True})
@@ -96,6 +128,24 @@ class QualityInsightTests(unittest.TestCase):
             bad[change] = bad[change][1:]
             with self.assertRaises(ValueError):
                 validate_ai_response(bad, ["trend"], ["356209"])
+
+    def test_one_provider_correction_retains_scope_and_numeric_checks(self):
+        bad = self.response()
+        bad["charts"][0]["interpretation"] += " 达到59.2%。"
+        repair = Mock(return_value=json.dumps(self.response()))
+        result = validate_with_repair(json.dumps(bad), ["trend"], ["356209"], {}, repair)
+        self.assertEqual(len(result["actions"]), 3)
+        repair.assert_called_once()
+        self.assertIn("unsupported numbers", repair.call_args.args[1])
+        repair = Mock(return_value=json.dumps(bad))
+        with self.assertRaisesRegex(ValueError, "unsupported numbers"):
+            validate_with_repair(json.dumps(bad), ["trend"], ["356209"], {}, repair)
+        repair.assert_called_once()
+
+    def test_valid_response_never_requests_provider_correction(self):
+        repair = Mock()
+        validate_with_repair(json.dumps(self.response()), ["trend"], ["356209"], {}, repair)
+        repair.assert_not_called()
 
     def test_provider_cannot_add_new_cc_or_numbers(self):
         bad = self.response()
