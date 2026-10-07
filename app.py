@@ -50,10 +50,11 @@ from quality_chart_ui import (
     style_quality_trend,
 )
 import quality_insights as _quality_insights
-if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-07-v5-three-part":
+if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-07-v7-verified-ai":
     importlib.reload(_quality_insights)
 from quality_insights import (
-    INSIGHTS_VERSION, chart_evidence, build_chart_insight, validate_ai_response,
+    INSIGHTS_VERSION, chart_evidence, chart_signal, inspection_signal,
+    build_chart_insight, validate_ai_response, validate_with_repair,
 )
 
 
@@ -20819,9 +20820,11 @@ def render_chart_ai(facts: dict) -> None:
     # the measured observations or the application-calculated numbers.
     insight = {**baseline, **saved} if saved else baseline
     label = t("AI 解读", "AI insight") if saved else t("数据解读 · 未生成 AI", "Data insight · AI not generated")
+    signal = chart_signal(facts, st.session_state.lang)
+    badge = f'<span class="quality-signal quality-signal-{signal["tone"]}">{html.escape(signal["label"])}</span>'
     labels = {"finding": t("发现", "Finding"), "interpretation": t("判断", "Interpretation"), "action": t("建议复核", "Next check")}
-    paragraphs = "".join(f'<p><b>{labels[key]}</b> {html.escape(str(insight[key]))}</p>' for key in labels)
-    st.markdown(f'<div class="quality-inline-ai"><div class="quality-inline-ai-label">{label}</div>{paragraphs}</div>', unsafe_allow_html=True)
+    paragraphs = "".join(f'<p class="quality-ai-{key}"><b>{labels[key]}</b> {html.escape(str(insight[key]))}</p>' for key in labels)
+    st.markdown(f'<div class="quality-inline-ai" data-signal="{signal["tone"]}"><div class="quality-inline-ai-label">{label}</div>{badge}{paragraphs}</div>', unsafe_allow_html=True)
 
 
 def render_unified_plotly(fig, *args, **kwargs):
@@ -20873,8 +20876,8 @@ def render_three_part_report(community, pack, narrative):
     def e(value):
         return html.escape(str(value if value is not None else "—"))
 
-    def metric(label, value, detail=""):
-        return f'<div class="quality-report-metric"><dt>{e(label)}</dt><dd>{e(value)}</dd>{f"<small>{e(detail)}</small>" if detail else ""}</div>'
+    def metric(label, value, detail="", tone="neutral"):
+        return f'<div class="quality-report-metric"><dt>{e(label)}</dt><dd class="quality-value-{tone}">{e(value)}</dd>{f"<small>{e(detail)}</small>" if detail else ""}</div>'
 
     st.subheader(t("1. 高风险 CC Top 5", "1. Top 5 High-Risk CCs"))
     risk_rows = []
@@ -20890,10 +20893,11 @@ def render_three_part_report(community, pack, narrative):
         else:
             model_text = f'<span class="quality-report-model">Model · {model_text}</span>'
         supplier = f'<span class="quality-report-supplier">{e(product.get("supplier"))}</span>' if product.get("supplier") else ""
+        first_badge = f'<span class="quality-signal quality-signal-danger">{e(t("优先复核", "Review first"))}</span>' if index == 1 else ""
         risk_rows.append(f'<tr><td><span class="quality-report-rank">{index:02d}</span></td>'
             f'<td><strong class="quality-report-cc">{e(product["cc"])}</strong>{supplier}{model_text}</td>'
             f'<td class="quality-report-defect">{e(product.get("top_defect") or "—")}</td>'
-            f'<td><strong class="quality-report-score">{e(fmt(product.get("risk_score"), 1))}</strong></td>'
+            f'<td><strong class="quality-report-score">{e(fmt(product.get("risk_score"), 1))}</strong>{first_badge}</td>'
             f'<td><strong>{e(dpu)}</strong><small class="quality-report-counts">{e(dpu_detail)}</small></td>'
             f'<td>{e(fmt(product.get("rpm")))}</td><td>{e(fmt(product.get("iv_cases")))}</td></tr>')
     if risk_rows:
@@ -20912,16 +20916,21 @@ def render_three_part_report(community, pack, narrative):
         if community == "TU":
             rft = f"{action['fqc_rft']:.1%}" if action.get("fqc_rft") is not None else "—"
             rft_detail = f"PASS {fmt(action.get('fqc_first_pass'))} / {fmt(action.get('fqc_valid_records'))}" if action.get("fqc_rft") is not None else ""
+            signal = inspection_signal(action.get("fqc_first_pass"), action.get("fqc_valid_records"), st.session_state.lang)
             metrics = metric(t("Decathlon FQC 记录", "Decathlon FQC records"), fmt(action.get("ps_fqc_records")))
             metrics += metric(t("工厂 FQC 记录", "Factory FQC records"), fmt(action.get("factory_fqc_records")))
-            metrics += metric("RFT", rft, rft_detail)
+            metrics += metric("RFT", rft, rft_detail, signal["tone"])
+            result_badge = f'<span class="quality-signal quality-signal-{signal["tone"]}">{e(signal["label"])}</span>'
+            if signal["not_passed"] is not None:
+                result_badge += f'<span class="quality-signal quality-signal-good">{e(t("已记录 PASS", "Recorded PASS"))} {e(fmt(action.get("fqc_first_pass")))}</span>'
         else:
             metrics = metric(t("FQC 源记录", "FQC source records"), fmt(action.get("fqc_records")))
             metrics += metric(t("检验数", "Inspections"), fmt(action.get("fqc_sampled")))
             metrics += metric(t("源不良数量", "Source NC quantity"), fmt(action.get("fqc_defects")))
+            result_badge = ""
         supplier = f'<span>{e(product.get("supplier"))}</span>' if product.get("supplier") else ""
         rows.append(f'<article class="quality-report-evidence"><header><strong>CC {e(product["cc"])}</strong>{supplier}</header>'
-            f'<dl>{metrics}</dl><div class="quality-report-evidence-date">{e(t("最近 FQC", "Latest FQC"))} · {e(action.get("latest_fqc_date") or "—")}</div></article>')
+            f'<dl>{metrics}</dl><div class="quality-report-result">{result_badge}</div><div class="quality-report-evidence-date">{e(t("最近 FQC", "Latest FQC"))} · {e(action.get("latest_fqc_date") or "—")}</div></article>')
     if rows:
         st.markdown('<div class="quality-report-evidence-grid">' + ''.join(rows) + '</div>', unsafe_allow_html=True)
     else:
@@ -20982,12 +20991,19 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
                 schema = {"actions": [{"action": "", "priority_ccs": []} for _ in range(3)],
                     "charts": [{"id": chart["id"], "interpretation": "", "action": ""} for chart in model_charts]}
                 instruction += " Fill this exact JSON template, preserving every chart id and array length: " + json.dumps(schema, ensure_ascii=False)
-                instruction += " The factual finding is rendered by the application: do not repeat or introduce numbers in narrative. Do not invent causes, targets, owners, completed actions, CP links or AQL rules. Clearly distinguish a plausible hypothesis from a verified cause and recommendations from recorded activity. Risk scores are priorities, not defect probabilities. Undated customer N0 snapshots are not time series. Do not combine quantities with different units; missing data is not zero. Retain chart ids exactly; SPC has independent supplier/process filters."
-                with st.spinner(t("正在生成当前范围的分析与建议…", "Generating scoped interpretations and recommendations…")):
+                instruction += " The factual finding is rendered by the application. Interpretation/action prose must contain NO Arabic digits, dates, percentages, quantitative claims, or numbered lists. Put CC identifiers only in priority_ccs; preserve chart ids only in id fields. Refer to the leading defect name, current/prior/peak period, or highest-axis object qualitatively; the application already displays their exact identifiers and values. Do not invent causes, targets, owners, completed actions, CP links or AQL rules. Clearly distinguish a plausible hypothesis from a verified cause and recommendations from recorded activity. Risk scores are priorities, not defect probabilities. Undated customer N0 snapshots are not time series. Do not combine quantities with different units; missing data is not zero. Retain chart ids exactly; SPC has independent supplier/process filters."
+                messages = [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+                def request_analysis(request_messages):
                     response = post_json(get_secret_value(["DASHSCOPE_BASE_URL", "QWEN_BASE_URL"], default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"),
-                        {"model": model, "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-                         "temperature": 0.1, "max_tokens": 8000, "response_format": {"type": "json_object"}}, {"Authorization": f"Bearer {get_qwen_api_key()}"})
-                parsed = validate_ai_response(json.loads(response["choices"][0]["message"]["content"]), [c["id"] for c in model_charts], [str(p["cc"]) for p in pack.get("product_risks", [])[:5]], payload)
+                        {"model": model, "messages": request_messages, "temperature": 0.1, "max_tokens": 8000,
+                         "response_format": {"type": "json_object"}}, {"Authorization": f"Bearer {get_qwen_api_key()}"})
+                    return response["choices"][0]["message"]["content"]
+                def repair_analysis(content, reason):
+                    correction = "Validation rejected the response: " + reason + ". Return the complete corrected JSON using the exact original template. Remove ALL Arabic digits from interpretation/action prose, including dates, percentages, codes and quantities; describe periods and objects qualitatively. Keep priority_ccs and chart ids unchanged and exact. Do not add facts, causes or completed actions."
+                    return request_analysis(messages + [{"role": "assistant", "content": content}, {"role": "user", "content": correction}])
+                with st.spinner(t("正在生成并核对当前范围的分析与建议…", "Generating and validating scoped interpretations…")):
+                    content = request_analysis(messages)
+                    parsed = validate_with_repair(content, [c["id"] for c in model_charts], [str(p["cc"]) for p in pack.get("product_risks", [])[:5]], payload, repair_analysis)
                 report = {"narrative": {"actions": parsed["actions"]}, "generated_at": beijing_timestamp(), "model": model}
                 reports[fingerprint] = report
                 cache = st.session_state.setdefault("_unified_chart_ai", {})

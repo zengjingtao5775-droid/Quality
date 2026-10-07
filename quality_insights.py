@@ -9,7 +9,7 @@ import json
 
 import pandas as pd
 
-INSIGHTS_VERSION = "2026-10-07-v5-three-part"
+INSIGHTS_VERSION = "2026-10-07-v7-verified-ai"
 
 
 def numeric(value):
@@ -111,6 +111,59 @@ def chart_evidence(traces, y_format="", context=None):
                 "high_x": max(points, key=lambda p: p["x"]) if points else None,
                 "high_y": max(points, key=lambda p: p["y"]) if points else None}
     return {**context, "kind": kind or "other"}
+
+
+def chart_signal(facts, language="中文"):
+    """Color only measured signals; never infer improvement from sparse data."""
+    zh = language == "中文"
+    evidence = facts.get("evidence") or {}
+    kind = evidence.get("kind")
+    def signal(tone, chinese, english):
+        return {"tone": tone, "label": chinese if zh else english}
+    if facts.get("empty") or kind == "empty":
+        return signal("neutral", "暂无数据", "Data unavailable")
+    if kind == "trend":
+        if evidence.get("partial_latest"):
+            return signal("warning", "末月未完整 · 待对齐", "Partial month · align periods")
+        delta = numeric(evidence.get("change"))
+        if delta is None:
+            return signal("neutral", "缺少可比上期", "No comparable prior period")
+        if delta > 0:
+            return signal("danger", "近期回升 · 优先复核", "Recent increase · review first")
+        if delta < 0:
+            current = evidence.get("latest_volume") or {}
+            previous = evidence.get("previous_volume") or {}
+            denominator = numeric(current.get("denominator"))
+            previous_denominator = numeric(previous.get("denominator"))
+            # Rates need both denominators. If coverage shrank, a lower rate
+            # is a review signal rather than evidence of improvement.
+            if evidence.get("is_rate") and (denominator is None or previous_denominator is None
+                    or denominator <= 0 or previous_denominator <= 0 or denominator < previous_denominator):
+                return signal("warning", "数值回落 · 覆盖待核实", "Lower value · verify coverage")
+            if evidence.get("exception_only") or not evidence.get("is_rate"):
+                return signal("warning", "记录减少 · 效果待核实", "Fewer issues · verify effectiveness")
+            return signal("good", "问题率回落 · 继续验证", "Lower issue rate · verify improvement")
+        return signal("neutral", "近期持平", "Unchanged recently")
+    if kind == "pareto" and evidence.get("ranked"):
+        return signal("danger", "首位问题 · 优先复核", "Leading issue · review first")
+    if kind == "cluster":
+        return signal("warning", "相对优先级 · 需追溯", "Relative priority · trace sources")
+    if kind == "spc":
+        return signal("warning", "过程信号 · 核对规格", "Process signal · check specifications")
+    return signal("neutral", "按当前范围复核", "Review the current selection")
+
+
+def inspection_signal(passed, total, language="中文"):
+    """Distinguish recorded PASS/FAIL counts from corrective-action closure."""
+    passed, total = numeric(passed), numeric(total)
+    zh = language == "中文"
+    if passed is None or total is None or total <= 0 or passed < 0 or passed > total:
+        return {"tone": "neutral", "label": "结果待补齐" if zh else "Results unavailable", "not_passed": None}
+    remaining = total - passed
+    return {"tone": "danger" if remaining else "good",
+            "label": (f"{remaining:,.0f} 条未通过" if remaining else "全部有效记录 PASS") if zh else
+                     (f"{remaining:,.0f} non-PASS records" if remaining else "All valid records PASS"),
+            "not_passed": remaining}
 
 
 def build_chart_insight(facts, language="中文"):
@@ -238,3 +291,13 @@ def validate_ai_response(response, chart_ids, allowed_ccs, source_facts=None):
     if set(by_id) != set(chart_ids):
         raise ValueError("Chart scope mismatch")
     return {"actions": normalized, "charts": by_id}
+
+
+def validate_with_repair(content, chart_ids, allowed_ccs, source_facts, repair):
+    """Permit one provider correction, while retaining all factual checks."""
+    try:
+        return validate_ai_response(json.loads(content), chart_ids, allowed_ccs, source_facts)
+    except (ValueError, TypeError) as error:
+        corrected = repair(content, str(error))
+        # No further retry and no partially validated response reaches the UI.
+        return validate_ai_response(json.loads(corrected), chart_ids, allowed_ccs, source_facts)
