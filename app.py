@@ -54,7 +54,6 @@ if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-07-v5-three-pa
     importlib.reload(_quality_insights)
 from quality_insights import (
     INSIGHTS_VERSION, chart_evidence, build_chart_insight, validate_ai_response,
-    supplier_summary, gate_totals,
 )
 
 
@@ -20871,16 +20870,37 @@ def render_three_part_report(community, pack, narrative):
         number = finite_number(value)
         return "—" if number is None else f"{number:,.{decimals}f}"
 
+    def e(value):
+        return html.escape(str(value if value is not None else "—"))
+
+    def metric(label, value, detail=""):
+        return f'<div class="quality-report-metric"><dt>{e(label)}</dt><dd>{e(value)}</dd>{f"<small>{e(detail)}</small>" if detail else ""}</div>'
+
     st.subheader(t("1. 高风险 CC Top 5", "1. Top 5 High-Risk CCs"))
     risk_rows = []
     for index, product in enumerate(products, 1):
         numerator, denominator = finite_number(product.get("defects")), finite_number(product.get("inspected"))
-        dpu = f"{fmt(numerator)} / {fmt(denominator)} = {numerator / denominator:.2%}" if numerator is not None and denominator and denominator > 0 else "—"
-        risk_rows.append({t("优先级", "Priority"): index, "CC": product["cc"], "Model": product.get("model") or "—",
-                          t("主要疵点", "Top defect"): product.get("top_defect") or "—", t("风险分", "Risk score"): fmt(product.get("risk_score"), 1),
-                          "DPU": dpu, "RPM": fmt(product.get("rpm")), "IV": fmt(product.get("iv_cases"))})
+        valid_dpu = numerator is not None and denominator is not None and denominator > 0
+        dpu = f"{numerator / denominator:.2%}" if valid_dpu else "—"
+        dpu_detail = f"{fmt(numerator)} / {fmt(denominator)}" if valid_dpu else ""
+        model = product.get("model") or "—"
+        model_text = e(model)
+        if len(model) > 55:
+            model_text = f'<details class="quality-report-model"><summary>Model · {e(model[:38])}…</summary><p>{e(model)}</p></details>'
+        else:
+            model_text = f'<span class="quality-report-model">Model · {model_text}</span>'
+        supplier = f'<span class="quality-report-supplier">{e(product.get("supplier"))}</span>' if product.get("supplier") else ""
+        risk_rows.append(f'<tr><td><span class="quality-report-rank">{index:02d}</span></td>'
+            f'<td><strong class="quality-report-cc">{e(product["cc"])}</strong>{supplier}{model_text}</td>'
+            f'<td class="quality-report-defect">{e(product.get("top_defect") or "—")}</td>'
+            f'<td><strong class="quality-report-score">{e(fmt(product.get("risk_score"), 1))}</strong></td>'
+            f'<td><strong>{e(dpu)}</strong><small class="quality-report-counts">{e(dpu_detail)}</small></td>'
+            f'<td>{e(fmt(product.get("rpm")))}</td><td>{e(fmt(product.get("iv_cases")))}</td></tr>')
     if risk_rows:
-        st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
+        headings = [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("风险分", "Risk"), "DPU", "RPM", "IV"]
+        st.markdown('<div class="quality-report-risk-table"><table><colgroup><col class="report-col-rank"><col class="report-col-product"><col class="report-col-defect"><col class="report-col-score"><col class="report-col-dpu"><col class="report-col-rpm"><col class="report-col-iv"></colgroup>'
+            + '<thead><tr>' + ''.join(f'<th scope="col">{e(label)}</th>' for label in headings) + '</tr></thead><tbody>'
+            + ''.join(risk_rows) + '</tbody></table></div>', unsafe_allow_html=True)
     else:
         st.info(t("当前范围暂无可计算的 CC 风险排序。", "No scored CCs are available in this selection."))
     st.caption(t("与当前聚类/CC 帕累托排序一致。DPU 是疵点数÷检验数；风险分不是不良概率。BME 的不同供应商/环节分数用于各自的相对排序，不代表统一的绝对风险。", "Matches the cluster/CC Pareto ranking. DPU = defect points / inspections; risk scores are not defect probabilities. BME supplier/gate scores are relative priorities, not a common absolute-risk scale."))
@@ -20890,25 +20910,31 @@ def render_three_part_report(community, pack, narrative):
     for product in products:
         action = action_map.get(str(product["cc"]), {})
         if community == "TU":
-            rft = f"{action['fqc_rft']:.1%} ({fmt(action.get('fqc_first_pass'))}/{fmt(action.get('fqc_valid_records'))})" if action.get("fqc_rft") is not None else "—"
-            rows.append({"CC": product["cc"], t("Decathlon FQC 记录", "Decathlon FQC records"): fmt(action.get("ps_fqc_records")),
-                         t("工厂 FQC 记录", "Factory FQC records"): fmt(action.get("factory_fqc_records")), "RFT (PASS/有效记录)" if st.session_state.lang == "中文" else "RFT (PASS/valid)": rft,
-                         t("最近 FQC", "Latest FQC"): action.get("latest_fqc_date") or "—"})
+            rft = f"{action['fqc_rft']:.1%}" if action.get("fqc_rft") is not None else "—"
+            rft_detail = f"PASS {fmt(action.get('fqc_first_pass'))} / {fmt(action.get('fqc_valid_records'))}" if action.get("fqc_rft") is not None else ""
+            metrics = metric(t("Decathlon FQC 记录", "Decathlon FQC records"), fmt(action.get("ps_fqc_records")))
+            metrics += metric(t("工厂 FQC 记录", "Factory FQC records"), fmt(action.get("factory_fqc_records")))
+            metrics += metric("RFT", rft, rft_detail)
         else:
-            rows.append({"CC": product["cc"], t("供应商", "Supplier"): product.get("supplier") or "—",
-                         t("FQC 源记录", "FQC source records"): fmt(action.get("fqc_records")),
-                         t("检验数", "Inspections"): fmt(action.get("fqc_sampled")), t("源不良数量", "Source NC quantity"): fmt(action.get("fqc_defects")),
-                         t("最近 FQC", "Latest FQC"): action.get("latest_fqc_date") or "—"})
+            metrics = metric(t("FQC 源记录", "FQC source records"), fmt(action.get("fqc_records")))
+            metrics += metric(t("检验数", "Inspections"), fmt(action.get("fqc_sampled")))
+            metrics += metric(t("源不良数量", "Source NC quantity"), fmt(action.get("fqc_defects")))
+        supplier = f'<span>{e(product.get("supplier"))}</span>' if product.get("supplier") else ""
+        rows.append(f'<article class="quality-report-evidence"><header><strong>CC {e(product["cc"])}</strong>{supplier}</header>'
+            f'<dl>{metrics}</dl><div class="quality-report-evidence-date">{e(t("最近 FQC", "Latest FQC"))} · {e(action.get("latest_fqc_date") or "—")}</div></article>')
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.markdown('<div class="quality-report-evidence-grid">' + ''.join(rows) + '</div>', unsafe_allow_html=True)
     else:
         st.info(t("当前范围没有可对应 CC 的行动证据。", "No action evidence linked to these CCs is available."))
     st.caption(t("本段核对已记录的检验活动；检验记录不等于整改完成或有效关闭。缺少责任方/关闭证据的内容保留为空。", "This section verifies recorded inspection activity. Inspection records do not prove corrective actions are completed or effective; missing ownership/closure evidence remains unavailable."))
 
     st.subheader(t("3. 推荐行动计划", "3. Recommended Action Plan"))
+    ai_actions = []
     for item in narrative.get("actions", []):
         scope_text = " / ".join(item.get("priority_ccs", []))
-        st.markdown(f"- **{scope_text or t('当前范围', 'Current selection')}**：{item['action']}")
+        ai_actions.append(f'<article class="quality-report-ai-action"><span>{e(scope_text or t("当前范围", "Current selection"))}</span><p>{e(item["action"])}</p></article>')
+    if ai_actions:
+        st.markdown('<div class="quality-report-ai-actions">' + ''.join(ai_actions) + '</div>', unsafe_allow_html=True)
     plan_rows = []
     for product in products:
         cc = str(product["cc"])
@@ -20916,11 +20942,11 @@ def render_three_part_report(community, pack, narrative):
         matches = action.get("cp_matches", [])
         cp = "\n".join(f"{m.get('focus', '')}: {m.get('requirement', '')}" for m in matches[:1]) or "—"
         focus = product.get("top_defect") or t("先补齐问题类型与 CC 的对应关系", "Establish the defect-type to CC link first")
-        plan_rows.append({"CC": cc, t("建议关注点", "Recommended focus"): focus,
-                          t("相关 CP / 工序标准", "Related CP / Process Standard"): cp,
-                          t("建议 AQL 动态标准", "Recommended Dynamic AQL"): aql.get("recommendation") or "—"})
+        plan_rows.append(f'<article class="quality-report-plan"><header><span>CC {e(cc)}</span><strong>{e(focus)}</strong></header>'
+            f'<dl><div><dt>{e(t("相关 CP / 工序标准", "Related CP / Process Standard"))}</dt><dd>{e(cp)}</dd></div>'
+            f'<div><dt>{e(t("建议 AQL 动态标准", "Recommended Dynamic AQL"))}</dt><dd>{e(aql.get("recommendation") or "—")}</dd></div></dl></article>')
     if plan_rows:
-        st.dataframe(pd.DataFrame(plan_rows), use_container_width=True, hide_index=True)
+        st.markdown('<div class="quality-report-plan-grid">' + ''.join(plan_rows) + '</div>', unsafe_allow_html=True)
     st.caption(t("建议先按 CC/批次核对主要疵点与检验记录，由质量负责人确认 CP 控制点，随后用同一口径的复检及客户反馈验证措施。", "Trace leading defects and inspections by CC/batch; have the quality lead confirm CP controls, then verify effectiveness using comparable repeat inspections and customer feedback."))
     if community == "TU":
         st.caption(t("动态 AQL 沿用原版风险规则，仅为建议；最终抽样仍需核对批量、检验水平、样本代码与批准的 Ac/Re 表。", "Dynamic AQL retains the original risk rules as recommendations; final sampling requires lot size, inspection level, sample code and approved Ac/Re tables."))
@@ -20939,12 +20965,12 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
     reports = st.session_state.setdefault("_unified_reports", {})
     report = reports.get(fingerprint)
     with st.container(border=True, key=f"{community.lower()}_overall_ai_report"):
-        title, button = st.columns([0.68, 0.32], vertical_alignment="center")
+        title, button = st.columns([0.78, 0.22], vertical_alignment="center")
         with title:
             st.header(t(f"{community} · AI 总结报告", f"{community} · AI Summary Report"))
             st.caption(t("当前筛选 · 三段式质量结论", "Current selection · Three-part quality conclusion"))
         with button:
-            generate = st.button(t("生成 AI 报告与解读", "Generate AI insights"), key=f"{community.lower()}_generate_unified_ai", type="primary", use_container_width=True, disabled=not bool(get_qwen_api_key()))
+            generate = st.button(t("生成 AI 报告", "Generate AI report"), key=f"{community.lower()}_generate_unified_ai", type="primary", use_container_width=True, disabled=not bool(get_qwen_api_key()))
         if generate:
             try:
                 model = get_secret_value(["QWEN_MODEL"], default="qwen-flash")
@@ -20978,23 +21004,6 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
             st.caption(f"{report['model']} · {report['generated_at']} · " + t("当前筛选的 AI 分析", "AI analysis for this selection"))
         else:
             st.caption(t("当前为按源数据生成的三段式报告，尚未生成 AI 分析。点击上方按钮，补充总体行动建议和每图深入解读。", "The source-grounded three-part report is shown. Generate AI insights to add overall recommendations and deeper per-chart analysis."))
-
-
-def render_unified_summary_table(rows, details, scope):
-    with st.container(border=True, key="quality_summary_table"):
-        st.subheader(t("TU / BME · 质量汇总", "TU / BME · Quality Summary"))
-        st.caption(t("同一张表随 Community、供应商、CC、Model、FG/CPT 和日期筛选更新；多选 TU 与 BME 可并列查看。", "One table updates with Community, supplier, CC, Model, FG/CPT and date filters. Select both communities to compare supplier rows."))
-        if not rows:
-            st.info(t("当前筛选没有供应商数据。", "No supplier data under the current selection."))
-            return
-        frame = pd.DataFrame(rows).fillna("—")
-        st.dataframe(frame, use_container_width=True, hide_index=True, height=38 * (len(frame) + 1) + 3,
-                     column_config={"Community": st.column_config.TextColumn(width="small"), "FG / CPT": st.column_config.TextColumn(width="small")})
-        st.caption(t(f"检验/IV：{scope.start} → {scope.end}；客户 RPM/NQC：N0 源快照。CMW RPM 为来料退货/来料数量，其余已接入客户 RPM 为退货/销量，均 ×1,000,000。IQC/PQC/FQC 显示疵点或问题率；分母缺失时显示记录/问题数量，— 表示不可计算。", f"Inspection/IV: {scope.start} → {scope.end}; customer RPM/NQC: N0 snapshot. CMW RPM uses incoming returns/incoming quantity; connected customer RPM uses returns/sales, all ×1,000,000. IQC/PQC/FQC show defect/issue rates, or counts where denominators are unavailable; — means unavailable."))
-        with st.expander(t("统计分子与分母", "Numerators and denominators"), expanded=False):
-            detail_frame = pd.DataFrame(details).rename(columns={"community": "Community", "supplier": t("供应商", "Supplier"), "stage": t("环节", "Gate"), "quantity": t("问题数量", "Issue quantity"), "denominator": t("有效分母", "Valid denominator"), "rate": t("问题率", "Issue rate"), "rows": t("记录数", "Records")})
-            st.dataframe(detail_frame, hide_index=True, use_container_width=True)
-        st.download_button(t("下载当前汇总表", "Download summary"), frame.to_csv(index=False).encode("utf-8-sig"), file_name="TU_BME_quality_summary.csv", mime="text/csv", key="quality_summary_download")
 
 
 @st.cache_data(show_spinner=False)
@@ -21115,7 +21124,7 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         eligible = [d.date() for d in dated if d.date() <= today]
         anchor = max(eligible) if eligible else today
         with st.container(key="quality_filter_details"):
-            p1, p2, p3 = st.columns([1, 1, 2], gap="small")
+            p1, p2, p3, p4 = st.columns(4, gap="small")
             with p1:
                 period = st.selectbox(t("日期周期", "Period"), ["R12M", "YTD", "Custom"], key="quality_period")
             start = dt.date(anchor.year, 1, 1) if period == "YTD" else (pd.Timestamp(anchor) - pd.DateOffset(years=1) + pd.Timedelta(days=1)).date()
@@ -21132,11 +21141,10 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
             with p3:
                 product_type_labels = {"FG": t("FG · 成品业务", "FG · Finished goods"), "CPT": t("CPT · 零部件业务", "CPT · Components")}
                 product_types = multi_filter("FG / CPT", ["FG", "CPT"], "quality_product_types", lambda v: product_type_labels[v])
-        actions, context = st.columns([0.18, 0.82], vertical_alignment="center")
-        with actions:
-            st.button(t("重置筛选", "Reset Filters"), icon=":material/restart_alt:", key="quality_reset_filters", on_click=reset_filters, use_container_width=True)
-        with context:
-            st.markdown(f'<div class="quality-filter-context">{html.escape(t("请先选择 Community；其他字段空选表示全部。同一字段可多选，不同字段同时生效，筛选自动应用。", "Choose a Community. Other empty filters mean all. Multi-select within each field; different fields apply together. Changes apply automatically."))}</div>', unsafe_allow_html=True)
+            with p4:
+                with st.container(key="quality_filter_reset"):
+                    st.button(t("重置筛选", "Reset Filters"), icon=":material/restart_alt:", key="quality_reset_filters", on_click=reset_filters, use_container_width=True)
+        st.markdown(f'<div class="quality-filter-context">{html.escape(t("请先选择 Community；其他字段空选表示全部。同一字段可多选，不同字段同时生效，筛选自动应用。", "Choose a Community. Other empty filters mean all. Multi-select within each field; different fields apply together. Changes apply automatically."))}</div>', unsafe_allow_html=True)
     return DashboardScope(communities=tuple(communities), suppliers=tuple(selected_suppliers), ccs=tuple(ccs), models=tuple(models), period=period, start=start, end=end, product_types=tuple(product_types))
 
 
@@ -21263,10 +21271,6 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
     summary, pareto = build_zx_quality_gates(incoming, finished, jdy)
     render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU")
     render_unified_spc(pd.DataFrame(), scope, "TU")
-    if scope.includes_supplier("ZX"):
-        row, details = supplier_summary("TU", "ZX · 49425", "FG", summary, metrics, current_iv, st.session_state.lang)
-        st.session_state["_quality_summary_rows"].append(row)
-        st.session_state["_quality_summary_details"].extend(details)
     source_pack = build_tu_community_ai_fact_pack(finished, risk_voice, incoming, cluster, pd.DataFrame(), settings, jdy_fqc_override=jdy, use_cluster_ranking=True)
     pack = {key: source_pack[key] for key in ["product_risks", "ps_actions", "aql_recommendations", "cp_context"]}
     render_unified_ai_report("TU", {"community": "TU", "scope": scope.facts(), "customer": metrics, "iv": current_iv, "report_pack": pack,
@@ -21366,16 +21370,6 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
         summary = filter_records(summary, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
         pareto = filter_records(pareto, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
         render_quality_gate_analysis(summary, pareto, ["CMW"] if supplier == "CMW" else ["CPT"], scope.start, scope.end, analysis_kind=kind)
-        table_metrics = {"rpm_now": incoming_rpm} if supplier == "CMW" and pd.notna(incoming_rpm) else metrics if supplier == "FSD" else {}
-        row, details = supplier_summary("BME", supplier, kind, summary, table_metrics, language=st.session_state.lang)
-        st.session_state["_quality_summary_rows"].append(row)
-        st.session_state["_quality_summary_details"].extend(details)
-    if scope.includes_supplier("TEKTRO"):
-        empty_gates = pd.DataFrame(columns=["stage", "defect_qty", "po_qty"])
-        row, details = supplier_summary("BME", "TEKTRO", "CPT", empty_gates, language=st.session_state.lang)
-        row[t("LAB NC 率", "LAB NC rate")] = next((card["value"] for card in cards if "TEKTRO LAB" in card["label"]), "—")
-        st.session_state["_quality_summary_rows"].append(row)
-        st.session_state["_quality_summary_details"].extend(details)
     # SPC intentionally receives the full source, with date filters only.
     render_unified_spc(events, scope, "BME")
     with st.expander(t("更多分析 · 返工与明细", "More Analysis · Rework and Detail"), expanded=False):
@@ -21427,8 +21421,6 @@ def render_unified_dashboard():
     st.markdown(f"<style>{(ROOT / 'unified_dashboard.css').read_text()}</style>", unsafe_allow_html=True)
     st.session_state["_unified_chart_facts"] = {}
     st.session_state["_unified_report_facts"] = {}
-    st.session_state["_quality_summary_rows"] = []
-    st.session_state["_quality_summary_details"] = []
     with st.spinner(t("正在读取质量数据…", "Loading quality data…")):
         finished, voice, incoming = load_all_data(DATA_SCOPE_CACHE_VERSION, ("ZX",))
         finished = finished.copy()
@@ -21442,15 +21434,12 @@ def render_unified_dashboard():
         iv = load_unified_zx_iv(DATA_SCOPE_CACHE_VERSION)
     scope = render_unified_filters(finished, voice, incoming, jdy, events, fqc, rpm, mapping)
     st.session_state["_unified_scope"] = scope.facts()
-    summary_slot = st.container()
     if not scope.communities:
         st.info(t("请选择 TU 或 BME 查看质量分析。", "Select TU or BME to view quality analysis."))
     if "TU" in scope.communities:
         render_unified_tu(scope, finished, voice, incoming, jdy, iv)
     if "BME" in scope.communities:
         render_unified_bme(scope, events, nc, orders, (fqc, rpm, mapping))
-    with summary_slot:
-        render_unified_summary_table(st.session_state["_quality_summary_rows"], st.session_state["_quality_summary_details"], scope)
     st.session_state.pop("_active_ai_community", None)
 
 
