@@ -20819,12 +20819,26 @@ def render_chart_ai(facts: dict) -> None:
     # The model adds interpretation and recommendations; it never rewrites
     # the measured observations or the application-calculated numbers.
     insight = {**baseline, **saved} if saved else baseline
-    label = t("AI 解读", "AI insight") if saved else t("数据解读 · 未生成 AI", "Data insight · AI not generated")
+    label = t("AI 解读", "AI insight") if saved else t("数据解读", "Data insight")
     signal = chart_signal(facts, st.session_state.lang)
     badge = f'<span class="quality-signal quality-signal-{signal["tone"]}">{html.escape(signal["label"])}</span>'
     labels = {"finding": t("发现", "Finding"), "interpretation": t("判断", "Interpretation"), "action": t("建议复核", "Next check")}
     paragraphs = "".join(f'<p class="quality-ai-{key}"><b>{labels[key]}</b> {html.escape(str(insight[key]))}</p>' for key in labels)
-    st.markdown(f'<div class="quality-inline-ai" data-signal="{signal["tone"]}"><div class="quality-inline-ai-label">{label}</div>{badge}{paragraphs}</div>', unsafe_allow_html=True)
+    # Show the latest observation first; retain the complete, readable account
+    # behind a keyboard-accessible disclosure instead of a tall chart block.
+    preview = str(insight["finding"]).split("；", 1)[0].strip()
+    preview_limit = 72 if st.session_state.lang == "中文" else 160
+    if len(preview) > preview_limit:
+        preview = preview[:preview_limit].rstrip("，, ") + "…"
+    provenance = t("基于当前筛选数据生成；点击页面的“生成 AI 报告”可补充 AI 判断和建议。", "Generated from the current filtered data. Generate the page's AI report to add AI interpretation and recommendations.") if not saved else t("发现来自源数据，判断和建议由 AI 补充。", "Observations come from source data; AI adds interpretation and recommendations.")
+    st.markdown(
+        f'<div class="quality-inline-ai" data-signal="{signal["tone"]}">'
+        f'<div class="quality-ai-heading"><div class="quality-inline-ai-label">{label}</div>{badge}</div>'
+        f'<p class="quality-ai-preview quality-ai-finding">{html.escape(preview)}</p>'
+        f'<details class="quality-ai-details"><summary>{t("展开完整解读", "Read full insight")}</summary>'
+        f'{paragraphs}<p class="quality-ai-provenance">{html.escape(provenance)}</p></details></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_unified_plotly(fig, *args, **kwargs):

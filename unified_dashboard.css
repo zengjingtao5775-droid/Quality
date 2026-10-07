@@ -28,10 +28,17 @@
 .st-key-quality_unified_filter [data-baseweb="tag"] {background:#eef0ff; color:#343bc3; border-radius:4px;}
 .quality-filter-context {font-size:12px; color:#667085; line-height:1.6; margin:8px 0 0;}
 .quality-community-heading {font-size:25px; font-weight:800; color:#172033; margin:16px 0 0;}
-.quality-inline-ai {border-left:4px solid #2855c5; background:#f4f7fd; padding:18px; margin:8px 0 12px; font-size:16px; line-height:1.75; color:#344054; border-radius:0 8px 8px 0; overflow-wrap:anywhere;}
-.quality-inline-ai p {font-size:16px !important; line-height:1.75; margin:12px 0 0;}
+.quality-inline-ai {border-left:4px solid #2855c5; background:#f4f7fd; padding:14px 16px; margin:8px 0 12px; font-size:16px; line-height:1.65; color:#344054; border-radius:0 8px 8px 0; overflow-wrap:anywhere;}
+.quality-inline-ai p {font-size:16px !important; line-height:1.65; margin:10px 0 0;}
 .quality-inline-ai p b {color:#344054; font-weight:700; margin-right:5px;}
-.quality-inline-ai-label {color:#244aaa; font-weight:750; font-size:17px; margin-bottom:10px;}
+.quality-ai-heading {display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px;}
+.quality-inline-ai-label {color:#244aaa; font-weight:750; font-size:17px; margin:0;}
+.quality-ai-heading .quality-signal {margin:0;}
+.quality-ai-details {margin-top:10px;}
+.quality-ai-details summary {color:#244aaa; font-size:16px; font-weight:650; cursor:pointer; width:fit-content; line-height:1.65;}
+.quality-ai-details summary:focus-visible {outline:2px solid #2855c5; outline-offset:4px; border-radius:2px;}
+.quality-ai-details[open] {border-top:1px solid #dce3f2; padding-top:10px;}
+.quality-inline-ai .quality-ai-provenance {border-top:1px solid #dce3f2; padding-top:10px; color:#344054;}
 .quality-inline-ai .quality-ai-finding {font-weight:650;}
 .quality-inline-ai[data-signal="danger"] {border-left-color:#b42318;}
 .quality-inline-ai[data-signal="good"] {border-left-color:#067647;}
@@ -104,7 +111,7 @@
 .st-key-tu_cc_pareto_panel, .st-key-tu_iv_pareto_panel, .st-key-bme_cc_pareto_panel, .st-key-bme_iv_pareto_panel {background:#fff; border:1px solid #dce3f2; border-top:4px solid #2855c5; border-radius:12px;}
 [data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {max-width:100%; min-width:0;}
 @media(min-width:1051px) {
- .st-key-tu_zx_quality_gates .quality-inline-ai, .st-key-fg_quality_gates .quality-inline-ai, .st-key-cpt_quality_gates .quality-inline-ai {min-height:420px;}
+ .st-key-tu_zx_quality_gates .quality-inline-ai, .st-key-fg_quality_gates .quality-inline-ai, .st-key-cpt_quality_gates .quality-inline-ai {min-height:176px;}
 }
 @media(max-width:1050px) {
  .st-key-tu_zx_quality_gates > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"], .st-key-fg_quality_gates > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"], .st-key-cpt_quality_gates > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {flex-wrap:wrap;}
