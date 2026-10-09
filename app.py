@@ -21050,7 +21050,7 @@ def render_three_part_report(community, pack, narrative):
             result_badge = ""
         supplier = f'<span>{e(product.get("supplier"))}</span>' if product.get("supplier") else ""
         rows.append(f'<article class="quality-report-evidence"><header><strong>CC {e(product["cc"])}</strong>{supplier}</header>'
-            f'<dl>{metrics}</dl><footer class="quality-report-footer"><div class="quality-report-result">{result_badge}</div><div class="quality-report-evidence-date">{e(t("最近 FQC", "Latest FQC"))} · {e(action.get("latest_fqc_date") or "—")}</div></footer></article>')
+            f'<dl>{metrics}</dl><div class="quality-report-footer"><div class="quality-report-result">{result_badge}</div><div class="quality-report-evidence-date">{e(t("最近 FQC", "Latest FQC"))} · {e(action.get("latest_fqc_date") or "—")}</div></div></article>')
     if rows:
         st.markdown('<div class="quality-report-evidence-grid">' + ''.join(rows) + '</div>', unsafe_allow_html=True)
     else:
