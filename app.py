@@ -20996,91 +20996,90 @@ def render_three_part_report(community, pack, narrative):
     def e(value):
         return html.escape(str(value if value is not None else "—"))
 
-    def metric(label, value, detail="", tone="neutral"):
-        return f'<div class="quality-report-metric"><dt>{e(label)}</dt><dd class="quality-value-{tone}">{e(value)}</dd>{f"<small>{e(detail)}</small>" if detail else ""}</div>'
+    def detail(text, preview=None, css=""):
+        return f'<details class="quality-report-detail {css}"><summary>{e(preview if preview is not None else text)}</summary><p>{e(text)}</p></details>'
 
-    st.subheader(t("1. 高风险 CC Top 5", "1. Top 5 High-Risk CCs"))
-    risk_rows = []
+    def short(text, limit=12):
+        text = str(text or "—")
+        return detail(text, text[:limit] + "…") if len(text) > limit else e(text)
+
+    def cc_label(cc):
+        text = str(cc)
+        return detail(text, text.split(" · ")[0]) if " · " in text else e(text)
+
+    def table(name, headings, widths, rows):
+        if not rows:
+            return f'<p class="quality-report-empty">{e(t("当前范围暂无对应数据", "No matching data in this selection"))}</p>'
+        return (f'<div class="quality-report-table-wrap"><table class="quality-report-table quality-report-{name}" aria-label="{e(name)}">'
+                + '<colgroup>' + ''.join(f'<col style="width:{width}%">' for width in widths) + '</colgroup>'
+                + '<thead><tr>' + ''.join(f'<th scope="col">{e(label)}</th>' for label in headings) + '</tr></thead>'
+                + '<tbody>' + ''.join(rows) + '</tbody></table></div>')
+
+    risk_rows, evidence_rows, plan_rows = [], [], []
     for index, product in enumerate(products, 1):
+        cc = str(product["cc"])
         numerator, denominator = finite_number(product.get("defects")), finite_number(product.get("inspected"))
         valid_dpu = numerator is not None and denominator is not None and denominator > 0
         dpu = f"{numerator / denominator:.2%}" if valid_dpu else "—"
-        dpu_detail = f"{fmt(numerator)} / {fmt(denominator)}" if valid_dpu else ""
-        model = product.get("model") or "—"
-        model_text = e(model)
-        if len(model) > 55:
-            model_text = f'<details class="quality-report-model"><summary>Model · {e(model[:38])}…</summary><p>{e(model)}</p></details>'
-        else:
-            model_text = f'<span class="quality-report-model">Model · {model_text}</span>'
+        dpu_text = detail(f'{fmt(numerator)} / {fmt(denominator)}', dpu, "quality-report-dpu") if valid_dpu else "—"
+        model = str(product.get("model") or "—")
+        model_parts = [part.strip() for part in model.split(" / ")]
+        model_preview = f"{model_parts[0]} +{len(model_parts) - 1}" if len(model_parts) > 1 else model[:14] + "…"
+        model_text = detail(model, f'Model · {model_preview}', "quality-report-model") if len(model) > 14 else f'<span class="quality-report-model">Model · {e(model)}</span>'
         supplier = f'<span class="quality-report-supplier">{e(product.get("supplier"))}</span>' if product.get("supplier") else ""
-        first_badge = f'<span class="quality-signal quality-signal-danger">{e(t("优先复核", "Review first"))}</span>' if index == 1 else ""
-        risk_rows.append(f'<tr><td><span class="quality-report-rank">{index:02d}</span></td>'
-            f'<td><strong class="quality-report-cc">{e(product["cc"])}</strong>{supplier}{model_text}</td>'
-            f'<td class="quality-report-defect">{e(product.get("top_defect") or "—")}</td>'
-            f'<td><strong class="quality-report-score">{e(fmt(product.get("risk_score"), 1))}</strong>{first_badge}</td>'
-            f'<td><strong>{e(dpu)}</strong><small class="quality-report-counts">{e(dpu_detail)}</small></td>'
-            f'<td>{e(fmt(product.get("rpm")))}</td><td>{e(fmt(product.get("iv_cases")))}</td></tr>')
-    if risk_rows:
-        headings = [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("风险分", "Risk"), "DPU", "RPM", "IV"]
-        st.markdown('<div class="quality-report-risk-table"><table><colgroup><col class="report-col-rank"><col class="report-col-product"><col class="report-col-defect"><col class="report-col-score"><col class="report-col-dpu"><col class="report-col-rpm"><col class="report-col-iv"></colgroup>'
-            + '<thead><tr>' + ''.join(f'<th scope="col">{e(label)}</th>' for label in headings) + '</tr></thead><tbody>'
-            + ''.join(risk_rows) + '</tbody></table></div>', unsafe_allow_html=True)
-    else:
-        st.info(t("当前范围暂无可计算的 CC 风险排序。", "No scored CCs are available in this selection."))
-    st.caption(t("与当前聚类/CC 帕累托排序一致。DPU 是疵点数÷检验数；风险分不是不良概率。BME 的不同供应商/环节分数用于各自的相对排序，不代表统一的绝对风险。", "Matches the cluster/CC Pareto ranking. DPU = defect points / inspections; risk scores are not defect probabilities. BME supplier/gate scores are relative priorities, not a common absolute-risk scale."))
+        first_badge = f'<span class="quality-signal quality-signal-danger">{e(t("优先", "First"))}</span>' if index == 1 else ""
+        risk_rows.append(f'<tr data-cc="{e(cc)}"><td><span class="quality-report-rank">{index:02d}</span></td>'
+            f'<td><div class="quality-report-product"><strong>{e(cc)}</strong>{supplier}{model_text}</div></td>'
+            f'<td class="quality-report-defect">{short(product.get("top_defect"), 12)}</td>'
+            f'<td><div class="quality-report-priority"><strong>{e(fmt(product.get("risk_score"), 1))}</strong>{first_badge}</div></td>'
+            f'<td>{dpu_text}</td><td>{e(fmt(product.get("rpm")))}</td><td>{e(fmt(product.get("iv_cases")))}</td></tr>')
 
-    st.subheader(t("2. Decathlon & 工厂已做行动", "2. Completed Decathlon & Factory Actions"))
-    rows = []
-    for product in products:
-        action = action_map.get(str(product["cc"]), {})
+        action, aql = action_map.get(cc, {}), aql_map.get(cc, {})
+        latest = e(action.get("latest_fqc_date") or "—")
         if community == "TU":
             rft = f"{action['fqc_rft']:.1%}" if action.get("fqc_rft") is not None else "—"
-            rft_detail = f"PASS {fmt(action.get('fqc_first_pass'))} / {fmt(action.get('fqc_valid_records'))}" if action.get("fqc_rft") is not None else ""
             signal = inspection_signal(action.get("fqc_first_pass"), action.get("fqc_valid_records"), st.session_state.lang)
-            metrics = metric(t("Decathlon FQC 记录", "Decathlon FQC records"), fmt(action.get("ps_fqc_records")))
-            metrics += metric(t("工厂 FQC 记录", "Factory FQC records"), fmt(action.get("factory_fqc_records")))
-            metrics += metric("RFT", rft, rft_detail, signal["tone"])
-            result_badge = f'<span class="quality-signal quality-signal-{signal["tone"]}">{e(signal["label"])}</span>'
-            if signal["not_passed"] is not None:
-                result_badge += f'<span class="quality-signal quality-signal-good">{e(t("已记录 PASS", "Recorded PASS"))} {e(fmt(action.get("fqc_first_pass")))}</span>'
+            passed = f"{fmt(action.get('fqc_first_pass'))}/{fmt(action.get('fqc_valid_records'))}" if action.get("fqc_rft") is not None else "—"
+            not_passed = fmt(signal["not_passed"])
+            evidence_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>'
+                f'<td>{e(fmt(action.get("ps_fqc_records")))} / {e(fmt(action.get("factory_fqc_records")))}</td>'
+                f'<td class="quality-value-{signal["tone"]}"><strong>{e(rft)}</strong></td>'
+                f'<td class="quality-value-good">{e(passed)}</td><td class="quality-value-{signal["tone"]}">{e(not_passed)}</td>'
+                f'<td class="quality-report-date">{latest}</td></tr>')
         else:
-            metrics = metric(t("FQC 源记录", "FQC source records"), fmt(action.get("fqc_records")))
-            metrics += metric(t("检验数", "Inspections"), fmt(action.get("fqc_sampled")))
-            metrics += metric(t("源不良数量", "Source NC quantity"), fmt(action.get("fqc_defects")))
-            result_badge = ""
-        supplier = f'<span>{e(product.get("supplier"))}</span>' if product.get("supplier") else ""
-        rows.append(f'<article class="quality-report-evidence"><header><strong>CC {e(product["cc"])}</strong>{supplier}</header>'
-            f'<dl>{metrics}</dl><div class="quality-report-footer"><div class="quality-report-result">{result_badge}</div><div class="quality-report-evidence-date">{e(t("最近 FQC", "Latest FQC"))} · {e(action.get("latest_fqc_date") or "—")}</div></div></article>')
-    if rows:
-        st.markdown('<div class="quality-report-evidence-grid">' + ''.join(rows) + '</div>', unsafe_allow_html=True)
-    else:
-        st.info(t("当前范围没有可对应 CC 的行动证据。", "No action evidence linked to these CCs is available."))
-    st.caption(t("本段核对已记录的检验活动；检验记录不等于整改完成或有效关闭。缺少责任方/关闭证据的内容保留为空。", "This section verifies recorded inspection activity. Inspection records do not prove corrective actions are completed or effective; missing ownership/closure evidence remains unavailable."))
+            evidence_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>'
+                f'<td>{e(fmt(action.get("fqc_records")))}</td><td>{e(fmt(action.get("fqc_sampled")))}</td>'
+                f'<td>{e(fmt(action.get("fqc_defects")))}</td><td class="quality-report-date">{latest}</td></tr>')
 
-    st.subheader(t("3. 推荐行动计划", "3. Recommended Action Plan"))
-    ai_actions = []
-    for item in narrative.get("actions", []):
-        scope_text = " / ".join(item.get("priority_ccs", []))
-        ai_actions.append(f'<article class="quality-report-ai-action"><span>{e(scope_text or t("当前范围", "Current selection"))}</span><p>{e(item["action"])}</p></article>')
-    if ai_actions:
-        st.markdown('<div class="quality-report-ai-actions">' + ''.join(ai_actions) + '</div>', unsafe_allow_html=True)
-    plan_rows = []
-    for product in products:
-        cc = str(product["cc"])
-        action, aql = action_map.get(cc, {}), aql_map.get(cc, {})
         matches = action.get("cp_matches", [])
         cp = "\n".join(f"{m.get('focus', '')}: {m.get('requirement', '')}" for m in matches[:1]) or "—"
-        focus = product.get("top_defect") or t("先补齐问题类型与 CC 的对应关系", "Establish the defect-type to CC link first")
-        plan_rows.append(f'<article class="quality-report-plan"><header><span>CC {e(cc)}</span><strong>{e(focus)}</strong></header>'
-            f'<dl><div><dt>{e(t("相关 CP / 工序标准", "Related CP / Process Standard"))}</dt><dd>{e(cp)}</dd></div>'
-            f'<div><dt>{e(t("建议 AQL 动态标准", "Recommended Dynamic AQL"))}</dt><dd>{e(aql.get("recommendation") or "—")}</dd></div></dl></article>')
-    if plan_rows:
-        st.markdown('<div class="quality-report-plan-grid">' + ''.join(plan_rows) + '</div>', unsafe_allow_html=True)
-    st.caption(t("建议先按 CC/批次核对主要疵点与检验记录，由质量负责人确认 CP 控制点，随后用同一口径的复检及客户反馈验证措施。", "Trace leading defects and inspections by CC/batch; have the quality lead confirm CP controls, then verify effectiveness using comparable repeat inspections and customer feedback."))
+        plan_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>'
+            f'<td>{short(product.get("top_defect") or t("待补问题类型", "Defect link missing"), 8)}</td>'
+            f'<td>{short(cp, 14)}</td><td class="quality-report-aql">{e(aql.get("recommendation") or "—")}</td></tr>')
+
+    risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("风险分", "Risk"), "DPU", "RPM", "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
     if community == "TU":
-        st.caption(t("动态 AQL 沿用原版风险规则，仅为建议；最终抽样仍需核对批量、检验水平、样本代码与批准的 Ac/Re 表。", "Dynamic AQL retains the original risk rules as recommendations; final sampling requires lot size, inspection level, sample code and approved Ac/Re tables."))
+        evidence_table = table("evidence-table", ["CC", t("迪卡侬/工厂", "DKL/Factory"), "RFT", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [14, 22, 14, 18, 12, 20], evidence_rows)
     else:
-        st.caption(t("BME 尚未接入可核对的 CC → CP 链路及动态 AQL 规则，保留栏位，不套用 TU 标准。", "BME lacks an auditable CC → CP link and dynamic AQL rule; those fields remain unavailable."))
+        evidence_table = table("evidence-table", ["CC", t("FQC 记录", "FQC records"), t("检验数", "Inspections"), t("源不良数", "Source NC"), t("最近 FQC", "Latest FQC")], [20, 20, 20, 20, 20], evidence_rows)
+    plan_table = table("plan-table", ["CC", t("主要疵点", "Top defect"), t("CP / 工序标准", "CP / Process"), t("建议 AQL", "Suggested AQL")], [18, 28, 32, 22], plan_rows)
+    ai_rows = []
+    for item in narrative.get("actions", []):
+        scope_text = " / ".join(item.get("priority_ccs", [])) or t("当前范围", "Current selection")
+        ai_rows.append(f'<details class="quality-report-ai-action"><summary><b>AI · {e(scope_text)}</b><span>{e(item["action"])}</span></summary><p><strong>{e(scope_text)}</strong> · {e(item["action"])}</p></details>')
+    ai_html = '<div class="quality-report-ai-actions">' + ''.join(ai_rows) + '</div>' if ai_rows else ""
+    notes = [
+        t("风险排序与当前聚类/CC 帕累托一致。风险分是复核优先级，不是不良概率；BME 不同供应商/环节的分数用于各自的相对排序。", "Risk ranking matches the current cluster/CC Pareto. Scores are review priorities, not defect probabilities; BME supplier/gate scores are relative rankings."),
+        t("DPU = 疵点数 ÷ 检验数，点击百分比查看分子/分母。点击 Model、长疵点或 CP 可查看全文。", "DPU = defect points / inspections. Expand a percentage for its numerator/denominator; expand Models, long defects and CP text for full details."),
+        t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。迪卡侬/工厂分别为两方 FQC 记录条数；PASS 为首次 PASS 数 / 有效首验记录数。缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspections, not completed/effective corrective actions. DKL/Factory are their respective FQC record counts; PASS is first-PASS / valid first-result records. Missing ownership or closure evidence is not inferred.") if community == "TU" else t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。检验数和源不良数保留 BME 源字段口径；缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspection activity, not completed/effective corrective actions. Inspections and source NC retain the BME source definitions; missing ownership or closure evidence is not inferred."),
+        t("建议按 CC/批次追溯主要疵点与检验记录，由质量负责人确认 CP 控制点，再用同口径复检和客户反馈验证措施。", "Trace leading defects and inspections by CC/batch; have the quality lead confirm CP controls, then verify effectiveness using comparable repeat inspections and customer feedback."),
+        t("动态 AQL 沿用原版风险规则，仅为建议；最终抽样需核对批量、检验水平、样本代码与批准的 Ac/Re 表。", "Dynamic AQL retains the original risk rules as recommendations; final sampling requires lot size, inspection level, sample code and approved Ac/Re tables.") if community == "TU" else t("BME 尚未接入可核对的 CC → CP 链路及动态 AQL 规则，保留空值，不套用 TU 标准。", "BME lacks an auditable CC → CP link and dynamic AQL rule. Missing fields remain unavailable.")
+    ]
+    markup = (f'<div class="quality-report-overview"><section class="quality-report-section quality-report-risks"><h3>{e(t("1. 高风险 CC Top 5", "1. Top 5 High-Risk CCs"))}</h3>{risk_table}</section>'
+        f'<div class="quality-report-secondary"><section class="quality-report-section quality-report-evidence-panel"><h3>{e(t("2. Decathlon & 工厂已做行动", "2. Recorded Decathlon & Factory Actions"))}</h3>{evidence_table}</section>'
+        f'<section class="quality-report-section quality-report-plan-panel"><h3>{e(t("3. 推荐行动计划", "3. Recommended Action Plan"))}</h3>{plan_table}{ai_html}</section></div>'
+        f'<details class="quality-report-notes"><summary>{e(t("统计口径与完整说明", "Metric definitions and full notes"))}</summary><div>' + ''.join(f'<p>{e(note)}</p>' for note in notes) + '</div></details></div>')
+    st.markdown(markup, unsafe_allow_html=True)
 
 
 def render_unified_ai_report(community: str, facts: dict, cards: list[dict], risks: pd.DataFrame) -> None:
@@ -21096,8 +21095,8 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
     with st.container(border=True, key=f"{community.lower()}_overall_ai_report"):
         title, button = st.columns([0.78, 0.22], vertical_alignment="center")
         with title:
-            st.header(t(f"{community} · AI 总结报告", f"{community} · AI Summary Report"))
-            st.caption(t("当前筛选 · 三段式质量结论", "Current selection · Three-part quality conclusion"))
+            report_status = (t("AI 已生成 · ", "AI generated · ") + f"{report['model']} · {report['generated_at']}" if report else t("源数据报告 · 生成 AI 可补充行动建议", "Source report · Generate AI for action insights"))
+            st.markdown(f'<div class="quality-report-heading"><h2>{html.escape(t(f"{community} · AI 总结报告", f"{community} · AI Summary Report"))}</h2><p>{html.escape(report_status)}</p></div>', unsafe_allow_html=True)
         with button:
             generate = st.button(t("生成 AI 报告", "Generate AI report"), key=f"{community.lower()}_generate_unified_ai", type="primary", use_container_width=True, disabled=not bool(get_qwen_api_key()))
         if generate:
@@ -21136,10 +21135,7 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
                 print("Quality AI response rejected:", type(error).__name__, str(error) if isinstance(error, ValueError) else "provider request failed", flush=True)
                 st.warning(t("AI 服务暂未返回完整有效的分析，保留三段式数据报告；可稍后重试。", "The AI response was incomplete or invalid. The three-part data report is retained; try again later."))
         render_three_part_report(community, pack, report["narrative"] if report else {"actions": []})
-        if report:
-            st.caption(f"{report['model']} · {report['generated_at']} · " + t("当前筛选的 AI 分析", "AI analysis for this selection"))
-        else:
-            st.caption(t("当前为按源数据生成的三段式报告，尚未生成 AI 分析。点击上方按钮，补充总体行动建议和每图深入解读。", "The source-grounded three-part report is shown. Generate AI insights to add overall recommendations and deeper per-chart analysis."))
+
 
 
 @st.cache_data(show_spinner=False)
