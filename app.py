@@ -50,11 +50,11 @@ from quality_chart_ui import (
     style_quality_trend,
 )
 import quality_insights as _quality_insights
-if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-07-v7-verified-ai":
+if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-09-v8-gate-insights":
     importlib.reload(_quality_insights)
 from quality_insights import (
     INSIGHTS_VERSION, chart_evidence, chart_signal, inspection_signal,
-    build_chart_insight, validate_ai_response, validate_with_repair,
+    build_chart_insight, build_gate_insight_facts, validate_ai_response, validate_with_repair,
 )
 
 
@@ -14341,6 +14341,7 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
     )
     metric_class = "bme-fg-metrics one" if len(metric_items) == 1 else "bme-fg-metrics"
     st.markdown(f'<div class="{metric_class}">{metric_html}</div>', unsafe_allow_html=True)
+    gate_charts = []
     for kind, title, height in [("trend", t("月度趋势", "Monthly trend"), 225),
                                 ("pareto", t("问题 Pareto", "Defect Pareto"), 245)]:
         st.markdown(f'<div class="bme-fg-chart-label">{html.escape(title)}</div>', unsafe_allow_html=True)
@@ -14351,7 +14352,8 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
         fig.add_annotation(text=t("暂无数据", "No data available"), x=.5, y=.5, xref="paper", yref="paper",
                            showarrow=False, font=dict(color="#98a2b3", size=14))
         fig.update_layout(margin=dict(l=8, r=8, t=25, b=25))
-        render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key}_{kind}_empty")
+        render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key}_{kind}_empty", insight_group=gate_charts)
+    render_chart_ai(build_gate_insight_facts(stage, f"{chart_key}_gate", gate_charts))
 
 
 
@@ -14464,6 +14466,7 @@ def render_quality_gate_analysis(
                 metric_class = "bme-fg-metrics one" if len(metric_items) == 1 else "bme-fg-metrics"
                 st.markdown(f'<div class="{metric_class}">{metric_html}</div>', unsafe_allow_html=True)
 
+                gate_charts = []
                 st.markdown(f'<div class="bme-fg-chart-label">{html.escape(t("月度趋势", "Monthly trend"))}</div>', unsafe_allow_html=True)
                 monthly = stage_summary.assign(month=stage_summary["date"].dt.to_period("M")).groupby("month").agg(
                     po_qty=("po_qty", lambda values: values.sum(min_count=1)),
@@ -14494,7 +14497,7 @@ def render_quality_gate_analysis(
                 st.session_state["_pending_chart_context"] = {"kind": "trend", "stage": stage, "supplier": selected_suppliers,
                     "exception_only": stage == "IQC" and (is_tu or is_cpt), "cutoff": str(end_date),
                     "monthly": [{"month": str(month), "numerator": float(row.defect_qty), "denominator": finite_number(row.po_qty) if has_denominator else None} for month, row in monthly.iterrows()]}
-                render_unified_plotly(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}")
+                render_unified_plotly(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}", insight_group=gate_charts)
 
                 category_type = (
                     stage_pareto["category_type"].mode().iloc[0]
@@ -14529,7 +14532,10 @@ def render_quality_gate_analysis(
                     st.session_state["_pending_chart_context"] = {"kind": "pareto", "stage": stage, "supplier": selected_suppliers,
                         "names": ranked.defect_name.tolist(), "total": defect_total, "category_type": category_type,
                         "traceability_missing": is_tu and stage == "IQC", "composite_descriptions": is_tu and stage == "FQC", "unit": t("条异常记录", "exception records") if is_tu and stage == "IQC" else t("个源问题", "source issues")}
-                    render_unified_plotly(pareto_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_pareto_{stage}")
+                    render_unified_plotly(pareto_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_pareto_{stage}", insight_group=gate_charts)
+
+                render_chart_ai(build_gate_insight_facts(stage, f"{chart_key_prefix}_{stage}_gate", gate_charts))
+                if not ranked.empty:
                     st.markdown(
                         quality_pareto_rows_html(ranked, name_col="defect_name", qty_col="defect_qty"),
                         unsafe_allow_html=True,
@@ -20926,6 +20932,9 @@ def render_chart_ai(facts: dict) -> None:
     # the measured observations or the application-calculated numbers.
     insight = {**baseline, **saved} if saved else baseline
     label = t("AI 解读", "AI insight") if saved else t("数据解读", "Data insight")
+    is_gate = facts.get("evidence", {}).get("kind") == "quality_gate"
+    if is_gate:
+        label = f'{facts["evidence"]["stage"]} · {label}'
     signal = chart_signal(facts, st.session_state.lang)
     badge = f'<span class="quality-signal quality-signal-{signal["tone"]}">{html.escape(signal["label"])}</span>'
     labels = {"finding": t("发现", "Finding"), "interpretation": t("判断", "Interpretation"), "action": t("建议复核", "Next check")}
@@ -20936,11 +20945,19 @@ def render_chart_ai(facts: dict) -> None:
     preview_limit = 72 if st.session_state.lang == "中文" else 160
     if len(preview) > preview_limit:
         preview = preview[:preview_limit].rstrip("，, ") + "…"
+    if is_gate:
+        preview_html = "".join(
+            f'<p class="quality-ai-preview quality-gate-finding" data-signal="{part["signal"]["tone"]}">'
+            f'<b>{html.escape(part["label"])}</b> {html.escape(str(part["finding"]).split("；", 1)[0].split(";", 1)[0])}</p>'
+            for part in baseline["parts"]
+        )
+    else:
+        preview_html = f'<p class="quality-ai-preview quality-ai-finding">{html.escape(preview)}</p>'
     provenance = t("基于当前筛选数据生成；点击页面的“生成 AI 报告”可补充 AI 判断和建议。", "Generated from the current filtered data. Generate the page's AI report to add AI interpretation and recommendations.") if not saved else t("发现来自源数据，判断和建议由 AI 补充。", "Observations come from source data; AI adds interpretation and recommendations.")
     st.markdown(
-        f'<div class="quality-inline-ai" data-signal="{signal["tone"]}">'
+        f'<div class="quality-inline-ai{" quality-gate-ai" if is_gate else ""}" data-signal="{signal["tone"]}">'
         f'<div class="quality-ai-heading"><div class="quality-inline-ai-label">{label}</div>{badge}</div>'
-        f'<p class="quality-ai-preview quality-ai-finding">{html.escape(preview)}</p>'
+        f'{preview_html}'
         f'<details class="quality-ai-details"><summary>{t("展开完整解读", "Read full insight")}</summary>'
         f'{paragraphs}<p class="quality-ai-provenance">{html.escape(provenance)}</p></details></div>',
         unsafe_allow_html=True,
@@ -20948,6 +20965,9 @@ def render_chart_ai(facts: dict) -> None:
 
 
 def render_unified_plotly(fig, *args, **kwargs):
+    # Gate charts share one account. Consume the local collector before
+    # forwarding Plotly kwargs, so other dashboard charts stay independent.
+    insight_group = kwargs.pop("insight_group", None)
     kwargs.setdefault("theme", None)
     kwargs.setdefault("use_container_width", True)
     fig.update_xaxes(automargin=True)
@@ -20978,9 +20998,13 @@ def render_unified_plotly(fig, *args, **kwargs):
     traces = []
     for item in full_traces:
         traces.append({k: (v[:12] if item["type"] == "bar" else v[-24:]) if isinstance(v, list) else v for k, v in item.items()})
-    render_chart_ai({"id": chart_id, "points": points, "traces": traces,
-                     "summary": st.session_state.pop("_pending_chart_summary", None),
-                     "empty": points == 0, "y_format": y_format, "evidence": evidence})
+    facts = {"id": chart_id, "points": points, "traces": traces,
+             "summary": st.session_state.pop("_pending_chart_summary", None),
+             "empty": points == 0, "y_format": y_format, "evidence": evidence}
+    if insight_group is not None:
+        insight_group.append(facts)
+    else:
+        render_chart_ai(facts)
     return result
 
 
@@ -21110,6 +21134,7 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
                 schema = {"actions": [{"action": "", "priority_ccs": []} for _ in range(3)],
                     "charts": [{"id": chart["id"], "interpretation": "", "action": ""} for chart in model_charts]}
                 instruction += " Fill this exact JSON template, preserving every chart id and array length: " + json.dumps(schema, ensure_ascii=False)
+                instruction += " A quality_gate entry combines the stage's trend and Pareto: provide one integrated interpretation and action for that stage. Keep monthly changes and full-period leading categories distinct; verify monthly detail before linking them. Preserve both sources' denominator, traceability and partial-period limitations."
                 instruction += " The factual finding is rendered by the application. Interpretation/action prose must contain NO Arabic digits, dates, percentages, quantitative claims, or numbered lists. Put CC identifiers only in priority_ccs; preserve chart ids only in id fields. Refer to the leading defect name, current/prior/peak period, or highest-axis object qualitatively; the application already displays their exact identifiers and values. Do not invent causes, targets, owners, completed actions, CP links or AQL rules. Clearly distinguish a plausible hypothesis from a verified cause and recommendations from recorded activity. Risk scores are priorities, not defect probabilities. Undated customer N0 snapshots are not time series. Do not combine quantities with different units; missing data is not zero. Retain chart ids exactly; SPC has independent supplier/process filters."
                 messages = [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
                 def request_analysis(request_messages):

@@ -9,7 +9,7 @@ import json
 
 import pandas as pd
 
-INSIGHTS_VERSION = "2026-10-07-v7-verified-ai"
+INSIGHTS_VERSION = "2026-10-09-v8-gate-insights"
 
 
 def numeric(value):
@@ -113,6 +113,27 @@ def chart_evidence(traces, y_format="", context=None):
     return {**context, "kind": kind or "other"}
 
 
+def build_gate_insight_facts(stage, chart_id, charts):
+    """Register one scoped account for a gate's trend and defect structure.
+
+    Preserve each chart's calculated evidence, units and full-population
+    denominator. Missing chart evidence remains missing, never a zero value.
+    """
+    sources = {}
+    for chart in charts:
+        kind = (chart.get("evidence") or {}).get("kind")
+        if kind not in ("trend", "pareto"):
+            kind = next((name for name in ("trend", "pareto") if name in str(chart.get("id", ""))), None)
+        if kind:
+            sources[kind] = chart
+    for kind in ("trend", "pareto"):
+        sources.setdefault(kind, {"id": f"{chart_id}_{kind}_unavailable", "points": 0,
+                                  "empty": True, "traces": [], "evidence": {"kind": "empty"}})
+    return {"id": chart_id, "points": sum(chart.get("points", 0) for chart in sources.values()),
+            "traces": [], "empty": all(chart.get("empty", True) for chart in sources.values()),
+            "evidence": {"kind": "quality_gate", "stage": stage, **sources}}
+
+
 def chart_signal(facts, language="中文"):
     """Color only measured signals; never infer improvement from sparse data."""
     zh = language == "中文"
@@ -122,6 +143,12 @@ def chart_signal(facts, language="中文"):
         return {"tone": tone, "label": chinese if zh else english}
     if facts.get("empty") or kind == "empty":
         return signal("neutral", "暂无数据", "Data unavailable")
+    if kind == "quality_gate":
+        trend = evidence.get("trend") or {}
+        pareto = evidence.get("pareto") or {}
+        # A partial month's comparability warning takes priority over a
+        # full-period leading category. The two observations remain distinct.
+        return chart_signal(trend if not trend.get("empty", True) else pareto, language)
     if kind == "trend":
         if evidence.get("partial_latest"):
             return signal("warning", "末月未完整 · 待对齐", "Partial month · align periods")
@@ -171,6 +198,30 @@ def build_chart_insight(facts, language="中文"):
     zh = language == "中文"
     e = facts.get("evidence") or chart_evidence(facts.get("traces", []), facts.get("y_format", ""), facts.get("context"))
     kind = e.get("kind")
+    if kind == "quality_gate":
+        trend, pareto = e["trend"], e["pareto"]
+        trend_insight = build_chart_insight(trend, language)
+        pareto_insight = build_chart_insight(pareto, language)
+        if pareto.get("empty") and not trend.get("empty"):
+            pareto_insight = {
+                "finding": "当前范围没有可排名的问题名称。" if zh else "No rankable issue names are available in this selection.",
+                "interpretation": "趋势有记录，但缺少问题名称，不能判断问题集中度或主因。" if zh else "Trend records exist, but missing issue names prevent concentration or cause assessment.",
+                "action": "补齐问题名称及对应数量、批次，再分析问题结构。" if zh else "Supply issue names with quantities and batches before assessing the issue structure.",
+            }
+        parts = [
+            {"label": "趋势" if zh else "Trend", **trend_insight, "signal": chart_signal(trend, language)},
+            {"label": "主要问题" if zh else "Leading issue", **pareto_insight, "signal": chart_signal(pareto, language)},
+        ]
+        interpretation = " ".join(part["interpretation"] for part in parts)
+        if not trend.get("empty") and not pareto.get("empty"):
+            interpretation += (" 全期首位问题不一定导致最新月变化，需用同月明细核对。" if zh else
+                               "The full-period leading issue may not explain the latest month's change; verify monthly detail.")
+        # Keep the source limitations and targeted checks from both charts in
+        # one stage account; neither source is promoted to a causal claim.
+        return {"finding": " ".join(part["finding"] for part in parts),
+                "interpretation": interpretation,
+                "action": " ".join(dict.fromkeys(part["action"] for part in parts)),
+                "parts": parts}
     if facts.get("empty") or kind == "empty":
         if "spc" in str(facts.get("id", "")).lower():
             return {"finding": "该供应商/工艺点尚无可用的连续过程测量记录。" if zh else "No continuous process measurements are available for this supplier/checkpoint.",
