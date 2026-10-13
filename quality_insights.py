@@ -9,7 +9,7 @@ import json
 
 import pandas as pd
 
-INSIGHTS_VERSION = "2026-10-09-v8-gate-insights"
+INSIGHTS_VERSION = "2026-10-13-v9-inspection-pareto"
 
 
 def numeric(value):
@@ -276,6 +276,8 @@ def build_chart_insight(facts, language="中文"):
         interpretation = "风险分仅用于调查排序，占比是风险分份额，不是产品不良概率。" if zh and score else "Scores rank investigation priorities; shares are score contributions, not defect probabilities." if score else "累计线以当前范围全部问题为分母，未展示类别仍占据剩余份额。" if zh else "Cumulative shares use the full selected population, including categories outside the displayed subset."
         if not score and e.get("shown_share") is not None and e["shown_share"] < .8:
             interpretation += " 问题较分散，不能只处理首位类别。" if zh else "Issues are spread across categories; addressing the leader alone will leave substantial exposure."
+        if e.get("inspection_quantities"):
+            interpretation += " 疵点按各次检验记录累加；同一件可能跨环节出现，合计不代表唯一不良件数。IV 案例单独统计。" if zh else "Defects accumulate across inspection records; a piece may appear at multiple stages, so the total is not a unique defective-piece count. IV cases are counted separately."
         action = f"先按「{first[0]}」核对对应 CC/Model、批次和原始记录，再与客户退货或 IV 交叉验证；不能直接据此断定根因。" if zh else f"Start with {first[0]}: trace affected codes/models, batches and source records; cross-check returns or IV before assigning a cause."
         if e.get("traceability_missing"):
             action = f"先按「{first[0]}」复核材料、来料批次、供方及处置结果；当前没有 CC/Model 链路，需补齐追溯后再关联成品风险。" if zh else f"Review {first[0]} by material, incoming batch, vendor and disposition; obtain the missing CC/Model traceability before linking it to finished-product risk."

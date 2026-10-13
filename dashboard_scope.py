@@ -12,7 +12,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-LOGIC_VERSION = "2026-10-06-v4-fg-cpt-pareto"
+LOGIC_VERSION = "2026-10-13-v5-top10-defect-pareto"
 
 # Business categories follow the connected FG/CPT sources, not QC stages.
 # ZX makes finished textile products; CMW assembles bikes. FSD and TEKTRO
@@ -217,15 +217,47 @@ def select_fsd_customer(rpm: pd.DataFrame, scope: DashboardScope, links: dict[st
     return rpm.loc[identifiers(rpm["product_code"]).isin(codes)].drop_duplicates("product_code").copy()
 
 
-def ranked_cc_risk(frame: pd.DataFrame, code_col: str, score_col: str, top_only: bool = True) -> tuple[pd.DataFrame, dict]:
+def ranked_cc_risk(frame: pd.DataFrame, code_col: str, score_col: str, top_only: bool = True, top_n: int = 10) -> tuple[pd.DataFrame, dict]:
     """Rank the existing cluster scores; never rescale them for a Pareto view."""
     if frame.empty:
         return pd.DataFrame(columns=["cc", "risk_score"]), {"total": 0, "selected": 0, "share": None}
     result = pd.DataFrame({"cc": identifiers(frame[code_col]), "risk_score": pd.to_numeric(frame[score_col], errors="coerce")})
     result = result.loc[result["cc"].ne("") & result["risk_score"].notna()].sort_values(["risk_score", "cc"], ascending=[False, True]).reset_index(drop=True)
     total = len(result)
-    count = max(1, int(np.ceil(total * 0.2))) if total else 0
+    count = min(total, max(1, int(top_n))) if total else 0
     denominator = result["risk_score"].sum()
     result["cumulative_share"] = result["risk_score"].cumsum() / denominator if denominator > 0 else np.nan
     selected = result.head(count) if top_only else result
-    return selected, {"total": total, "selected": len(selected), "share": float(selected["risk_score"].sum() / denominator) if denominator > 0 else None}
+    return selected, {"total": total, "selected": len(selected), "score_total": float(denominator), "share": float(selected["risk_score"].sum() / denominator) if denominator > 0 else None}
+
+
+def ranked_inspection_defects(frame: pd.DataFrame, sources: tuple[str, ...] = ("PQC", "AQL")) -> pd.DataFrame:
+    """Rank already-scoped inspection quantities, never mixing IV case counts.
+
+    FQC is the existing AQL adapter's stage label. Composite descriptions
+    remain whole because the source does not assign quantities to each name.
+    Unknown positive quantities stay in the population denominator; product
+    families are explicitly unclassified, not treated as defect types.
+    """
+    columns = ["issue_type", "defect_qty", "pqc_qty", "aql_qty", "record_count", "cumulative_share"]
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    rows = frame.copy()
+    rows["source_stage"] = identifiers(rows["stage"]).replace({"FQC": "AQL"})
+    rows["defect_qty"] = pd.to_numeric(rows["defect_qty"], errors="coerce")
+    rows = rows.loc[rows.source_stage.isin(sources) & rows.defect_qty.gt(0) & np.isfinite(rows.defect_qty)].copy()
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+    names = rows.get("defect_name", pd.Series("", index=rows.index)).fillna("").astype(str).str.strip()
+    missing = names.str.casefold().isin(["", "0", "0.0", "nan", "none", "n/a", "/", "-", "无", "无疵点", "无不良"])
+    rows["issue_type"] = names.where(~missing, "未分类")
+    family = rows.get("category_type", pd.Series("defect", index=rows.index)).eq("product_family")
+    rows.loc[family, "issue_type"] = "未分类（仅有产品族）"
+    rows["pqc_qty"] = rows.defect_qty.where(rows.source_stage.eq("PQC"), 0)
+    rows["aql_qty"] = rows.defect_qty.where(rows.source_stage.eq("AQL"), 0)
+    ranked = rows.groupby("issue_type", as_index=False).agg(
+        defect_qty=("defect_qty", "sum"), pqc_qty=("pqc_qty", "sum"),
+        aql_qty=("aql_qty", "sum"), record_count=("issue_type", "size"),
+    ).sort_values(["defect_qty", "issue_type"], ascending=[False, True]).reset_index(drop=True)
+    ranked["cumulative_share"] = ranked.defect_qty.cumsum() / ranked.defect_qty.sum()
+    return ranked[columns]

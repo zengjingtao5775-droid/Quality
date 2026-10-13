@@ -30,12 +30,12 @@ from plotly.subplots import make_subplots
 
 import bme_quality as _bme_quality
 import dashboard_scope as _dashboard_scope
-if getattr(_dashboard_scope, "LOGIC_VERSION", "") != "2026-10-06-v4-fg-cpt-pareto":
+if getattr(_dashboard_scope, "LOGIC_VERSION", "") != "2026-10-13-v5-top10-defect-pareto":
     importlib.reload(_dashboard_scope)
 from dashboard_scope import (
     DashboardScope, filter_records, identifiers, customer_totals, business_dates,
     select_customer_grain, count_iv_cases, fsd_item_model_links,
-    select_fsd_customer, ranked_cc_risk, build_iv_issue_pareto,
+    select_fsd_customer, ranked_cc_risk, build_iv_issue_pareto, ranked_inspection_defects,
     SUPPLIER_PRODUCT_TYPES,
 )
 from tu_quality import build_zx_quality_gates
@@ -50,7 +50,7 @@ from quality_chart_ui import (
     style_quality_trend,
 )
 import quality_insights as _quality_insights
-if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-09-v8-gate-insights":
+if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-13-v9-inspection-pareto":
     importlib.reload(_quality_insights)
 from quality_insights import (
     INSIGHTS_VERSION, chart_evidence, chart_signal, inspection_signal,
@@ -21309,12 +21309,12 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
     render_chart_heading(
         "Top 风险 CC 帕累托", "Top Risk CC Pareto",
         "按聚类风险分定位优先复核的 CC。", "Rank CCs for investigation using cluster risk scores.",
-        "按风险分降序排列，可查看 Top 20% 或全部 CC；BME 使用源 code 作为 CC。", "Descending cluster risk score; choose Top 20% or all CCs. BME retains source codes as CCs.",
-        "直接沿用当前筛选后的聚类结果。Top 20% 数量向上取整，占比为所展示风险分合计 ÷ 全部可计算 CC 风险分合计。", "Reuse the filtered cluster results. Top 20% rounds up; contribution = displayed score sum / total scored CC score sum.",
+        "按风险分降序排列，默认显示前 10 个 CC，也可查看全部；BME 使用源 code 作为 CC。", "Descending cluster risk score; show the top 10 CCs by default or all CCs. BME retains source codes as CCs.",
+        "直接沿用当前筛选后的聚类结果。少于 10 个时全部显示；占比为所展示风险分合计 ÷ 全部可计算 CC 风险分合计。", "Reuse the filtered cluster results. Show all when fewer than 10 are available; contribution = displayed score sum / total scored CC score sum.",
         "TU PQC + Customer N0 + IV" if community == "TU" else "BME FSD / CMW Cluster",
         f"{community.lower()}_unified_pareto_info",
     )
-    mode = st.segmented_control("CC", ["top", "all"], default="top", format_func=lambda v: "Top 20% CC" if v == "top" else t("全部 CC", "All CC"), key=f"{community.lower()}_risk_pareto_mode", label_visibility="collapsed")
+    mode = st.segmented_control("CC", ["top", "all"], default="top", format_func=lambda v: "Top 10 CC" if v == "top" else t("全部 CC", "All CC"), key=f"{community.lower()}_risk_pareto_mode", label_visibility="collapsed")
     ranked, stats = ranked_cc_risk(risks, "cc", "risk_score", top_only=mode != "all")
     if ranked.empty:
         st.info(t("当前范围没有具备 CC / code 和聚类风险分的数据。", "No CC/code with a cluster risk score is available in this selection."))
@@ -21335,42 +21335,64 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
     return risks
 
 
-def render_unified_iv_pareto(cases: pd.DataFrame, scope: DashboardScope, community: str) -> None:
+def render_unified_defect_pareto(cases: pd.DataFrame, scope: DashboardScope, community: str, defect_rows: pd.DataFrame) -> None:
     render_chart_heading(
-        "IV 疵点帕累托", "IV Defect Pareto",
-        "按 IV 问题类型查看问题结构。", "Review IV cases by defect type.",
-        "与 IV 卡片使用相同的供应商、CC、Model 及日期筛选。", "Uses the same supplier, CC, Model and date selection as the IV card.",
-        "统计 Before Sales 的唯一反馈编号，按源问题类型分类；累计占比以当前范围全部案例为分母。空类型保留为未分类，不推算疵点件数。", "Count unique Before Sales feedback IDs by source defect type. Cumulative share uses all selected cases. Blank types remain unclassified; case counts do not estimate defective pieces.",
-        "ZX intervoice.xlsx · 问题类型 / FEEDBACK No." if community == "TU" else "BME IV · Pending source",
-        f"{community.lower()}_iv_pareto_info",
+        "疵点帕累托", "Defect Pareto",
+        "默认汇总 PQC 与 AQL 的疵点数量，IV 案例可单独查看。", "Combine PQC and AQL defect quantities by default; view IV cases separately.",
+        "跟随当前供应商、CC、Model、FG/CPT 及日期筛选，默认展示前 10 条。", "Uses the current supplier, CC, Model, FG/CPT and date selection; shows the top 10 by default.",
+        "PQC/AQL 按源检验疵点数量累加，同名描述合并，组合描述不拆分；空名称及仅有产品族的数量保留为未分类。累计占比以当前来源全部疵点为分母。IV 按 Before Sales 唯一反馈编号计数，单独切换，不与疵点数量相加。", "Sum source inspection quantities for PQC/AQL. Merge exact matching descriptions, retain composite descriptions and unclassified quantities, and use every selected defect in the cumulative denominator. IV counts unique Before Sales feedback IDs separately; cases are not added to inspection quantities.",
+        "ZX 工厂 PQC + 简道云 AQL/FQC + ZX intervoice.xlsx" if community == "TU" else "BME FG/CPT PQC + AQL/FQC · IV source unavailable",
+        f"{community.lower()}_defect_pareto_info",
     )
-    mode = st.segmented_control("IV", ["top", "all"], default="top", format_func=lambda v: t("Top 5 疵点", "Top 5 Defects") if v == "top" else t("全部疵点", "All Defects"), key=f"{community.lower()}_iv_pareto_mode", label_visibility="collapsed")
-    ranked = build_iv_issue_pareto(cases, scope) if community == "TU" else pd.DataFrame()
+    mode_col, source_col = st.columns([.58, .42], vertical_alignment="center")
+    with mode_col:
+        mode = st.segmented_control("Defects", ["top", "all"], default="top", format_func=lambda v: t("Top 10 疵点", "Top 10 Defects") if v == "top" else t("全部疵点", "All Defects"), key=f"{community.lower()}_defect_pareto_mode", label_visibility="collapsed")
+    with source_col:
+        source = st.selectbox(t("数据来源", "Data source"), ["PQC+AQL", "PQC", "AQL", "IV"], format_func=lambda v: "PQC + AQL" if v == "PQC+AQL" else v, key=f"{community.lower()}_defect_pareto_source", label_visibility="collapsed")
+    is_iv = source == "IV"
+    sources = ("PQC", "AQL") if source == "PQC+AQL" else (source,)
+    ranked = (build_iv_issue_pareto(cases, scope) if community == "TU" else pd.DataFrame()) if is_iv else ranked_inspection_defects(defect_rows, sources)
     if ranked.empty:
-        st.info(t("当前范围没有可用的 IV 疵点数据。", "No IV defect data is available in this selection."))
-        render_chart_ai({"id": f"{community.lower()}_iv_pareto_empty", "empty": True})
+        st.info(t(f"当前范围没有可用的 {source} 疵点数据。", f"No {source} defect data is available in this selection."))
+        render_chart_ai({"id": f"{community.lower()}_defect_pareto_empty_{source}", "empty": True})
         return
-    total = int(ranked.case_count.sum())
-    shown = ranked.head(5) if mode != "all" else ranked
-    share = float(shown.case_count.sum() / total)
-    chip = t(f"{total} 个 IV 案例 · 展示 {share:.0%}", f"{total} IV cases · Showing {share:.0%}")
+    qty_col = "case_count" if is_iv else "defect_qty"
+    total = float(ranked[qty_col].sum())
+    shown = ranked.head(10) if mode != "all" else ranked
+    share = float(shown[qty_col].sum() / total)
+    unit = t("个 IV 案例", "IV cases") if is_iv else t("个源疵点", "source defects")
+    chip = t(f"{total:,.0f} {unit} · 展示 {len(shown)} 条 · 占 {share:.0%}", f"{total:,.0f} {unit} · {len(shown)} shown · {share:.0%} covered")
     st.markdown(f'<span class="quality-risk-chip">{html.escape(chip)}</span>', unsafe_allow_html=True)
     display = shown.copy()
-    display["issue_type"] = display.issue_type.replace({"未分类": t("未分类", "Unclassified"), "分类不一致": t("分类不一致", "Conflicting classification")})
-    fig = build_quality_pareto(display, name_col="issue_type", qty_col="case_count", cumulative_col="cumulative_share", height=360, quantity_label=t("IV 案例数", "IV Cases"), cumulative_label=t("累计案例占比", "Cumulative Case Share"), issue_label=t("问题类型", "Defect Type"))
-    st.session_state["_pending_chart_summary"] = t(f"当前范围共 {total} 个 Before Sales IV 案例；首位为{display.iloc[0].issue_type}（{int(display.iloc[0].case_count)} 个），当前展示类型占 {share:.0%}。按反馈编号去重，未分类案例仍计入分母。", f"The selection contains {total} Before Sales IV cases. Leading type: {display.iloc[0].issue_type} ({int(display.iloc[0].case_count)} cases); displayed types cover {share:.0%}. Feedback IDs are deduplicated and unclassified cases remain in the denominator.")
-    st.session_state["_pending_chart_context"] = {"kind": "pareto", "names": display.issue_type.tolist(), "total": total, "unit": t("个 IV 案例", "IV cases")}
-    render_unified_plotly(fig, config={"displayModeBar": False}, key=f"{community.lower()}_unified_iv_pareto")
-    st.markdown(quality_pareto_rows_html(display, name_col="issue_type", qty_col="case_count"), unsafe_allow_html=True)
-    st.caption(t("按源“问题类型”统计 IV 案例数，与 Problem Card 的 IV 口径一致。", "IV case counts use the source defect type and match the Problem Card IV population."))
+    display["issue_type"] = display.issue_type.replace({"未分类": t("未分类", "Unclassified"), "分类不一致": t("分类不一致", "Conflicting classification"), "未分类（仅有产品族）": t("未分类（仅有产品族）", "Unclassified (family only)")})
+    quantity_label = t("IV 案例数", "IV Cases") if is_iv else t("疵点数量", "Defect quantity")
+    fig = build_quality_pareto(display, name_col="issue_type", qty_col=qty_col, cumulative_col="cumulative_share", height=360, quantity_label=quantity_label, cumulative_label=t("累计占比", "Cumulative share"), issue_label=t("问题类型", "Defect Type"))
+    fig.update_xaxes(ticklabelstep=max(1, math.ceil(len(display) / 12)))
+    if len(display) > 20:
+        fig.data[0].text = None
+        fig.data[0].texttemplate = None
+        fig.data[0].textposition = "none"
+    context = {"kind": "pareto", "names": display.issue_type.tolist(), "total": total, "unit": unit, "sources": list(sources)}
+    if not is_iv:
+        fig.data[0].customdata = display[["issue_type", "pqc_qty", "aql_qty"]].values
+        fig.data[0].hovertemplate = "%{customdata[0]}<br>" + quantity_label + ": %{y:,.0f}<br>PQC: %{customdata[1]:,.0f}<br>AQL: %{customdata[2]:,.0f}<extra></extra>"
+        context.update({"inspection_quantities": True, "composite_descriptions": "AQL" in sources,
+                        "source_totals": {"PQC": float(ranked.pqc_qty.sum()), "AQL": float(ranked.aql_qty.sum())}})
+    st.session_state["_pending_chart_context"] = context
+    render_unified_plotly(fig, config={"displayModeBar": False}, key=f"{community.lower()}_unified_defect_pareto_{source}")
+    st.markdown(quality_pareto_rows_html(display, name_col="issue_type", qty_col=qty_col), unsafe_allow_html=True)
+    if is_iv:
+        st.caption(t("IV 按反馈编号去重，与 Problem Card 的 IV 口径一致。", "IV feedback IDs are deduplicated and match the Problem Card population."))
+    else:
+        st.caption(t(f"PQC {ranked.pqc_qty.sum():,.0f} · AQL {ranked.aql_qty.sum():,.0f}。按各次检验累加，组合描述保留；合计不代表唯一不良件数。", f"PQC {ranked.pqc_qty.sum():,.0f} · AQL {ranked.aql_qty.sum():,.0f}. Quantities accumulate across inspections; composite descriptions remain intact. The total is not a unique defective-piece count."))
 
 
-def render_unified_pareto_pair(risks: pd.DataFrame, cases: pd.DataFrame, scope: DashboardScope, community: str) -> pd.DataFrame:
+def render_unified_pareto_pair(risks: pd.DataFrame, cases: pd.DataFrame, scope: DashboardScope, community: str, defect_rows: pd.DataFrame) -> pd.DataFrame:
     left, right = st.columns(2, gap="large")
     with left, st.container(border=True, key=f"{community.lower()}_cc_pareto_panel"):
         result = render_unified_risk_pareto(risks, community)
     with right, st.container(border=True, key=f"{community.lower()}_iv_pareto_panel"):
-        render_unified_iv_pareto(cases, scope, community)
+        render_unified_defect_pareto(cases, scope, community, defect_rows)
     return result
 
 
@@ -21424,8 +21446,8 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
     products = compute_product_summary(finished, risk_voice, settings, include_client_only=True)
     cluster = render_zx_high_risk_cluster(products, settings, "ZX PQC + Customer N0 + IV", "zx_unified")
     risks = pd.DataFrame({"cc": cluster.product_code, "risk_score": cluster.cluster_score}) if not cluster.empty else pd.DataFrame(columns=["cc", "risk_score"])
-    risks = render_unified_pareto_pair(risks, iv_cases, scope, "TU")
     summary, pareto = build_zx_quality_gates(incoming, finished, jdy)
+    risks = render_unified_pareto_pair(risks, iv_cases, scope, "TU", pareto)
     render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU")
     render_unified_spc(pd.DataFrame(), scope, "TU")
     source_pack = build_tu_community_ai_fact_pack(finished, risk_voice, incoming, cluster, pd.DataFrame(), settings, jdy_fqc_override=jdy, use_cluster_ranking=True)
@@ -21515,10 +21537,8 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
             cmw_risk = cmw_risk.rename(columns={"inspected_qty": "inspected", "defect_qty": "defects"})
             risks.append(cmw_risk)
     risk_table = pd.concat(risks, ignore_index=True) if risks else pd.DataFrame(columns=["cc", "risk_score"])
-    render_unified_pareto_pair(risk_table, pd.DataFrame(), scope, "BME")
-    if scope.includes_supplier("CMW"):
-        st.caption(t("CMW PQC 源只有车型名称，尚无可核对的 code；保留在聚类中，暂不进入 CC 排序。IQC/FQC 的 code 保留环节标记。", "CMW PQC has Model names without auditable item codes: these remain in the cluster and are excluded from CC ranking. IQC/FQC codes retain gate labels."))
     fingerprint = bme_source_fingerprint(ROOT)
+    gate_inputs = []
     for supplier, kind, loader in [("CMW", "FG", load_fg_quality_analysis_cached), ("FSD", "CPT", load_cpt_quality_analysis_cached)]:
         if not scope.includes_supplier(supplier):
             continue
@@ -21526,6 +21546,12 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
         # CPT is the source's category label; FSD is its supplier in the toolbar.
         summary = filter_records(summary, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
         pareto = filter_records(pareto, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
+        gate_inputs.append((supplier, kind, summary, pareto))
+    combined_defects = pd.concat([item[3] for item in gate_inputs], ignore_index=True) if gate_inputs else pd.DataFrame()
+    render_unified_pareto_pair(risk_table, pd.DataFrame(), scope, "BME", combined_defects)
+    if scope.includes_supplier("CMW"):
+        st.caption(t("CMW PQC 源只有车型名称，尚无可核对的 code；保留在聚类中，暂不进入 CC 排序。IQC/FQC 的 code 保留环节标记。", "CMW PQC has Model names without auditable item codes: these remain in the cluster and are excluded from CC ranking. IQC/FQC codes retain gate labels."))
+    for supplier, kind, summary, pareto in gate_inputs:
         render_quality_gate_analysis(summary, pareto, ["CMW"] if supplier == "CMW" else ["CPT"], scope.start, scope.end, analysis_kind=kind)
     # SPC intentionally receives the full source, with date filters only.
     render_unified_spc(events, scope, "BME")
