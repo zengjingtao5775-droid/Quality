@@ -133,14 +133,14 @@ class DashboardSelectionTests(unittest.TestCase):
         self.assertTrue(select_fsd_customer(rpm, DashboardScope(suppliers=("CMW",)), links).empty)
         self.assertTrue(select_fsd_customer(rpm, DashboardScope(product_types=("FG",)), links).empty)
 
-    def test_top_twenty_percent_retains_cluster_scores_and_excludes_missing(self):
+    def test_top_ten_retains_cluster_scores_and_excludes_missing(self):
         frame = pd.DataFrame({"code": [str(i) for i in range(11)] + ["unknown"], "score": list(range(1, 12)) + [None]})
         ranked, meta = ranked_cc_risk(frame, "code", "score")
-        self.assertEqual(ranked.cc.tolist(), ["10", "9", "8"])
-        self.assertEqual(ranked.risk_score.tolist(), [11, 10, 9])
+        self.assertEqual(ranked.cc.tolist(), [str(i) for i in range(10, 0, -1)])
+        self.assertEqual(ranked.risk_score.tolist(), list(range(11, 1, -1)))
         self.assertEqual(meta["total"], 11)
-        self.assertAlmostEqual(meta["share"], 30 / 66)
-        self.assertAlmostEqual(ranked.cumulative_share.iloc[-1], 30 / 66)
+        self.assertAlmostEqual(meta["share"], 65 / 66)
+        self.assertAlmostEqual(ranked.cumulative_share.iloc[-1], 65 / 66)
         self.assertAlmostEqual(ranked.cumulative_share.iloc[0], 11 / 66)
 
 
