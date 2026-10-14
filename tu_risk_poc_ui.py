@@ -14,6 +14,10 @@ import streamlit as st
 
 from tu_risk_poc import (RISK_POC_VERSION, DEPARTMENTS, GRAINS, RiskProfile, default_profile,
                          build_tu_risk, load_strategy_workbook, number)
+from quality_chart_ui import apply_quality_chart_style
+
+RISK_POC_UI_VERSION = "2026-10-14-v2-restored-cluster"
+RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876", "single": "#2854c5"}
 
 CSS = """
 .st-key-tu_three_dimension_risk{background:#fff!important;border:1px solid #dce4f4!important;border-top:5px solid #2854c5!important;border-radius:14px!important;padding:12px 16px!important;gap:8px!important}
@@ -37,7 +41,119 @@ CSS = """
 .tu-poc-table details[open] summary{white-space:normal}
 .tu-poc-table tr:first-child td{background:#f8faff}
 .tu-poc-source{font-size:16px;line-height:1.65;color:#475569;background:#f8faff;padding:12px 16px;border-radius:9px}
+.tu-poc-chart-note{font-size:16px;line-height:1.55;color:#475569;margin:4px 0}
 """
+
+
+def risk_distribution_groups(rows):
+    """Restore the former three-group view without changing any source score."""
+    view = rows.copy()
+    for column in ("supplier_score", "client_score", "risk_lower"):
+        view[column] = pd.to_numeric(view.get(column, pd.Series(index=view.index, dtype=float)), errors="coerce")
+    if "entity" not in view:
+        view["entity"] = pd.Series(index=view.index, dtype=str)
+    valid = np.isfinite(view.supplier_score) & np.isfinite(view.client_score) & np.isfinite(view.risk_lower)
+    view = view.loc[valid].sort_values("entity", kind="stable").copy()
+    if view.empty:
+        view["risk_group"] = pd.Series(dtype=str)
+        return view
+    points = view[["supplier_score", "client_score"]].to_numpy(dtype=float)
+    count = min(3, len(np.unique(points, axis=0)))
+    if count == 1:
+        view["risk_group"] = "single"
+        return view
+    # Same standardized, deterministic K-means used by the previous chart.
+    scale = points.std(axis=0)
+    scale[scale == 0] = 1
+    normalized = (points - points.mean(axis=0)) / scale
+    order = np.argsort(normalized.sum(axis=1), kind="stable")
+    seeds = np.linspace(0, len(order) - 1, count).round().astype(int)
+    centers = normalized[order[seeds]].copy()
+    labels = np.zeros(len(points), dtype=int)
+    for _ in range(80):
+        distances = ((normalized[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+        next_labels = distances.argmin(axis=1)
+        next_centers = centers.copy()
+        for cluster_id in range(count):
+            members = normalized[next_labels == cluster_id]
+            next_centers[cluster_id] = members.mean(axis=0) if len(members) else normalized[distances.min(axis=1).argmax()]
+        if np.array_equal(labels, next_labels) and np.allclose(centers, next_centers):
+            labels = next_labels
+            break
+        labels, centers = next_labels, next_centers
+    view["_distribution_group"] = labels
+    rank = view.groupby("_distribution_group").risk_lower.mean().sort_values(kind="stable").index.tolist()
+    names = {rank[0]: "low", rank[-1]: "high"} if len(rank) > 1 else {rank[0]: "single"}
+    names.update({cluster_id: "medium" for cluster_id in rank[1:-1]})
+    view["risk_group"] = view._distribution_group.map(names)
+    return view.drop(columns="_distribution_group")
+
+
+def build_risk_distribution_figure(grouped, grain, translate=None, selected_groups=None):
+    """Use exact scored coordinates; colors/labels never feed back into scoring."""
+    t = translate or (lambda zh, en: zh)
+    view = grouped if selected_groups is None else grouped.loc[grouped.risk_group.isin(selected_groups)]
+    labels = {"high": t("高风险组", "High-risk group"), "medium": t("中风险组", "Medium-risk group"),
+              "low": t("低风险组", "Low-risk group"), "single": t("当前分组", "Current group")}
+    fig = go.Figure()
+    for key in ("high", "medium", "low", "single"):
+        part = view.loc[view.risk_group.eq(key)].sort_values("risk_lower", ascending=False, kind="stable")
+        if part.empty:
+            continue
+        custom = []
+        for _, row in part.iterrows():
+            upper = number(row.get("risk_upper"))
+            lower = number(row.get("risk_lower"))
+            score = f"{lower:.1f}–{upper:.1f}" if lower is not None and upper is not None else "—"
+            custom.append([html.escape(str(row.get("entity", ""))), html.escape(str(row.get("cc", ""))),
+                html.escape(str(row.get("models", ""))), score, html.escape(str(row.get("strategy_status", "pending"))),
+                _fmt(row.get("rpm"), 0), _fmt(row.get("iv"), 0)])
+        fig.add_trace(go.Scatter(x=part.supplier_score, y=part.client_score, name=labels[key],
+            text=part.entity.astype(str), mode="markers", cliponaxis=False,
+            marker=dict(size=18, color=RISK_GROUP_COLORS[key], opacity=.88, line=dict(color="#ffffff", width=1.5)),
+            customdata=custom,
+            hovertemplate=f"<b>{grain} %{{customdata[0]}}</b><br>CC %{{customdata[1]}}<br>Model %{{customdata[2]}}<br>"
+                + t("供应商风险分", "Supplier score") + ": %{x:.1f}<br>" + t("客户端风险分", "Client score") + ": %{y:.1f}<br>"
+                + "RPM %{customdata[5]} · IV %{customdata[6]}<br>Risk Score %{customdata[3]}<br>Strategy %{customdata[4]}<extra></extra>"))
+    # Place labels around dense points without shifting the measured coordinates.
+    occupied = []
+    anchors = [(float(row.supplier_score)+4)/108*1000 for _, row in view.iterrows()]
+    anchor_y = [(108-float(row.client_score))/113*370 for _, row in view.iterrows()]
+    positions = [(0,-24),(0,24),(48,0),(-48,0),(58,-25),(-58,-25),(58,25),(-58,25),
+                 (0,-48),(0,48),(86,0),(-86,0),(86,-45),(-86,-45),(86,45),(-86,45),
+                 (0,-72),(0,72),(116,0),(-116,0)]
+    for _, row in view.sort_values("risk_lower",ascending=False,kind="stable").iterrows():
+        label = str(row.entity)
+        px, py = (float(row.supplier_score)+4)/108*1000, (108-float(row.client_score))/113*370
+        width = max(45, len(label)*8)
+        choices = []
+        for dx,dy in positions:
+            box = (px+dx-width/2-3,py+dy-11,px+dx+width/2+3,py+dy+11)
+            overlaps = sum(box[0]<old[2] and box[2]>old[0] and box[1]<old[3] and box[3]>old[1] for old in occupied)
+            covered = sum(box[0]-10<x<box[2]+10 and box[1]-10<y<box[3]+10 for x,y in zip(anchors,anchor_y))
+            outside = box[0]<-20 or box[2]>1020 or box[1]<-12 or box[3]>382
+            choices.append((overlaps*10000+covered*1000+int(outside)*10000+abs(dx)+abs(dy),dx,dy,box))
+        _,dx,dy,box = min(choices,key=lambda choice:choice[0])
+        occupied.append(box)
+        fig.add_annotation(x=row.supplier_score,y=row.client_score,xref="x",yref="y",ax=dx,ay=dy,
+            text=html.escape(label),showarrow=True,arrowhead=0,arrowwidth=.8,arrowcolor="#a7b1c2",
+            standoff=10,font=dict(size=14,color="#344054"),bgcolor="rgba(255,255,255,0.88)",borderpad=2)
+    apply_quality_chart_style(fig, height=500, showlegend=True)
+    fig.update_layout(margin=dict(l=24, r=36, t=58, b=48),
+        legend=dict(orientation="h", x=0, y=1.15, title_text=t("相对风险分组", "Relative risk groups"), font_size=14,
+            itemclick=False, itemdoubleclick=False),
+        hoverlabel=dict(bgcolor="#f8faff", bordercolor="#8795e8", font_size=15, align="left"),
+        transition=dict(duration=420, easing="cubic-in-out"))
+    fig.update_xaxes(title_text=t("供应商风险分（PQC + AQL）", "Supplier score (PQC + AQL)"),
+        range=[-4, 104], tickvals=[0, 20, 40, 60, 80, 100], title_font_size=15, title_standoff=12)
+    fig.update_yaxes(title_text=t("客户端风险分（RPM + IV）", "Client score (RPM + IV)"),
+        range=[-5, 108], tickvals=[0, 20, 40, 60, 80, 100], title_font_size=15, title_standoff=10)
+    fig.add_vline(x=50, line_dash="dash", line_color="#8b96b8", opacity=.45)
+    fig.add_hline(y=55, line_dash="dash", line_color="#8b96b8", opacity=.45)
+    fig.add_annotation(xref="paper", yref="paper", x=.98, y=.98,
+        text=t("右上：检验表现与客户反馈双高", "Upper right: elevated inspections and client signals"),
+        showarrow=False, font=dict(size=14, color="#dc2626"), bgcolor="rgba(255,255,255,0.85)")
+    return fig
 
 
 def _registry():
@@ -215,20 +331,26 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
             st.markdown(t("换分规则：不超过 50 分阈值，得分 = 50 × 数值 ÷ 阈值；两阈值之间，得分 = 50 + 50 ×（数值 − 50 分阈值）÷（100 分阈值 − 50 分阈值）；超过上限记 100 分。Strategy 确认是战略款记 100、明确非战略记 0、未匹配记待确认。", "Scoring: up to the warning threshold, score = 50 × value / warning; between thresholds, score = 50 + 50 × (value − warning) / (critical − warning); cap at 100. Strategy: confirmed Yes = 100, explicit No = 0, unmatched = pending."))
             st.markdown(t("分数用于复核优先级，不是不良概率。PQC 是每件检验的疵点数，不等于不合格件率；AQL 是记录层面的首验未通过率。客户 N0 源无日期，自定义日期不用于 RPM；Strategy 季节须明确匹配。审厂、CP、工人及手工矩阵不参与本次打分。", "Scores prioritize review, not defect probability. PQC is defects per inspected unit; AQL is first-result failure per inspection record. N0 customer snapshots are undated, so custom calendar ranges cannot supply RPM. Strategy season requires an explicit match. Audit, CP, workers and manual matrix scores are excluded."))
             st.download_button(t("下载当前计算明细", "Download current calculations"),rows.to_csv(index=False).encode("utf-8-sig"),file_name=f"tu-risk-poc-{grain.lower()}.csv",mime="text/csv",key="tu_poc_download_rows")
-        with st.expander(t("风险分布 · 供应商检验表现 × 客户端反馈", "Risk distribution · supplier inspections vs client feedback"),expanded=False):
-            plotted=rows.loc[rows.supplier_score.notna() & rows.client_score.notna()]
+        with st.container(key="tu_poc_distribution_panel"):
+            st.subheader(t("高风险产品聚类分析", "High-Risk Product Cluster Analysis"))
+            plotted = risk_distribution_groups(rows)
             if not plotted.empty:
-                fig=go.Figure()
-                for status,label,color in [("pending",t("Strategy 待确认", "Strategy pending"),"#64748b"),("candidate",t("Strategy 候选", "Strategy candidate"),"#d97706"),("yes",t("战略款", "Strategy Yes"),"#2854c5"),("no",t("非战略款", "Strategy No"),"#15803d"),("not_applicable",t("供应商粒度", "Supplier grain"),"#2854c5")]:
-                    part=plotted.loc[plotted.strategy_status.eq(status)]
-                    if part.empty:continue
-                    fig.add_trace(go.Scatter(x=part.supplier_score,y=part.client_score,text=part.entity,name=label,mode="markers",marker={"size":12,"color":color},customdata=part[["risk_lower","risk_upper"]].values,hovertemplate="%{text}<br>Supplier: %{x:.1f}<br>Client: %{y:.1f}<br>Risk: %{customdata[0]:.1f}–%{customdata[1]:.1f}<extra></extra>"))
-                fig.update_layout(height=330,margin=dict(l=20,r=20,t=10,b=15),paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",font=dict(size=16))
-                fig.update_xaxes(title=t("供应商风险分（PQC + AQL）", "Supplier score (PQC + AQL)"),range=[-2,102],gridcolor="#e3e8f2")
-                fig.update_yaxes(title=t("客户端风险分（RPM + IV）", "Client score (RPM + IV)"),range=[-2,102],gridcolor="#e3e8f2")
-                st.plotly_chart(fig,use_container_width=True,key="tu_poc_distribution",config={"displayModeBar":False})
-                st.markdown(t("颜色只表示已确认的产品身份；分布图不额外增加聚类权重，聚类不会改变 Risk Score。", "Color indicates product identity only. The distribution adds no cluster weight; clustering does not change Risk Score."))
-            else: st.info(t("当前范围没有同时可计算两轴的记录，保留空图。", "No records with both scores; the plot remains empty."))
+                options = [key for key in ("high", "medium", "low", "single") if key in set(plotted.risk_group)]
+                group_names = {"high": t("高风险组", "High-risk group"), "medium": t("中风险组", "Medium-risk group"),
+                    "low": t("低风险组", "Low-risk group"), "single": t("当前分组", "Current group")}
+                selected = st.multiselect(t("聚类筛选（可多选）", "Cluster filter (multi-select)"), options,
+                    default=options, format_func=lambda value: group_names[value], key=f"tu_poc_groups_{department}_{grain}")
+                if selected:
+                    fig = build_risk_distribution_figure(plotted, grain, t, selected)
+                    st.plotly_chart(fig, use_container_width=True, key="tu_poc_distribution",
+                        config={"displayModeBar":True, "scrollZoom":False, "displaylogo":False})
+                else:
+                    st.info(t("请选择至少一个风险分组。", "Select at least one risk group."))
+                st.markdown('<div class="tu-poc-chart-note">'+html.escape(t(
+                    "颜色表示当前筛选下的相对风险分组；Strategy 身份仍以表格为准，分组不会改变 Risk Score 或总分区间。",
+                    "Colors show relative risk groups within the selection. Strategy identity remains in the table; grouping does not change Risk Score or its bounds."))+'</div>', unsafe_allow_html=True)
+            else:
+                st.info(t("当前范围没有同时可计算两轴的记录，保留空图。", "No records with both scores; the plot remains empty."))
         # CC Pareto/report always recompute at CC grain; Model scores are never
         # summed or averaged into a CC score. Independent profile is retained.
         saved_cc = st.session_state.get("_tu_risk_poc_profiles", {}).get(f"{department}:CC")

@@ -44,7 +44,7 @@ import tu_risk_poc as _tu_risk_poc
 if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-13-v1-three-dimensions":
     importlib.reload(_tu_risk_poc)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_VERSION", "") != "2026-10-13-v1-three-dimensions":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-14-v2-restored-cluster":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 import quality_chart_ui as _quality_chart_ui
