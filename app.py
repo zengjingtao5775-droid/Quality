@@ -39,8 +39,16 @@ from dashboard_scope import (
     SUPPLIER_PRODUCT_TYPES,
 )
 from tu_quality import build_zx_quality_gates
+from quality_gate_metrics import gate_metrics
+import tu_risk_poc as _tu_risk_poc
+if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-13-v1-three-dimensions":
+    importlib.reload(_tu_risk_poc)
+import tu_risk_poc_ui as _tu_risk_poc_ui
+if getattr(_tu_risk_poc_ui, "RISK_POC_VERSION", "") != "2026-10-13-v1-three-dimensions":
+    importlib.reload(_tu_risk_poc_ui)
+from tu_risk_poc_ui import render_tu_risk_poc
 import quality_chart_ui as _quality_chart_ui
-if getattr(_quality_chart_ui, "QUALITY_CHART_UI_VERSION", "") != "2026-10-06-v2-risk-score-pareto":
+if getattr(_quality_chart_ui, "QUALITY_CHART_UI_VERSION", "") != "2026-10-14-v3-visible-axes":
     importlib.reload(_quality_chart_ui)
 from quality_chart_ui import (
     QUALITY_SERIES_COLORS,
@@ -50,7 +58,7 @@ from quality_chart_ui import (
     style_quality_trend,
 )
 import quality_insights as _quality_insights
-if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-13-v9-inspection-pareto":
+if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-14-v11-gate-rate-coverage":
     importlib.reload(_quality_insights)
 from quality_insights import (
     INSIGHTS_VERSION, chart_evidence, chart_signal, inspection_signal,
@@ -14331,7 +14339,7 @@ def load_fsd_rpm_cluster_inputs_cached(
 
 def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False) -> None:
     """Keep the three-column template visible without inventing zero data."""
-    label = t("异常记录数", "Exception records") if is_tu and stage == "IQC" else t("疵点率", "Defect-point rate") if is_tu else t("问题率", "Defect rate")
+    label = t("异常记录数（QTY）", "Exception records (QTY)") if is_tu and stage == "IQC" else t("问题数量（QTY）", "Issue quantity (QTY)") if stage == "IQC" else t("疵点率", "Defect-point rate")
     metric_items = [(label, "—")]
     if stage != "IQC":
         metric_items.append((t("返工率", "Rework rate"), "—"))
@@ -14347,11 +14355,13 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
         st.markdown(f'<div class="bme-fg-chart-label">{html.escape(title)}</div>', unsafe_allow_html=True)
         fig = go.Figure()
         apply_quality_chart_style(fig, height=height, showlegend=False)
-        fig.update_xaxes(visible=False)
-        fig.update_yaxes(visible=False)
+        fig.update_xaxes(title_text=t("月份", "Month") if kind == "trend" else t("疵点排名", "Defect rank"),
+                         showticklabels=False, showgrid=False, zeroline=False, title_font=dict(size=13))
+        fig.update_yaxes(title_text=t("数量（QTY）", "QTY") if stage == "IQC" or kind == "pareto" else t("疵点率（%）", "Defect-point rate (%)"),
+                         showticklabels=False, showgrid=False, zeroline=False, title_font=dict(size=13))
         fig.add_annotation(text=t("暂无数据", "No data available"), x=.5, y=.5, xref="paper", yref="paper",
                            showarrow=False, font=dict(color="#98a2b3", size=14))
-        fig.update_layout(margin=dict(l=8, r=8, t=25, b=25))
+        fig.update_layout(margin=dict(l=8, r=8, t=25, b=45))
         render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key}_{kind}_empty", insight_group=gate_charts)
     render_chart_ai(build_gate_insight_facts(stage, f"{chart_key}_gate", gate_charts))
 
@@ -14438,10 +14448,12 @@ def render_quality_gate_analysis(
                         st.markdown(f'<div class="bme-fg-data-note">{html.escape(tu_notes[stage])}</div>', unsafe_allow_html=True)
                     continue
 
-                po_total = float(stage_summary["po_qty"].sum(min_count=1))
+                measured, monthly = gate_metrics(stage_summary, stage)
+                po_total = measured["denominator"]
                 defect_total = float(stage_summary["defect_qty"].sum(min_count=1))
-                has_denominator = bool(stage_summary["po_qty"].gt(0).all())
-                defect_rate = defect_total / po_total if po_total > 0 and has_denominator else np.nan
+                has_denominator = measured["complete_denominator"]
+                defect_rate = measured["rate"]
+                is_rate = stage != "IQC"
                 rework_rows = stage_summary[stage_summary["rework_available"]].copy()
                 rework_rate = np.nan
                 if not rework_rows.empty:
@@ -14449,13 +14461,9 @@ def render_quality_gate_analysis(
                     rework_total = float(rework_rows["rework_qty"].sum(min_count=1))
                     rework_rate = rework_total / rework_denominator if rework_denominator > 0 else np.nan
 
-                rate_label = t("疵点率", "Defect-point rate") if is_tu else t("问题率", "Defect rate")
-                count_label = t("异常记录数", "Exception records") if is_tu and stage == "IQC" else t("疵点数量", "Defect points") if is_tu else t("问题数量", "Issue count")
-                metric_items = [
-                    (rate_label, rate_text(defect_rate))
-                    if has_denominator
-                    else (count_label, f"{defect_total:,.0f}" if pd.notna(defect_total) else "—")
-                ]
+                rate_label = t("疵点率", "Defect-point rate")
+                count_label = t("异常记录数（QTY）", "Exception records (QTY)") if is_tu else t("问题数量（QTY）", "Issue quantity (QTY)")
+                metric_items = [(rate_label, rate_text(defect_rate))] if is_rate else [(count_label, f"{measured['quantity']:,.0f}" if pd.notna(measured["quantity"]) else "—")]
                 if stage != "IQC":
                     metric_items.append((t("返工率", "Rework rate"), rate_text(rework_rate)))
                 metric_html = "".join(
@@ -14468,18 +14476,13 @@ def render_quality_gate_analysis(
 
                 gate_charts = []
                 st.markdown(f'<div class="bme-fg-chart-label">{html.escape(t("月度趋势", "Monthly trend"))}</div>', unsafe_allow_html=True)
-                monthly = stage_summary.assign(month=stage_summary["date"].dt.to_period("M")).groupby("month").agg(
-                    po_qty=("po_qty", lambda values: values.sum(min_count=1)),
-                    defect_qty=("defect_qty", "sum"),
-                )
-                monthly["defect_rate"] = monthly["defect_qty"].div(monthly["po_qty"].replace(0, np.nan))
-                primary_metric = rate_label if has_denominator else count_label
+                primary_metric = rate_label if is_rate else count_label
                 trend = pd.DataFrame({
                     "month": monthly.index.to_timestamp(),
-                    primary_metric: monthly["defect_rate"].values if has_denominator else monthly["defect_qty"].values,
+                    primary_metric: monthly["defect_rate"].values if is_rate else monthly["defect_qty"].values,
                 })
                 # One weighted primary trend; rework remains a separate KPI.
-                trend_long = trend.melt(id_vars="month", var_name="metric", value_name="value").dropna(subset=["value"])
+                trend_long = trend.melt(id_vars="month", var_name="metric", value_name="value")
                 trend_fig = px.line(
                     trend_long, x="month", y="value", color="metric", markers=True,
                     color_discrete_map={
@@ -14488,15 +14491,21 @@ def render_quality_gate_analysis(
                         t("问题数量", "Issue count"): "#2855c5",
                         t("返工率", "Rework rate"): "#d98200",
                     },
-                    labels={"month": t("月份", "Month"), "value": t("比例", "Rate") if has_denominator else t("数量", "Quantity"), "metric": ""},
+                    labels={"month": t("月份", "Month"), "value": t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"), "metric": ""},
                 )
-                style_quality_trend(trend_fig, height=225, is_rate=has_denominator,
+                trend_fig.update_traces(connectgaps=False)
+                style_quality_trend(trend_fig, height=245, is_rate=is_rate,
                                     monthly=True, tick_size=10 if stage == "FQC" else 11,
                                     month_step=2 if len(monthly) > 8 else 1,
-                                    show_year=monthly.index.year.nunique() > 1)
+                                    show_year=monthly.index.year.nunique() > 1,
+                                    x_label=t("月份", "Month"), y_label=t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"))
+                if not trend_long.value.notna().any():
+                    trend_fig.add_annotation(text=t("检验分母不完整<br>疵点率不可计算", "Incomplete inspection denominator<br>Rate unavailable") if is_rate else t("数量不可计算", "Quantity unavailable"),
+                        x=.5, y=.5, xref="paper", yref="paper", showarrow=False, font=dict(color="#64748b", size=13))
                 st.session_state["_pending_chart_context"] = {"kind": "trend", "stage": stage, "supplier": selected_suppliers,
+                    "rate_unavailable": is_rate and not trend_long.value.notna().any(),
                     "exception_only": stage == "IQC" and (is_tu or is_cpt), "cutoff": str(end_date),
-                    "monthly": [{"month": str(month), "numerator": float(row.defect_qty), "denominator": finite_number(row.po_qty) if has_denominator else None} for month, row in monthly.iterrows()]}
+                    "monthly": [{"month": str(month), "numerator": finite_number(row.defect_qty), "denominator": finite_number(row.po_qty) if is_rate and bool(row.complete_denominator) else None} for month, row in monthly.iterrows()]}
                 render_unified_plotly(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}", insight_group=gate_charts)
 
                 category_type = (
@@ -14526,8 +14535,8 @@ def render_quality_gate_analysis(
                     ranked["cumulative"] = ranked["defect_qty"].cumsum() / pareto_denominator
                     pareto_fig = build_quality_pareto(
                         ranked, name_col="defect_name", qty_col="defect_qty", cumulative_col="cumulative",
-                        quantity_label=t("数量", "Quantity"), cumulative_label=t("累计占比", "Cumulative share"),
-                        issue_label=t("问题", "Issue"),
+                        quantity_label=t("数量（QTY）", "QTY"), cumulative_label=t("累计占比（%）", "Cumulative share (%)"),
+                        issue_label=t("问题", "Issue"), x_label=t("问题排名", "Issue rank"),
                     )
                     st.session_state["_pending_chart_context"] = {"kind": "pareto", "stage": stage, "supplier": selected_suppliers,
                         "names": ranked.defect_name.tolist(), "total": defect_total, "category_type": category_type,
@@ -14544,33 +14553,33 @@ def render_quality_gate_analysis(
                 if is_tu:
                     note = tu_notes[stage] + t(" Pareto 显示 Top 5，累计占比以当前环节全部问题为分母。", " Pareto shows Top 5; cumulative share uses all issues in this gate.")
                     if not has_denominator and stage != "IQC":
-                        note += t(" 当前范围检验分母不完整，展示疵点数量。", " Inspection denominators are incomplete in this scope; defect counts are shown.")
+                        note += t(" 当前范围检验分母不完整，整体疵点率显示 —；仅绘制分子和分母均完整的月份，其他月份留空。", " Overall rate is unavailable with incomplete denominators. Only months with complete numerators/denominators are plotted; other months remain empty.")
                 elif stage == "IQC":
                     if is_cpt:
                         note = t(
-                            "问题率 = 异常记录中的不良笔数 ÷ 对应数量；该源是 IQC 异常记录，不能解释为全部来料总体不良率。",
-                            "Defect rate = defect records / corresponding quantity in the IQC exception log; it is not the full incoming population rate.",
+                            "QTY = 源异常记录中的不良笔数合计，不计算来料总体不良率。",
+                            "QTY = total NC counts in the source exception log; no overall incoming defect rate is calculated.",
                         )
                     else:
                         note = t(
-                            "问题率 = CMW 退货数量 ÷ 来料数量。",
-                            "Defect rate = CMW returned quantity / incoming quantity.",
+                            "QTY = CMW 源来料退货数量合计。",
+                            "QTY = total returned incoming quantity in the CMW source.",
                         )
                 elif stage == "PQC":
                     if is_cpt:
                         note = t(
-                            "问题率 = 月度拒收数量 ÷ 生产数量；源文件没有结构化返工数量或具体 defect name。",
-                            "Defect rate = monthly rejected quantity / production quantity; the source has no structured rework quantity or specific defect name.",
+                            "疵点率沿用源口径：月度拒收数量 ÷ 生产数量；源文件没有结构化返工数量或具体 defect name。",
+                            "The displayed defect-point rate retains the source definition: monthly rejected quantity / production quantity. Structured rework quantities and specific defect names are unavailable.",
                         )
                     else:
                         note = t(
-                            "CMW 源为问题跟踪记录，没有生产数量分母，因此显示问题数量，不计算问题率或返工率。",
-                            "The CMW source is a defect follow-up log without production volume, so issue counts are shown and no defect or rework rate is calculated.",
+                            "CMW 源为问题跟踪记录，没有生产/检验数量分母，疵点率与返工率显示 —；源问题数量仍保留在帕累托中。",
+                            "The CMW defect follow-up log has no production/inspection denominator. Defect-point and rework rates remain unavailable; source issue quantities remain in the Pareto.",
                         )
                 else:
                     note = t(
-                        "返工数量仅统计处理措施明确标记 Rework/返工的源不良数量。",
-                        "Reworked quantity includes only source defect quantities explicitly marked Rework.",
+                        "疵点率沿用源口径：源不良数量 ÷ 检验批量。返工数量仅统计处理措施明确标记 Rework/返工的源不良数量。",
+                        "The displayed defect-point rate retains source NC quantity / inspection lot quantity. Rework includes only source NC quantities explicitly marked Rework.",
                     )
                 st.markdown(f'<div class="bme-fg-data-note">{html.escape(note)}</div>', unsafe_allow_html=True)
 
@@ -21000,7 +21009,7 @@ def render_unified_plotly(fig, *args, **kwargs):
         traces.append({k: (v[:12] if item["type"] == "bar" else v[-24:]) if isinstance(v, list) else v for k, v in item.items()})
     facts = {"id": chart_id, "points": points, "traces": traces,
              "summary": st.session_state.pop("_pending_chart_summary", None),
-             "empty": points == 0, "y_format": y_format, "evidence": evidence}
+             "empty": points == 0 or evidence.get("kind") == "empty", "y_format": y_format, "evidence": evidence}
     if insight_group is not None:
         insight_group.append(facts)
     else:
@@ -21010,6 +21019,7 @@ def render_unified_plotly(fig, *args, **kwargs):
 
 def render_three_part_report(community, pack, narrative):
     products = pack.get("product_risks", [])[:5]
+    is_poc = bool(pack.get("risk_poc"))
     action_map = {str(item.get("cc")): item for item in pack.get("ps_actions", [])}
     aql_map = {str(item.get("cc")): item for item in pack.get("aql_recommendations", [])}
 
@@ -21051,11 +21061,14 @@ def render_three_part_report(community, pack, narrative):
         model_preview = f"{model_parts[0]} +{len(model_parts) - 1}" if len(model_parts) > 1 else model[:14] + "…"
         model_text = detail(model, f'Model · {model_preview}', "quality-report-model") if len(model) > 14 else f'<span class="quality-report-model">Model · {e(model)}</span>'
         supplier = f'<span class="quality-report-supplier">{e(product.get("supplier"))}</span>' if product.get("supplier") else ""
-        first_badge = f'<span class="quality-signal quality-signal-danger">{e(t("优先", "First"))}</span>' if index == 1 else ""
+        first_badge = f'<span class="quality-signal quality-signal-danger">{e(t("暂排", "Trial") if is_poc else t("优先", "First"))}</span>' if index == 1 else ""
+        risk_text = fmt(product.get("risk_score"), 1)
+        if is_poc and product.get("risk_score") is None:
+            risk_text = f'{fmt(product.get("risk_lower"), 1)}–{fmt(product.get("risk_upper"), 1)}'
         risk_rows.append(f'<tr data-cc="{e(cc)}"><td><span class="quality-report-rank">{index:02d}</span></td>'
             f'<td><div class="quality-report-product"><strong>{e(cc)}</strong>{supplier}{model_text}</div></td>'
             f'<td class="quality-report-defect">{short(product.get("top_defect"), 12)}</td>'
-            f'<td><div class="quality-report-priority"><strong>{e(fmt(product.get("risk_score"), 1))}</strong>{first_badge}</div></td>'
+            f'<td><div class="quality-report-priority"><strong>{e(risk_text)}</strong>{first_badge}</div></td>'
             f'<td>{dpu_text}</td><td>{e(fmt(product.get("rpm")))}</td><td>{e(fmt(product.get("iv_cases")))}</td></tr>')
 
         action, aql = action_map.get(cc, {}), aql_map.get(cc, {})
@@ -21081,7 +21094,7 @@ def render_three_part_report(community, pack, narrative):
             f'<td>{short(product.get("top_defect") or t("待补问题类型", "Defect link missing"), 8)}</td>'
             f'<td>{short(cp, 14)}</td><td class="quality-report-aql">{e(aql.get("recommendation") or "—")}</td></tr>')
 
-    risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("风险分", "Risk"), "DPU", "RPM", "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
+    risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("总分区间", "Score/range") if is_poc else t("风险分", "Risk"), "DPU", "RPM", "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
     if community == "TU":
         evidence_table = table("evidence-table", ["CC", t("迪卡侬/工厂", "DKL/Factory"), "RFT", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [14, 22, 14, 18, 12, 20], evidence_rows)
     else:
@@ -21093,16 +21106,16 @@ def render_three_part_report(community, pack, narrative):
         ai_rows.append(f'<details class="quality-report-ai-action"><summary><b>AI · {e(scope_text)}</b><span>{e(item["action"])}</span></summary><p><strong>{e(scope_text)}</strong> · {e(item["action"])}</p></details>')
     ai_html = '<div class="quality-report-ai-actions">' + ''.join(ai_rows) + '</div>' if ai_rows else ""
     notes = [
-        t("风险排序与当前聚类/CC 帕累托一致。风险分是复核优先级，不是不良概率；BME 不同供应商/环节的分数用于各自的相对排序。", "Risk ranking matches the current cluster/CC Pareto. Scores are review priorities, not defect probabilities; BME supplier/gate scores are relative rankings."),
+        t("TU POC 采用客户端（RPM/IV）、产品（Strategy）、供应商（PQC/AQL）三维试算配置；各部门及粒度独立。缺失输入显示总分区间，按已知贡献暂排，不证明完整风险顺序。", "TU POC uses trial client (RPM/IV), product (Strategy), and supplier (PQC/AQL) policies, independently per department/grain. Incomplete scores show bounds; known-contribution ordering does not establish complete-risk order.") if is_poc else t("风险排序与当前聚类/CC 帕累托一致。风险分是复核优先级，不是不良概率；BME 不同供应商/环节的分数用于各自的相对排序。", "Risk ranking matches the current cluster/CC Pareto. Scores are review priorities, not defect probabilities; BME supplier/gate scores are relative rankings."),
         t("DPU = 疵点数 ÷ 检验数，点击百分比查看分子/分母。点击 Model、长疵点或 CP 可查看全文。", "DPU = defect points / inspections. Expand a percentage for its numerator/denominator; expand Models, long defects and CP text for full details."),
         t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。迪卡侬/工厂分别为两方 FQC 记录条数；PASS 为首次 PASS 数 / 有效首验记录数。缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspections, not completed/effective corrective actions. DKL/Factory are their respective FQC record counts; PASS is first-PASS / valid first-result records. Missing ownership or closure evidence is not inferred.") if community == "TU" else t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。检验数和源不良数保留 BME 源字段口径；缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspection activity, not completed/effective corrective actions. Inspections and source NC retain the BME source definitions; missing ownership or closure evidence is not inferred."),
         t("建议按 CC/批次追溯主要疵点与检验记录，由质量负责人确认 CP 控制点，再用同口径复检和客户反馈验证措施。", "Trace leading defects and inspections by CC/batch; have the quality lead confirm CP controls, then verify effectiveness using comparable repeat inspections and customer feedback."),
-        t("动态 AQL 沿用原版风险规则，仅为建议；最终抽样需核对批量、检验水平、样本代码与批准的 Ac/Re 表。", "Dynamic AQL retains the original risk rules as recommendations; final sampling requires lot size, inspection level, sample code and approved Ac/Re tables.") if community == "TU" else t("BME 尚未接入可核对的 CC → CP 链路及动态 AQL 规则，保留空值，不套用 TU 标准。", "BME lacks an auditable CC → CP link and dynamic AQL rule. Missing fields remain unavailable.")
+        t("新 POC 评分未用于改变抽样标准；继续使用已批准的抽样政策。", "The new POC score does not change sampling standards; retain the approved sampling policy.") if is_poc else t("动态 AQL 沿用原版风险规则，仅为建议；最终抽样需核对批量、检验水平、样本代码与批准的 Ac/Re 表。", "Dynamic AQL retains the original risk rules as recommendations; final sampling requires lot size, inspection level, sample code and approved Ac/Re tables.") if community == "TU" else t("BME 尚未接入可核对的 CC → CP 链路及动态 AQL 规则，保留空值，不套用 TU 标准。", "BME lacks an auditable CC → CP link and dynamic AQL rule. Missing fields remain unavailable.")
     ]
-    markup = (f'<div class="quality-report-overview"><section class="quality-report-section quality-report-risks"><h3>{e(t("1. 高风险 CC Top 5", "1. Top 5 High-Risk CCs"))}</h3>{risk_table}</section>'
+    markup = (f'<div class="quality-report-overview"><section class="quality-report-section quality-report-risks"><h3>{e(t("1. 待复核 CC Top 5 · POC 暂排", "1. Top 5 CCs for Review · POC Trial") if is_poc else t("1. 高风险 CC Top 5", "1. Top 5 High-Risk CCs"))}</h3>{risk_table}</section>'
         f'<div class="quality-report-secondary"><section class="quality-report-section quality-report-evidence-panel"><h3>{e(t("2. Decathlon & 工厂已做行动", "2. Recorded Decathlon & Factory Actions"))}</h3>{evidence_table}</section>'
         f'<section class="quality-report-section quality-report-plan-panel"><h3>{e(t("3. 推荐行动计划", "3. Recommended Action Plan"))}</h3>{plan_table}{ai_html}</section></div>'
-        f'<details class="quality-report-notes"><summary>{e(t("统计口径与完整说明", "Metric definitions and full notes"))}</summary><div>' + ''.join(f'<p>{e(note)}</p>' for note in notes) + '</div></details></div>')
+        '</div>')
     st.markdown(markup, unsafe_allow_html=True)
 
 
@@ -21119,8 +21132,9 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
     with st.container(border=True, key=f"{community.lower()}_overall_ai_report"):
         title, button = st.columns([0.78, 0.22], vertical_alignment="center")
         with title:
-            report_status = (t("AI 已生成 · ", "AI generated · ") + f"{report['model']} · {report['generated_at']}" if report else t("源数据报告 · 生成 AI 可补充行动建议", "Source report · Generate AI for action insights"))
-            st.markdown(f'<div class="quality-report-heading"><h2>{html.escape(t(f"{community} · AI 总结报告", f"{community} · AI Summary Report"))}</h2><p>{html.escape(report_status)}</p></div>', unsafe_allow_html=True)
+            report_status = t("AI 已生成 · ", "AI generated · ") + f"{report['model']} · {report['generated_at']}" if report else ""
+            status_html = f'<p>{html.escape(report_status)}</p>' if report_status else ""
+            st.markdown(f'<div class="quality-report-heading"><h2>{html.escape(t(f"{community} · AI 总结报告", f"{community} · AI Summary Report"))}</h2>{status_html}</div>', unsafe_allow_html=True)
         with button:
             generate = st.button(t("生成 AI 报告", "Generate AI report"), key=f"{community.lower()}_generate_unified_ai", type="primary", use_container_width=True, disabled=not bool(get_qwen_api_key()))
         if generate:
@@ -21306,12 +21320,15 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
 
 
 def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFrame:
+    is_poc = bool(risks.attrs.get("poc"))
+    pending = bool(risks.attrs.get("poc_pending"))
+    score_label = t("已知风险贡献", "Known risk contribution") if pending else t("风险分", "Risk Score")
     render_chart_heading(
         "Top 风险 CC 帕累托", "Top Risk CC Pareto",
-        "按聚类风险分定位优先复核的 CC。", "Rank CCs for investigation using cluster risk scores.",
+        "按三维 POC 已知贡献暂排 CC；未完整得分显示待确认。" if is_poc else "按聚类风险分定位优先复核的 CC。", "Trial CC ranking by known three-dimension contributions; incomplete scores remain pending." if is_poc else "Rank CCs for investigation using cluster risk scores.",
         "按风险分降序排列，默认显示前 10 个 CC，也可查看全部；BME 使用源 code 作为 CC。", "Descending cluster risk score; show the top 10 CCs by default or all CCs. BME retains source codes as CCs.",
-        "直接沿用当前筛选后的聚类结果。少于 10 个时全部显示；占比为所展示风险分合计 ÷ 全部可计算 CC 风险分合计。", "Reuse the filtered cluster results. Show all when fewer than 10 are available; contribution = displayed score sum / total scored CC score sum.",
-        "TU PQC + Customer N0 + IV" if community == "TU" else "BME FSD / CMW Cluster",
+        "CC 粒度单独重算客户端、Strategy、PQC/AQL；不相加 Model 分。缺失项保持未知，已知贡献累计占比不代表完整风险占比。" if is_poc else "直接沿用当前筛选后的聚类结果。少于 10 个时全部显示；占比为所展示风险分合计 ÷ 全部可计算 CC 风险分合计。", "Recompute each CC from client, Strategy and PQC/AQL records; never add Model scores. Unknown inputs remain unknown; known-contribution shares are not complete-risk shares." if is_poc else "Reuse the filtered cluster results. Show all when fewer than 10 are available; contribution = displayed score sum / total scored CC score sum.",
+        "TU PQC + AQL + Customer N0 + IV + Strategy follow-up" if community == "TU" else "BME FSD / CMW Cluster",
         f"{community.lower()}_unified_pareto_info",
     )
     mode = st.segmented_control("CC", ["top", "all"], default="top", format_func=lambda v: "Top 10 CC" if v == "top" else t("全部 CC", "All CC"), key=f"{community.lower()}_risk_pareto_mode", label_visibility="collapsed")
@@ -21321,17 +21338,18 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
         render_chart_ai({"id": f"{community.lower()}_risk_pareto_empty", "empty": True})
         return ranked
     share = f"{stats['share']:.0%}" if stats["share"] is not None else "—"
-    chip = t(f"{stats['selected']} 个 CC 贡献 {share} 的风险分", f"{stats['selected']} CCs contribute {share} of the risk score")
+    chip = t(f"{stats['selected']} 个 CC · {score_label}占比 {share}", f"{stats['selected']} CCs · {share} of {score_label}")
     st.markdown(f'<span class="quality-risk-chip">{html.escape(chip)}</span>', unsafe_allow_html=True)
-    fig = build_quality_pareto(ranked, name_col="cc", qty_col="risk_score", cumulative_col="cumulative_share", height=360, quantity_label=t("风险分", "Risk Score"), cumulative_label=t("累计风险占比", "Cumulative Risk Share"), issue_label="CC", value_format=".1f")
+    fig = build_quality_pareto(ranked, name_col="cc", qty_col="risk_score", cumulative_col="cumulative_share", height=360, quantity_label=score_label,
+        cumulative_label=t("累计贡献占比（%）", "Cumulative contribution (%)"), issue_label="CC", x_label=t("CC 排名", "CC rank"), value_format=".1f")
     fig.update_xaxes(ticklabelstep=max(1, math.ceil(len(ranked) / 12)))
     if len(ranked) > 12:
         fig.data[0].text = None
-    st.session_state["_pending_chart_summary"] = t(f"当前 {stats['total']} 个可计算 CC 中，展示 {stats['selected']} 个，贡献 {share} 风险分；最高为 {ranked.iloc[0]['cc']}（{ranked.iloc[0]['risk_score']:.1f}）。风险分沿用聚类结果，仅用于调查排序。", f"Showing {stats['selected']} of {stats['total']} scored CCs, contributing {share} of the risk score. Highest: {ranked.iloc[0]['cc']} ({ranked.iloc[0]['risk_score']:.1f}). Cluster scores rank investigations only.")
-    st.session_state["_pending_chart_context"] = {"kind": "pareto", "measure": "risk_score", "names": ranked.cc.tolist(), "total": stats["score_total"] if "score_total" in stats else float(risks.risk_score.fillna(0).sum())}
+    st.session_state["_pending_chart_summary"] = t(f"展示 {stats['selected']} / {stats['total']} 个 CC，贡献 {share} 的{score_label}；首位 {ranked.iloc[0]['cc']}（{ranked.iloc[0]['risk_score']:.1f}）。" + ("缺失项待确认，这个暂排不证明完整风险顺序。" if pending else "分数仅用于复核优先级。"), f"Showing {stats['selected']} / {stats['total']} CCs, contributing {share} of {score_label}. First: {ranked.iloc[0]['cc']} ({ranked.iloc[0]['risk_score']:.1f}). " + ("Missing inputs are pending; this order does not establish total-risk order." if pending else "Scores prioritize review only."))
+    st.session_state["_pending_chart_context"] = {"kind": "pareto", "measure": "risk_score", "poc_pending": pending, "names": ranked.cc.tolist(), "total": stats["score_total"] if "score_total" in stats else float(risks.risk_score.fillna(0).sum())}
     render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{community.lower()}_unified_risk_pareto")
     st.markdown(quality_pareto_rows_html(ranked, name_col="cc", qty_col="risk_score", value_format=".1f"), unsafe_allow_html=True)
-    st.caption(t("蓝柱：CC 风险分；橙线：累计风险分 ÷ 当前范围全部 CC 风险分。横轴编号对应下方 CC。", "Blue bars: CC risk score. Orange line: cumulative score / all scored CCs in the selection. Axis numbers map to the CC list below."))
+    st.caption(t("蓝柱：CC 已知风险贡献；橙线：累计已知贡献 ÷ 全部已知贡献。完整总分未确认，不能据此确定完整风险排序。" if pending else "蓝柱：CC 风险分；橙线：累计风险分 ÷ 当前范围全部 CC 风险分。横轴编号对应下方 CC。", "Blue bars: known CC contributions. Line: cumulative / all known contributions. Pending complete scores do not establish total-risk ordering." if pending else "Blue bars: CC risk score. Orange line: cumulative score / all scored CCs in the selection. Axis numbers map to the CC list below."))
     return risks
 
 
@@ -21365,8 +21383,10 @@ def render_unified_defect_pareto(cases: pd.DataFrame, scope: DashboardScope, com
     st.markdown(f'<span class="quality-risk-chip">{html.escape(chip)}</span>', unsafe_allow_html=True)
     display = shown.copy()
     display["issue_type"] = display.issue_type.replace({"未分类": t("未分类", "Unclassified"), "分类不一致": t("分类不一致", "Conflicting classification"), "未分类（仅有产品族）": t("未分类（仅有产品族）", "Unclassified (family only)")})
-    quantity_label = t("IV 案例数", "IV Cases") if is_iv else t("疵点数量", "Defect quantity")
-    fig = build_quality_pareto(display, name_col="issue_type", qty_col=qty_col, cumulative_col="cumulative_share", height=360, quantity_label=quantity_label, cumulative_label=t("累计占比", "Cumulative share"), issue_label=t("问题类型", "Defect Type"))
+    quantity_label = t("IV 案例数（QTY）", "IV cases (QTY)") if is_iv else t("疵点数量（QTY）", "Defect quantity (QTY)")
+    fig = build_quality_pareto(display, name_col="issue_type", qty_col=qty_col, cumulative_col="cumulative_share", height=360,
+        quantity_label=quantity_label, cumulative_label=t("累计占比（%）", "Cumulative share (%)"), issue_label=t("问题类型", "Defect Type"),
+        x_label=t("IV 问题排名", "IV issue rank") if is_iv else t("疵点排名", "Defect rank"))
     fig.update_xaxes(ticklabelstep=max(1, math.ceil(len(display) / 12)))
     if len(display) > 20:
         fig.data[0].text = None
@@ -21443,18 +21463,45 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
         iv["intern_voice_prev_available"] = False
         risk_voice = pd.concat([risk_voice, iv], ignore_index=True)
     settings = current_risk_settings()
-    products = compute_product_summary(finished, risk_voice, settings, include_client_only=True)
-    cluster = render_zx_high_risk_cluster(products, settings, "ZX PQC + Customer N0 + IV", "zx_unified")
-    risks = pd.DataFrame({"cc": cluster.product_code, "risk_score": cluster.cluster_score}) if not cluster.empty else pd.DataFrame(columns=["cc", "risk_score"])
+    cc_scores = render_tu_risk_poc(finished, jdy, voice_all, iv_cases, scope, translate=t)
+    # The report and CC Pareto use a separately recomputed CC policy, never
+    # a sum of Model scores. Legacy field names are only an adapter for the
+    # existing evidence/report builder; final scores remain null if incomplete.
+    cluster = pd.DataFrame()
+    risks = pd.DataFrame(columns=["cc", "risk_score"])
+    if not cc_scores.empty:
+        cluster = cc_scores.assign(product_code=cc_scores.cc, product_label=cc_scores.models,
+            cluster_score=cc_scores.risk_lower, cluster_label=np.where(cc_scores.complete, "POC", "待确认"),
+            qty_inspected=cc_scores.pqc_inspected, defect_qty=cc_scores.pqc_defects, defect_rate=cc_scores.pqc_dpu,
+            rpm_now=cc_scores.rpm, intern_voice_count=cc_scores.iv, returned_now=cc_scores.returns,
+            production_axis=cc_scores.supplier_score, client_signal=cc_scores.client_score)
+        risks = cc_scores[["cc", "risk_lower", "risk_upper", "complete"]].assign(risk_score=cc_scores.risk_lower)
+    risks.attrs["poc"] = True
+    risks.attrs["poc_pending"] = bool(not cc_scores.empty and not cc_scores.complete.all())
     summary, pareto = build_zx_quality_gates(incoming, finished, jdy)
     risks = render_unified_pareto_pair(risks, iv_cases, scope, "TU", pareto)
     render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU")
     render_unified_spc(pd.DataFrame(), scope, "TU")
     source_pack = build_tu_community_ai_fact_pack(finished, risk_voice, incoming, cluster, pd.DataFrame(), settings, jdy_fqc_override=jdy, use_cluster_ranking=True)
+    cc_facts = cc_scores.set_index("cc").to_dict("index") if not cc_scores.empty else {}
+    for fact in source_pack["product_risks"]:
+        score = cc_facts.get(fact["cc"], {})
+        fact.update(risk_score=finite_number(score.get("risk_score")), risk_lower=finite_number(score.get("risk_lower")),
+            risk_upper=finite_number(score.get("risk_upper")), strategy_status=score.get("strategy_status", "pending"),
+            scoring_policy="TU three-dimension POC; uncalibrated; incomplete records are sorted by known contributions",
+            client_score=finite_number(score.get("client_score")), supplier_score=finite_number(score.get("supplier_score")),
+            known_weight=finite_number(score.get("known_weight")))
+    # A new trial score must not trigger an AQL standard derived from the old
+    # two-dimension heuristic. Sampling policy is outside this scoring POC.
+    source_pack["aql_recommendations"] = [{"cc": item["cc"], "model": item.get("model"),
+        "recommendation": t("沿用已批准标准", "Use approved sampling standard"),
+        "governance_note": "POC scoring does not change the approved sampling standard"} for item in source_pack["aql_recommendations"]]
     pack = {key: source_pack[key] for key in ["product_risks", "ps_actions", "aql_recommendations", "cp_context"]}
+    pack["risk_poc"] = st.session_state.get("_tu_risk_poc_cc_audit", {})
     render_unified_ai_report("TU", {"community": "TU", "scope": scope.facts(), "customer": metrics, "iv": current_iv, "report_pack": pack,
         "inspected_qty": float(finished.qty_inspected.sum()), "defect_points": float(finished.defect_qty.sum()),
-        "customer_period": "N0 snapshot: source contains no calendar dates", "iqc_scope": "Exception records only; no overall pass-rate denominator"}, cards, risks)
+        "customer_period": "N0 snapshot: source contains no calendar dates", "iqc_scope": "Exception records only; no overall pass-rate denominator",
+        "risk_poc": st.session_state.get("_tu_risk_poc_cc_audit", {})}, cards, risks)
 
 
 def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):

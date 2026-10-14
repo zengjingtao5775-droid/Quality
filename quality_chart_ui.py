@@ -14,7 +14,7 @@ from plotly.subplots import make_subplots
 
 
 QUALITY_SERIES_COLORS = ["#2855C5", "#148A83", "#6B5CC5", "#D98200", "#C83C55", "#475467"]
-QUALITY_CHART_UI_VERSION = "2026-10-06-v2-risk-score-pareto"
+QUALITY_CHART_UI_VERSION = "2026-10-14-v3-visible-axes"
 
 
 def apply_quality_chart_style(fig: go.Figure, *, height: int | None = None,
@@ -36,17 +36,20 @@ def apply_quality_chart_style(fig: go.Figure, *, height: int | None = None,
 
 def style_quality_trend(fig: go.Figure, *, height: int, is_rate: bool = True,
                         monthly: bool = False, tick_size: int = 11,
-                        month_step: int = 1, show_year: bool = False) -> go.Figure:
+                        month_step: int = 1, show_year: bool = False,
+                        x_label: str | None = None, y_label: str | None = None) -> go.Figure:
     apply_quality_chart_style(fig, height=height, showlegend=len(fig.data) > 1)
     fig.update_traces(line=dict(width=2), marker=dict(size=6))
-    fig.update_layout(margin=dict(l=8, r=8, t=25, b=25),
+    fig.update_layout(margin=dict(l=8, r=8, t=25, b=45),
                       legend=dict(orientation="h", y=1.12, x=0, title_text="", font_size=11))
-    fig.update_xaxes(title_text=None, tickangle=0, automargin=True, tickfont=dict(size=tick_size))
+    fig.update_xaxes(title_text=x_label or fig.layout.xaxis.title.text or ("Month" if monthly else "Date"),
+                     title_font=dict(size=13), title_standoff=8, tickangle=0, automargin=True, tickfont=dict(size=tick_size))
     if monthly:
         # Cross-year labels need room for the year in narrow three-column cards.
         interval = max(month_step, 3) if show_year and month_step > 1 else month_step
         fig.update_xaxes(tickformat="%b<br>%Y" if show_year else "%b", dtick=f"M{interval}")
-    fig.update_yaxes(title_text=None, tickformat=".2%" if is_rate else ",.0f", rangemode="tozero")
+    fig.update_yaxes(title_text=y_label or fig.layout.yaxis.title.text or ("Defect-point rate (%)" if is_rate else "QTY"),
+                     title_font=dict(size=13), title_standoff=7, tickformat=".2%" if is_rate else ",.0f", rangemode="tozero")
     return fig
 
 
@@ -55,6 +58,7 @@ def build_quality_pareto(ranked: pd.DataFrame, *, name_col: str,
                          quantity_label: str = "Quantity",
                          cumulative_label: str = "Cumulative share",
                          issue_label: str = "Issue",
+                         x_label: str | None = None,
                          value_format: str = ",.0f") -> go.Figure:
     """Render supplied cumulative shares without renormalizing a Top-N subset."""
     labels = [str(i) for i in range(1, len(ranked) + 1)]
@@ -71,13 +75,16 @@ def build_quality_pareto(ranked: pd.DataFrame, *, name_col: str,
         hovertemplate=f"{cumulative_label}: %{{y:.1%}}<extra></extra>",
     ), secondary_y=True)
     apply_quality_chart_style(fig, height=height, showlegend=False)
-    fig.update_layout(margin=dict(l=8, r=8, t=28, b=30), bargap=.28)
-    fig.update_xaxes(title_text=None, tickangle=0, automargin=True, tickfont=dict(size=10),
+    fig.update_layout(margin=dict(l=8, r=8, t=28, b=45), bargap=.28)
+    fig.update_xaxes(title_text=x_label or issue_label, title_font=dict(size=13), title_standoff=8,
+                     tickangle=0, automargin=True, tickfont=dict(size=10),
                      type="category", tickmode="array", tickvals=labels, ticktext=labels,
                      ticklabelstep=1, nticks=len(labels))
     maximum = float(ranked[qty_col].max()) if not ranked.empty else 0.0
-    fig.update_yaxes(title_text=None, range=[0, maximum * 1.16 if maximum > 0 else 1], secondary_y=False)
-    fig.update_yaxes(title_text=None, tickformat=".0%", range=[0, 1.08], secondary_y=True)
+    fig.update_yaxes(title_text=quantity_label, title_font=dict(size=13), title_standoff=6,
+                     range=[0, maximum * 1.16 if maximum > 0 else 1], secondary_y=False)
+    fig.update_yaxes(title_text=cumulative_label, title_font=dict(size=13), title_standoff=6,
+                     tickformat=".0%", range=[0, 1.08], secondary_y=True)
     return fig
 
 

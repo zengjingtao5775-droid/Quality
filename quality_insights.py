@@ -9,7 +9,7 @@ import json
 
 import pandas as pd
 
-INSIGHTS_VERSION = "2026-10-13-v9-inspection-pareto"
+INSIGHTS_VERSION = "2026-10-14-v11-gate-rate-coverage"
 
 
 def numeric(value):
@@ -79,8 +79,20 @@ def chart_evidence(traces, y_format="", context=None):
                     "relative_change": (latest[1] / previous[1] - 1) if previous and previous[1] > 0 else None}
         monthly = context.get("monthly", [])
         if monthly:
-            evidence["latest_volume"] = monthly[-1]
-            evidence["previous_volume"] = monthly[-2] if len(monthly) > 1 else None
+            # Older callers supplied aligned volumes without a month key.
+            # Retain that contract while matching new gapped traces by month.
+            trace_months = trace.get("x", [])
+            volumes = {str(row.get("month") or _month(x)): row for row, x in zip(monthly, trace_months)}
+            evidence["latest_volume"] = volumes.get(_month(latest[0]), {})
+            evidence["previous_volume"] = volumes.get(_month(previous[0]), {}) if previous else None
+            if evidence["is_rate"]:
+                evidence["missing_months"] = sum(numeric(row.get("denominator")) is None or numeric(row.get("numerator")) is None for row in monthly)
+                last_month = str(monthly[-1].get("month") or _month(trace_months[-1])) if trace_months else ""
+                evidence["latest_period_missing"] = last_month != _month(latest[0])
+                if previous and re.match(r"\d{4}-\d{2}", _month(latest[0])) and re.match(r"\d{4}-\d{2}", _month(previous[0])) and pd.Period(_month(latest[0]), "M").ordinal - pd.Period(_month(previous[0]), "M").ordinal != 1:
+                    # The previous observed month is not necessarily the
+                    # immediately preceding calendar month; do not imply MoM.
+                    evidence["change"] = evidence["relative_change"] = None
         cutoff = pd.to_datetime(context.get("cutoff"), errors="coerce")
         if pd.notna(cutoff) and _month(latest[0]) == str(cutoff)[:7]:
             evidence["partial_latest"] = cutoff.day < cutoff.days_in_month
@@ -150,6 +162,8 @@ def chart_signal(facts, language="中文"):
         # full-period leading category. The two observations remain distinct.
         return chart_signal(trend if not trend.get("empty", True) else pareto, language)
     if kind == "trend":
+        if evidence.get("latest_period_missing"):
+            return signal("warning", "最新月份分母待补齐", "Latest month denominator unavailable")
         if evidence.get("partial_latest"):
             return signal("warning", "末月未完整 · 待对齐", "Partial month · align periods")
         delta = numeric(evidence.get("change"))
@@ -172,6 +186,8 @@ def chart_signal(facts, language="中文"):
             return signal("good", "问题率回落 · 继续验证", "Lower issue rate · verify improvement")
         return signal("neutral", "近期持平", "Unchanged recently")
     if kind == "pareto" and evidence.get("ranked"):
+        if evidence.get("poc_pending"):
+            return {"tone": "warning", "label": "完整风险待确认" if zh else "Complete risk pending"}
         return signal("danger", "首位问题 · 优先复核", "Leading issue · review first")
     if kind == "cluster":
         return signal("warning", "相对优先级 · 需追溯", "Relative priority · trace sources")
@@ -198,6 +214,10 @@ def build_chart_insight(facts, language="中文"):
     zh = language == "中文"
     e = facts.get("evidence") or chart_evidence(facts.get("traces", []), facts.get("y_format", ""), facts.get("context"))
     kind = e.get("kind")
+    if kind == "empty" and e.get("rate_unavailable"):
+        return {"finding": "检验分母不完整，疵点率不可计算。" if zh else "The inspection denominator is incomplete, so the defect-point rate is unavailable.",
+                "interpretation": "帕累托保留源问题数量；这些数量不能代替总体疵点率，也不能据此判断质量改善。" if zh else "The Pareto retains source issue quantities; counts cannot substitute for a population rate or establish improvement.",
+                "action": "补齐相同期间、产品和检验范围的检验数量及完整疵点数量，再重新计算疵点率；订单量不能替代抽检数量。" if zh else "Obtain complete defects and inspection quantities for the same period, products and inspection scope before recalculating; order quantity cannot substitute for sampled quantity."}
     if kind == "quality_gate":
         trend, pareto = e["trend"], e["pareto"]
         trend_insight = build_chart_insight(trend, language)
@@ -259,6 +279,8 @@ def build_chart_insight(facts, language="中文"):
             interpretation += " 该源只有异常记录，不能据此推算总体不良率。" if zh else "This exception-only log cannot estimate the full population defect rate."
         if e.get("partial_latest"):
             interpretation += " 末月未完整，不能与完整月份直接比较。" if zh else "The latest month is partial and is not directly comparable with full months."
+        if e.get("missing_months"):
+            interpretation += " 分母不完整的月份留空；仅比较有完整分子和分母的月份，隔月观测不能当作环比。" if zh else "Months with incomplete denominators remain empty. Compare only complete months; separated observations are not a month-on-month comparison."
         action = f"复核 {_month(latest[0])} 与 {_month(peak[0])} 的主要问题、批次和处置记录；用相同分母及追溯范围验证措施效果。" if zh else f"Review leading issues, batches and disposition records in {_month(latest[0])} and {_month(peak[0])}; verify action effectiveness with comparable coverage and denominators."
         if e.get("exception_only"):
             action = f"复核 {_month(latest[0])} 的问题、来料批次及处置记录；补齐含合格批次的全部来料检验记录，再评价总体合格率。" if zh else f"Review {_month(latest[0])} issues, incoming batches and disposition records; obtain the complete incoming inspection log, including passing batches, before calculating an overall pass rate."
@@ -268,17 +290,21 @@ def build_chart_insight(facts, language="中文"):
     if kind == "pareto" and e.get("ranked"):
         first = e["ranked"][0]
         score = e.get("measure") == "risk_score"
-        unit = ("风险分" if zh else "risk points") if score else e.get("unit", "个" if zh else "issues")
+        unit = ("已知风险贡献" if zh else "known risk contributions") if score and e.get("poc_pending") else ("风险分" if zh else "risk points") if score else e.get("unit", "个" if zh else "issues")
         share = f"{e['top_share']:.1%}" if e.get("top_share") is not None else "—"
         covered = f"{e['shown_share']:.1%}" if e.get("shown_share") is not None else "—"
         first_value = f"{first[1]:,.1f}" if score else f"{first[1]:,.0f}"
         finding = f"首位「{first[0]}」{first_value} {unit}，占全部范围 {share}；当前展示覆盖 {covered}。" if zh else f"Leading: {first[0]} ({first_value} {unit}), {share} of the full selection; shown coverage {covered}."
         interpretation = "风险分仅用于调查排序，占比是风险分份额，不是产品不良概率。" if zh and score else "Scores rank investigation priorities; shares are score contributions, not defect probabilities." if score else "累计线以当前范围全部问题为分母，未展示类别仍占据剩余份额。" if zh else "Cumulative shares use the full selected population, including categories outside the displayed subset."
+        if score and e.get("poc_pending"):
+            interpretation = "当前仅按可计算的加权贡献暂排。Strategy 或其他输入仍待确认；缺失不是零，这个顺序和累计占比不代表完整风险。" if zh else "This trial order uses known weighted contributions only. Strategy or other inputs remain pending, not zero. The order and shares do not establish complete risk."
         if not score and e.get("shown_share") is not None and e["shown_share"] < .8:
             interpretation += " 问题较分散，不能只处理首位类别。" if zh else "Issues are spread across categories; addressing the leader alone will leave substantial exposure."
         if e.get("inspection_quantities"):
             interpretation += " 疵点按各次检验记录累加；同一件可能跨环节出现，合计不代表唯一不良件数。IV 案例单独统计。" if zh else "Defects accumulate across inspection records; a piece may appear at multiple stages, so the total is not a unique defective-piece count. IV cases are counted separately."
         action = f"先按「{first[0]}」核对对应 CC/Model、批次和原始记录，再与客户退货或 IV 交叉验证；不能直接据此断定根因。" if zh else f"Start with {first[0]}: trace affected codes/models, batches and source records; cross-check returns or IV before assigning a cause."
+        if score and e.get("poc_pending"):
+            action = "先确认对应 Model、供应商及季节的 Strategy 身份，并补齐缺失数据；完整总分确认后再比较 CC 风险顺序。" if zh else "Confirm Strategy identity for each Model, supplier and season and resolve missing sources; compare complete CC scores only after those inputs are confirmed."
         if e.get("traceability_missing"):
             action = f"先按「{first[0]}」复核材料、来料批次、供方及处置结果；当前没有 CC/Model 链路，需补齐追溯后再关联成品风险。" if zh else f"Review {first[0]} by material, incoming batch, vendor and disposition; obtain the missing CC/Model traceability before linking it to finished-product risk."
         if e.get("composite_descriptions"):
