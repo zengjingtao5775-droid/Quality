@@ -14500,6 +14500,7 @@ def render_quality_gate_analysis(
                                     show_year=monthly.index.year.nunique() > 1,
                                     x_label=t("月份", "Month"), y_label=t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"))
                 if not trend_long.value.notna().any():
+                    trend_fig.update_yaxes(range=[0, 1], showticklabels=False)
                     trend_fig.add_annotation(text=t("检验分母不完整<br>疵点率不可计算", "Incomplete inspection denominator<br>Rate unavailable") if is_rate else t("数量不可计算", "Quantity unavailable"),
                         x=.5, y=.5, xref="paper", yref="paper", showarrow=False, font=dict(color="#64748b", size=13))
                 st.session_state["_pending_chart_context"] = {"kind": "trend", "stage": stage, "supplier": selected_suppliers,
