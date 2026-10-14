@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 from quality_chart_ui import build_quality_pareto, style_quality_trend
 from quality_gate_metrics import gate_metrics
-from quality_insights import chart_evidence, chart_signal
+from quality_insights import chart_evidence, chart_signal, build_chart_insight
 
 
 class GateDisplayTests(unittest.TestCase):
@@ -91,6 +91,11 @@ class GateDisplayTests(unittest.TestCase):
         self.assertIsNone(evidence['change'])
         self.assertTrue(evidence['latest_period_missing'])
         self.assertEqual(chart_signal({'evidence':evidence})['tone'],'warning')
+        for language in ('中文', 'English'):
+            insight=build_chart_insight({'evidence':evidence},language)
+            self.assertNotIn('较 2026-01',insight['finding'])
+            self.assertNotIn('vs 2026-01',insight['finding'])
+            self.assertIn('不能判断环比' if language=='中文' else 'cannot be assessed',insight['interpretation'])
 
 
 if __name__=='__main__':unittest.main()
