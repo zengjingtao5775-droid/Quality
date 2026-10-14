@@ -11,7 +11,9 @@ from openpyxl import Workbook
 from dashboard_scope import DashboardScope
 from tu_risk_poc import (RiskProfile, default_profile, threshold_score, weighted_bounds,
                          id_tokens, strategic_identity, load_strategy_workbook,
-                         build_tu_risk, aql_facts, pqc_facts)
+                         build_tu_risk, aql_facts, pqc_facts, customer_return_qty,
+                         iv_quantity_facts, return_qty_reference, return_quantity_score,
+                         profile_from_saved)
 from quality_insights import build_chart_insight
 
 
@@ -29,7 +31,7 @@ class RiskPocTests(unittest.TestCase):
                             'sold_now':[180231,10000,180231,10000]})
         iv=pd.DataFrame({'product_code':['335330']*8,'model_code':['8655827']*8,
                          'date':['2026-06-01']*8,'case_id':['a','b','c','d','e','f','f','after'],
-                         'responsibility_stage':['Before Sales']*7+['After Sales']})
+                         'responsibility_stage':['Before Sales']*7+['After Sales'],'iv_qty':[1]*8})
         return pqc,aql,voice,iv
 
     def scope(self,**kw):
@@ -45,7 +47,7 @@ class RiskPocTests(unittest.TestCase):
     def test_nested_weights_are_validated_independently(self):
         for profile in [replace(RiskProfile(),supplier_weight=40),replace(RiskProfile(),iv_weight=30),
                         replace(RiskProfile(),aql_weight=30),replace(RiskProfile(),product_weight=-1,supplier_weight=71),
-                        replace(RiskProfile(),rpm_warning=0),replace(RiskProfile(),aql_critical_pct=10)]:
+                        replace(RiskProfile(),return_critical_multiple=1),replace(RiskProfile(),aql_critical_pct=10)]:
             with self.assertRaises(ValueError):profile.validate()
         self.assertEqual(default_profile('Supplier').product_weight,0)
         self.assertEqual(default_profile('Supplier').supplier_weight,70)
@@ -61,12 +63,14 @@ class RiskPocTests(unittest.TestCase):
         self.assertAlmostEqual(row.pqc_smoothed,1144/55562)
         self.assertAlmostEqual(row.pqc_score,25.737014506316547)
         self.assertAlmostEqual(row.rpm,162/180231*1e6)
-        self.assertAlmostEqual(row.rpm_score,69.5701610178186)
+        self.assertEqual(row.return_qty_mean,86)
+        self.assertEqual(row.return_reference_count,2)
+        self.assertAlmostEqual(row.return_qty_score,50+50*(162-86)/(172-86))
         self.assertEqual(row.iv,6)
         self.assertEqual(row.iv_score,60)
         self.assertAlmostEqual(row.aql_fail_rate,1/20)
         self.assertEqual(row.aql_score,25)
-        self.assertAlmostEqual(row.client_score,(row.rpm_score+60)/2)
+        self.assertAlmostEqual(row.client_score,(row.return_qty_score+60)/2)
         self.assertAlmostEqual(row.supplier_score,row.pqc_score*.8+25*.2)
         self.assertEqual(row.strategy_status,'pending')
         self.assertTrue(pd.isna(row.risk_score))
@@ -216,6 +220,99 @@ class RiskPocTests(unittest.TestCase):
         self.assertIn('已知风险贡献',result['finding'])
         self.assertIn('不代表完整风险',result['interpretation'])
         self.assertIn('Strategy',result['action'])
+
+    def test_iv_uses_product_quantity_not_case_count(self):
+        p,a,v,i=self.sources()
+        i.loc[i.case_id.eq('a'),'iv_qty']=5
+        rows,_=build_tu_risk(p,a,v,i,self.scope())
+        row=rows.set_index('entity').loc['8655827']
+        self.assertEqual(row.iv_records,6)
+        self.assertEqual(row.iv,10)
+        self.assertEqual(row.iv_score,100)
+
+    def test_iv_conflicting_or_missing_quantity_stays_unknown(self):
+        _,_,_,i=self.sources();i=i.loc[i.responsibility_stage.eq('Before Sales')]
+        self.assertEqual(iv_quantity_facts(i)['iv'],6)
+        i.loc[i.index[-1],'iv_qty']=2
+        self.assertIsNone(iv_quantity_facts(i)['iv'])
+        self.assertIsNone(iv_quantity_facts(i.drop(columns='iv_qty'))['iv'])
+        i.loc[i.index[-1],'iv_qty']=np.nan
+        self.assertIsNone(iv_quantity_facts(i)['iv'])
+
+    def test_return_quantity_does_not_require_sales_denominator(self):
+        p,a,v,i=self.sources()
+        before,_=build_tu_risk(p,a,v,i,self.scope())
+        v['sold_now']=np.nan
+        after,_=build_tu_risk(p,a,v,i,self.scope())
+        self.assertTrue(after.rpm.isna().all())
+        for field in ('returns','return_qty_mean','return_qty_score','client_score','risk_lower'):
+            pd.testing.assert_series_equal(before.set_index('entity')[field],after.set_index('entity')[field])
+
+    def test_peer_mean_includes_explicit_zero_excludes_unknown(self):
+        customer=pd.DataFrame({'supplier_code':['49425']*4,'customer_grain':['CC']*4,
+            'cc':['335330','335331','335332','335333'],'returned_now':[162,0,np.nan,10]})
+        conflict=customer.iloc[[-1]].assign(returned_now=11)
+        ref=return_qty_reference(pd.concat([customer,conflict]),set(customer.cc),'cc')
+        self.assertEqual(ref['values'],{'335330':162,'335331':0})
+        self.assertEqual(ref['mean'],81)
+        self.assertEqual(ref['count'],2)
+        self.assertEqual(ref['population'],4)
+
+    def test_individual_filters_do_not_recalibrate_return_mean(self):
+        for grain,entity in [('Model','8655827'),('CC','335330')]:
+            before,audit=build_tu_risk(*self.sources(),self.scope(),grain=grain)
+            narrowed=self.scope(models=(entity,)) if grain=='Model' else self.scope(ccs=(entity,))
+            after,new_audit=build_tu_risk(*self.sources(),narrowed,grain=grain)
+            self.assertEqual(audit['return_reference'],new_audit['return_reference'])
+            self.assertEqual(len(after),1)
+            original=before.set_index('entity').loc[entity]
+            self.assertEqual(original.return_qty_score,after.iloc[0].return_qty_score)
+
+    def test_cc_and_model_means_use_their_own_export_grain(self):
+        p,a,v,i=self.sources()
+        v.loc[v.customer_grain.eq('CC'),'returned_now']=[400,0]
+        model,_=build_tu_risk(p,a,v,i,self.scope(),grain='Model')
+        cc,_=build_tu_risk(p,a,v,i,self.scope(),grain='CC')
+        self.assertEqual(model.iloc[0].return_qty_mean,86)
+        self.assertEqual(cc.iloc[0].return_qty_mean,200)
+        self.assertEqual(cc.set_index('entity').loc['335330'].return_qty_score,100)
+
+    def test_return_mean_zero_and_unknown_do_not_divide_by_zero(self):
+        profile=RiskProfile()
+        self.assertEqual(return_quantity_score(0,{'mean':0},profile),0)
+        self.assertIsNone(return_quantity_score(1,{'mean':0},profile))
+        self.assertIsNone(return_quantity_score(0,{'mean':None},profile))
+        self.assertIsNone(return_quantity_score(-1,{'mean':10},profile))
+
+    def test_return_score_anchors_and_configurable_cap(self):
+        ref={'mean':100};profile=RiskProfile()
+        for qty,score in [(0,0),(50,25),(100,50),(150,75),(200,100),(1000,100)]:
+            self.assertEqual(return_quantity_score(qty,ref,profile),score)
+        self.assertEqual(return_quantity_score(200,ref,replace(profile,return_critical_multiple=3)),75)
+
+    def test_saved_rpm_profile_migrates_weights_but_not_unit_thresholds(self):
+        profile=profile_from_saved({'rpm_weight':60,'iv_weight':40,'rpm_warning':646,'rpm_critical':1292,
+            'pqc_weight':75,'aql_weight':25})
+        self.assertEqual(profile.return_weight,60)
+        self.assertEqual(profile.return_critical_multiple,2)
+        self.assertEqual(profile.pqc_weight,75)
+        profile.validate()
+        self.assertEqual(profile_from_saved(None,'Supplier').product_weight,0)
+
+    def test_conflicting_sales_leave_consistent_return_quantity_measured(self):
+        p,a,v,i=self.sources();extra=v.iloc[[0]].assign(sold_now=999)
+        rows,_=build_tu_risk(p,a,pd.concat([v,extra]),i,self.scope())
+        row=rows.set_index('entity').loc['8655827']
+        self.assertTrue(pd.isna(row.rpm))
+        self.assertEqual(row.returns,162)
+        self.assertEqual(row.return_qty_mean,86)
+
+    def test_all_population_excludes_after_sales_only_iv_products(self):
+        p,a,v,i=self.sources()
+        extra=i.iloc[[-1]].assign(case_id='after-only',model_code='9999999',product_code='999999')
+        rows,audit=build_tu_risk(p,a,v,pd.concat([i,extra]),self.scope(),inspection_only=False)
+        self.assertNotIn('9999999',rows.entity.tolist())
+        self.assertEqual(audit['return_reference']['population'],2)
 
 
 if __name__=='__main__':unittest.main()

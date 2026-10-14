@@ -52,7 +52,7 @@ class DistributionTests(unittest.TestCase):
         rows=self.rows();rows.loc[0,['supplier_score','client_score']]=[100.,100.]
         fig=build_risk_distribution_figure(risk_distribution_groups(rows),'Model',lambda zh,en:en)
         self.assertIn('PQC + AQL',fig.layout.xaxis.title.text)
-        self.assertIn('RPM + IV',fig.layout.yaxis.title.text)
+        self.assertIn('Return Qty + IV Qty',fig.layout.yaxis.title.text)
         self.assertGreater(fig.layout.xaxis.range[1],100)
         self.assertGreater(fig.layout.yaxis.range[1],100)
         self.assertIn('Risk Score',fig.data[0].hovertemplate)
