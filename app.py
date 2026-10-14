@@ -41,10 +41,10 @@ from dashboard_scope import (
 from tu_quality import build_zx_quality_gates
 from quality_gate_metrics import gate_metrics
 import tu_risk_poc as _tu_risk_poc
-if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-13-v1-three-dimensions":
+if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-14-v2-return-iv-quantities":
     importlib.reload(_tu_risk_poc)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-14-v2-restored-cluster":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-14-v3-return-iv-quantities":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 import quality_chart_ui as _quality_chart_ui
@@ -2724,7 +2724,7 @@ ZX_ROOT_CAUSE_SUBFORM_FIELDS = (
     ("_widget_1715253071107", "_widget_1753855936129", "内里检查"),
 )
 JIANDAOYUN_CACHE_VERSION = 5
-DATA_SCOPE_CACHE_VERSION = 15
+DATA_SCOPE_CACHE_VERSION = 16
 JIANDAOYUN_RUNTIME_SNAPSHOT_DIR = ROOT / ".runtime" / "jiandaoyun_snapshots"
 
 
@@ -21070,7 +21070,7 @@ def render_three_part_report(community, pack, narrative):
             f'<td><div class="quality-report-product"><strong>{e(cc)}</strong>{supplier}{model_text}</div></td>'
             f'<td class="quality-report-defect">{short(product.get("top_defect"), 12)}</td>'
             f'<td><div class="quality-report-priority"><strong>{e(risk_text)}</strong>{first_badge}</div></td>'
-            f'<td>{dpu_text}</td><td>{e(fmt(product.get("rpm")))}</td><td>{e(fmt(product.get("iv_cases")))}</td></tr>')
+            f'<td>{dpu_text}</td><td>{e(fmt(product.get("return_qty") if is_poc else product.get("rpm")))}</td><td>{e(fmt(product.get("iv_qty") if is_poc else product.get("iv_cases")))}</td></tr>')
 
         action, aql = action_map.get(cc, {}), aql_map.get(cc, {})
         latest = e(action.get("latest_fqc_date") or "—")
@@ -21095,7 +21095,7 @@ def render_three_part_report(community, pack, narrative):
             f'<td>{short(product.get("top_defect") or t("待补问题类型", "Defect link missing"), 8)}</td>'
             f'<td>{short(cp, 14)}</td><td class="quality-report-aql">{e(aql.get("recommendation") or "—")}</td></tr>')
 
-    risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("总分区间", "Score/range") if is_poc else t("风险分", "Risk"), "DPU", "RPM", "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
+    risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("总分区间", "Score/range") if is_poc else t("风险分", "Risk"), "DPU", "Return Qty" if is_poc else "RPM", "IV Qty" if is_poc else "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
     if community == "TU":
         evidence_table = table("evidence-table", ["CC", t("迪卡侬/工厂", "DKL/Factory"), "RFT", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [14, 22, 14, 18, 12, 20], evidence_rows)
     else:
@@ -21107,7 +21107,7 @@ def render_three_part_report(community, pack, narrative):
         ai_rows.append(f'<details class="quality-report-ai-action"><summary><b>AI · {e(scope_text)}</b><span>{e(item["action"])}</span></summary><p><strong>{e(scope_text)}</strong> · {e(item["action"])}</p></details>')
     ai_html = '<div class="quality-report-ai-actions">' + ''.join(ai_rows) + '</div>' if ai_rows else ""
     notes = [
-        t("TU POC 采用客户端（RPM/IV）、产品（Strategy）、供应商（PQC/AQL）三维试算配置；各部门及粒度独立。缺失输入显示总分区间，按已知贡献暂排，不证明完整风险顺序。", "TU POC uses trial client (RPM/IV), product (Strategy), and supplier (PQC/AQL) policies, independently per department/grain. Incomplete scores show bounds; known-contribution ordering does not establish complete-risk order.") if is_poc else t("风险排序与当前聚类/CC 帕累托一致。风险分是复核优先级，不是不良概率；BME 不同供应商/环节的分数用于各自的相对排序。", "Risk ranking matches the current cluster/CC Pareto. Scores are review priorities, not defect probabilities; BME supplier/gate scores are relative rankings."),
+        t("TU POC 客户端采用 Return Qty 与 IV PRODUCT QUANTITY，产品采用 Strategy，供应商采用 PQC/AQL；各部门及粒度独立。退货平均值对应 50 分，平均值的 2 倍对应 100 分（可调整 POC 默认值）；IV 5 件/10 件对应 50 分/100 分。缺失输入保留总分区间。", "TU POC client uses Return Qty and IV PRODUCT QUANTITY, product uses Strategy, supplier uses PQC/AQL, independently per department/grain. Mean returns = 50 points; twice the mean = 100 (configurable POC default); IV 5/10 units = 50/100. Missing inputs preserve score bounds.") if is_poc else t("风险排序与当前聚类/CC 帕累托一致。风险分是复核优先级，不是不良概率；BME 不同供应商/环节的分数用于各自的相对排序。", "Risk ranking matches the current cluster/CC Pareto. Scores are review priorities, not defect probabilities; BME supplier/gate scores are relative rankings."),
         t("DPU = 疵点数 ÷ 检验数，点击百分比查看分子/分母。点击 Model、长疵点或 CP 可查看全文。", "DPU = defect points / inspections. Expand a percentage for its numerator/denominator; expand Models, long defects and CP text for full details."),
         t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。迪卡侬/工厂分别为两方 FQC 记录条数；PASS 为首次 PASS 数 / 有效首验记录数。缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspections, not completed/effective corrective actions. DKL/Factory are their respective FQC record counts; PASS is first-PASS / valid first-result records. Missing ownership or closure evidence is not inferred.") if community == "TU" else t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。检验数和源不良数保留 BME 源字段口径；缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspection activity, not completed/effective corrective actions. Inspections and source NC retain the BME source definitions; missing ownership or closure evidence is not inferred."),
         t("建议按 CC/批次追溯主要疵点与检验记录，由质量负责人确认 CP 控制点，再用同口径复检和客户反馈验证措施。", "Trace leading defects and inspections by CC/batch; have the quality lead confirm CP controls, then verify effectiveness using comparable repeat inspections and customer feedback."),
@@ -21198,8 +21198,9 @@ def load_unified_zx_iv(cache_version: int = DATA_SCOPE_CACHE_VERSION) -> pd.Data
                 "product_name": raw.get("MODEL NAME", ""),
                 "responsibility_stage": raw.get("Before or after Sales", ""),
                 "issue_type": raw.get("问题类型", ""),
+                "iv_qty": pd.to_numeric(raw.get("PRODUCT QUANTITY", pd.Series(np.nan, index=raw.index)), errors="coerce"),
             }))
-    return pd.concat(frames, ignore_index=True).loc[lambda d: d["case_id"].ne("")].drop_duplicates(["case_id", "model_code"]) if frames else pd.DataFrame()
+    return pd.concat(frames, ignore_index=True).loc[lambda d: d["case_id"].ne("")].drop_duplicates() if frames else pd.DataFrame()
 
 
 def _unified_filter_options(frame: pd.DataFrame, column: str) -> list[str]:
@@ -21474,7 +21475,7 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
         cluster = cc_scores.assign(product_code=cc_scores.cc, product_label=cc_scores.models,
             cluster_score=cc_scores.risk_lower, cluster_label=np.where(cc_scores.complete, "POC", "待确认"),
             qty_inspected=cc_scores.pqc_inspected, defect_qty=cc_scores.pqc_defects, defect_rate=cc_scores.pqc_dpu,
-            rpm_now=cc_scores.rpm, intern_voice_count=cc_scores.iv, returned_now=cc_scores.returns,
+            rpm_now=cc_scores.rpm, intern_voice_count=cc_scores.iv_records, returned_now=cc_scores.returns,
             production_axis=cc_scores.supplier_score, client_signal=cc_scores.client_score)
         risks = cc_scores[["cc", "risk_lower", "risk_upper", "complete"]].assign(risk_score=cc_scores.risk_lower)
     risks.attrs["poc"] = True
@@ -21489,8 +21490,12 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
         score = cc_facts.get(fact["cc"], {})
         fact.update(risk_score=finite_number(score.get("risk_score")), risk_lower=finite_number(score.get("risk_lower")),
             risk_upper=finite_number(score.get("risk_upper")), strategy_status=score.get("strategy_status", "pending"),
-            scoring_policy="TU three-dimension POC; uncalibrated; incomplete records are sorted by known contributions",
+            scoring_policy="TU three-dimension POC; client uses Return Qty (no sales denominator; peer mean=50, 2x mean=100 default) + IV PRODUCT QUANTITY (5/10 units=50/100); uncalibrated; incomplete records sorted by known contributions",
             client_score=finite_number(score.get("client_score")), supplier_score=finite_number(score.get("supplier_score")),
+            return_qty=finite_number(score.get("returns")), iv_qty=finite_number(score.get("iv")),
+            return_qty_score=finite_number(score.get("return_qty_score")), return_qty_mean=finite_number(score.get("return_qty_mean")),
+            return_reference_count=score.get("return_reference_count"), return_critical_qty=finite_number(score.get("return_critical_qty")),
+            iv_qty_score=finite_number(score.get("iv_score")),
             known_weight=finite_number(score.get("known_weight")))
     # A new trial score must not trigger an AQL standard derived from the old
     # two-dimension heuristic. Sampling policy is outside this scoring POC.
