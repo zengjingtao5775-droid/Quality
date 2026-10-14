@@ -58,7 +58,7 @@ from quality_chart_ui import (
     style_quality_trend,
 )
 import quality_insights as _quality_insights
-if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-14-v11-gate-rate-coverage":
+if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-14-v12-gate-rate-coverage":
     importlib.reload(_quality_insights)
 from quality_insights import (
     INSIGHTS_VERSION, chart_evidence, chart_signal, inspection_signal,

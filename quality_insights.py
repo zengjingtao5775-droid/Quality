@@ -9,7 +9,7 @@ import json
 
 import pandas as pd
 
-INSIGHTS_VERSION = "2026-10-14-v11-gate-rate-coverage"
+INSIGHTS_VERSION = "2026-10-14-v12-gate-rate-coverage"
 
 
 def numeric(value):
@@ -259,11 +259,13 @@ def build_chart_insight(facts, language="中文"):
         change = e.get("change")
         delta = f"{change * 100:+.2f} " + ("个百分点" if zh else "pp") if rate and change is not None else f"{change:+,.0f}" if change is not None else ""
         finding = f"最新 {_month(latest[0])} 为 {fmt(latest[1])}" if zh else f"Latest {_month(latest[0])}: {fmt(latest[1])}"
-        if previous:
+        if previous and change is not None:
             finding += f"，较 {_month(previous[0])} {delta}" if zh else f", {delta} vs {_month(previous[0])}"
         finding += f"；峰值 {_month(peak[0])} 为 {fmt(peak[1])}。" if zh else f"; peak {_month(peak[0])}: {fmt(peak[1])}."
         rebound = previous and latest[1] < first[1] and latest[1] > previous[1]
-        if rebound:
+        if previous and change is None:
+            interpretation = "上一自然月缺少可比数据，不能判断环比上升或下降。" if zh else "The immediately preceding month has no comparable data; a month-on-month increase or decline cannot be assessed."
+        elif rebound:
             interpretation = "首末下降，但最新一期反弹，不能判断为持续改善。" if zh else "Below the first period but rising recently; sustained improvement is not established."
         elif previous and latest[1] > previous[1]:
             interpretation = "近期问题信号回升，优先复核最新一期与峰值期的差异。" if zh else "The recent issue signal increased; compare the latest period with the peak period first."
