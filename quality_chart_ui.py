@@ -14,7 +14,7 @@ from plotly.subplots import make_subplots
 
 
 QUALITY_SERIES_COLORS = ["#2855C5", "#148A83", "#6B5CC5", "#D98200", "#C83C55", "#475467"]
-QUALITY_CHART_UI_VERSION = "2026-10-14-v3-visible-axes"
+QUALITY_CHART_UI_VERSION = "2026-10-16-v4-weekly-gates"
 
 
 def apply_quality_chart_style(fig: go.Figure, *, height: int | None = None,
@@ -35,7 +35,7 @@ def apply_quality_chart_style(fig: go.Figure, *, height: int | None = None,
 
 
 def style_quality_trend(fig: go.Figure, *, height: int, is_rate: bool = True,
-                        monthly: bool = False, tick_size: int = 11,
+                        monthly: bool = False, weekly: bool = False, tick_size: int = 11,
                         month_step: int = 1, show_year: bool = False,
                         x_label: str | None = None, y_label: str | None = None) -> go.Figure:
     apply_quality_chart_style(fig, height=height, showlegend=len(fig.data) > 1)
@@ -44,7 +44,21 @@ def style_quality_trend(fig: go.Figure, *, height: int, is_rate: bool = True,
                       legend=dict(orientation="h", y=1.12, x=0, title_text="", font_size=11))
     fig.update_xaxes(title_text=x_label or fig.layout.xaxis.title.text or ("Month" if monthly else "Date"),
                      title_font=dict(size=13), title_standoff=8, tickangle=0, automargin=True, tickfont=dict(size=tick_size))
-    if monthly:
+    if weekly:
+        dates = sorted({pd.Timestamp(value) for trace in fig.data for value in trace.x if pd.notna(value)})
+        step = max(1, (len(dates) + 4) // 5)
+        ticks = dates[::step]
+        if dates and dates[-1] not in ticks:
+            ticks.append(dates[-1])
+        labels = [f"W{date.isocalendar().week:02d}<br>{date.isocalendar().year}" for date in ticks]
+        fig.update_xaxes(type="date", tickmode="array", tickvals=ticks, ticktext=labels,
+                         title_text=x_label or "Week")
+        for trace in fig.data:
+            trace.hovertext = [f"{pd.Timestamp(value).isocalendar().year}-W{pd.Timestamp(value).isocalendar().week:02d}"
+                               f" · {pd.Timestamp(value):%Y-%m-%d} → {pd.Timestamp(value) + pd.Timedelta(days=6):%Y-%m-%d}"
+                               for value in trace.x]
+            trace.hovertemplate = "%{hovertext}<br>%{y:" + (".2%" if is_rate else ",.0f") + "}<extra></extra>"
+    elif monthly:
         # Cross-year labels need room for the year in narrow three-column cards.
         interval = max(month_step, 3) if show_year and month_step > 1 else month_step
         fig.update_xaxes(tickformat="%b<br>%Y" if show_year else "%b", dtick=f"M{interval}")

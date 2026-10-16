@@ -39,6 +39,9 @@ from dashboard_scope import (
     SUPPLIER_PRODUCT_TYPES,
 )
 from tu_quality import build_zx_quality_gates
+import quality_gate_metrics as _quality_gate_metrics
+if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v2-weekly-gates":
+    importlib.reload(_quality_gate_metrics)
 from quality_gate_metrics import gate_metrics
 import tu_risk_poc as _tu_risk_poc
 if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-14-v2-return-iv-quantities":
@@ -48,7 +51,7 @@ if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-14-v3-return-
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 import quality_chart_ui as _quality_chart_ui
-if getattr(_quality_chart_ui, "QUALITY_CHART_UI_VERSION", "") != "2026-10-14-v3-visible-axes":
+if getattr(_quality_chart_ui, "QUALITY_CHART_UI_VERSION", "") != "2026-10-16-v4-weekly-gates":
     importlib.reload(_quality_chart_ui)
 from quality_chart_ui import (
     QUALITY_SERIES_COLORS,
@@ -58,7 +61,7 @@ from quality_chart_ui import (
     style_quality_trend,
 )
 import quality_insights as _quality_insights
-if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-14-v12-gate-rate-coverage":
+if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-16-v13-weekly-gates":
     importlib.reload(_quality_insights)
 from quality_insights import (
     INSIGHTS_VERSION, chart_evidence, chart_signal, inspection_signal,
@@ -14350,12 +14353,12 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
     metric_class = "bme-fg-metrics one" if len(metric_items) == 1 else "bme-fg-metrics"
     st.markdown(f'<div class="{metric_class}">{metric_html}</div>', unsafe_allow_html=True)
     gate_charts = []
-    for kind, title, height in [("trend", t("月度趋势", "Monthly trend"), 225),
+    for kind, title, height in [("trend", t("每周趋势", "Weekly trend") if is_tu else t("月度趋势", "Monthly trend"), 225),
                                 ("pareto", t("问题 Pareto", "Defect Pareto"), 245)]:
         st.markdown(f'<div class="bme-fg-chart-label">{html.escape(title)}</div>', unsafe_allow_html=True)
         fig = go.Figure()
         apply_quality_chart_style(fig, height=height, showlegend=False)
-        fig.update_xaxes(title_text=t("月份", "Month") if kind == "trend" else t("疵点排名", "Defect rank"),
+        fig.update_xaxes(title_text=(t("周次", "Week") if is_tu else t("月份", "Month")) if kind == "trend" else t("疵点排名", "Defect rank"),
                          showticklabels=False, showgrid=False, zeroline=False, title_font=dict(size=13))
         fig.update_yaxes(title_text=t("数量（QTY）", "QTY") if stage == "IQC" or kind == "pareto" else t("疵点率（%）", "Defect-point rate (%)"),
                          showticklabels=False, showgrid=False, zeroline=False, title_font=dict(size=13))
@@ -14378,13 +14381,13 @@ def render_quality_gate_analysis(
     is_cpt = analysis_kind.upper() == "CPT"
     is_tu = analysis_kind.upper() == "TU"
     if is_tu:
-        heading_cn, heading_en = "ZX质量分析", "ZX Quality Analysis"
-        subheading_cn = "按照 ZX IQC、ZX PQC、ZX FQC 查看来料、制程和成品的问题趋势与问题结构。"
-        subheading_en = "Review ZX incoming, process, and final inspection trends and defect structure."
+        heading_cn, heading_en = "质量分析", "Quality Analysis"
+        subheading_cn = "按照 IQC、PQC、FQC 查看来料、制程和成品的每周趋势与问题结构。"
+        subheading_en = "Review weekly incoming, process, and final inspection trends and defect structure."
         stage_meta = {
-            "IQC": {"key": "tu_zx_iqc", "title": "ZX IQC", "scope_cn": "中兴 · 来料异常记录", "scope_en": "ZX · Incoming exception log"},
-            "PQC": {"key": "tu_zx_pqc", "title": "ZX PQC", "scope_cn": "中兴 · 工厂过程检验", "scope_en": "ZX · Factory process inspection"},
-            "FQC": {"key": "tu_zx_fqc", "title": "ZX FQC", "scope_cn": "中兴 · 简道云验货", "scope_en": "ZX · Jiandaoyun final inspection"},
+            "IQC": {"key": "tu_zx_iqc", "title": "IQC", "scope_cn": "来料异常记录", "scope_en": "Incoming exception log"},
+            "PQC": {"key": "tu_zx_pqc", "title": "PQC", "scope_cn": "工厂过程检验", "scope_en": "Factory process inspection"},
+            "FQC": {"key": "tu_zx_fqc", "title": "FQC", "scope_cn": "简道云验货", "scope_en": "Jiandaoyun final inspection"},
         }
     elif is_cpt:
         heading_cn, heading_en = "CPT质量分析", "CPT Quality Analysis"
@@ -14448,7 +14451,7 @@ def render_quality_gate_analysis(
                         st.markdown(f'<div class="bme-fg-data-note">{html.escape(tu_notes[stage])}</div>', unsafe_allow_html=True)
                     continue
 
-                measured, monthly = gate_metrics(stage_summary, stage)
+                measured, periods = gate_metrics(stage_summary, stage, frequency="W-SUN" if is_tu else "M")
                 po_total = measured["denominator"]
                 defect_total = float(stage_summary["defect_qty"].sum(min_count=1))
                 has_denominator = measured["complete_denominator"]
@@ -14475,38 +14478,42 @@ def render_quality_gate_analysis(
                 st.markdown(f'<div class="{metric_class}">{metric_html}</div>', unsafe_allow_html=True)
 
                 gate_charts = []
-                st.markdown(f'<div class="bme-fg-chart-label">{html.escape(t("月度趋势", "Monthly trend"))}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="bme-fg-chart-label">{html.escape(t("每周趋势", "Weekly trend") if is_tu else t("月度趋势", "Monthly trend"))}</div>', unsafe_allow_html=True)
                 primary_metric = rate_label if is_rate else count_label
+                period_axis = "week" if is_tu else "month"
+                period_title = t("周次", "Week") if is_tu else t("月份", "Month")
                 trend = pd.DataFrame({
-                    "month": monthly.index.to_timestamp(),
-                    primary_metric: monthly["defect_rate"].values if is_rate else monthly["defect_qty"].values,
+                    period_axis: periods.index.to_timestamp(),
+                    primary_metric: periods["defect_rate"].values if is_rate else periods["defect_qty"].values,
                 })
                 # One weighted primary trend; rework remains a separate KPI.
-                trend_long = trend.melt(id_vars="month", var_name="metric", value_name="value")
+                trend_long = trend.melt(id_vars=period_axis, var_name="metric", value_name="value")
                 trend_fig = px.line(
-                    trend_long, x="month", y="value", color="metric", markers=True,
+                    trend_long, x=period_axis, y="value", color="metric", markers=True,
                     color_discrete_map={
                         primary_metric: "#2855c5",
                         t("问题率", "Defect rate"): "#2855c5",
                         t("问题数量", "Issue count"): "#2855c5",
                         t("返工率", "Rework rate"): "#d98200",
                     },
-                    labels={"month": t("月份", "Month"), "value": t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"), "metric": ""},
+                    labels={period_axis: period_title, "value": t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"), "metric": ""},
                 )
                 trend_fig.update_traces(connectgaps=False)
                 style_quality_trend(trend_fig, height=245, is_rate=is_rate,
-                                    monthly=True, tick_size=10 if stage == "FQC" else 11,
-                                    month_step=2 if len(monthly) > 8 else 1,
-                                    show_year=monthly.index.year.nunique() > 1,
-                                    x_label=t("月份", "Month"), y_label=t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"))
+                                    monthly=not is_tu, weekly=is_tu, tick_size=10 if stage == "FQC" else 11,
+                                    month_step=2 if len(periods) > 8 else 1,
+                                    show_year=periods.index.year.nunique() > 1,
+                                    x_label=period_title, y_label=t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"))
                 if not trend_long.value.notna().any():
                     trend_fig.update_yaxes(range=[0, 1], showticklabels=False)
                     trend_fig.add_annotation(text=t("检验分母不完整<br>疵点率不可计算", "Incomplete inspection denominator<br>Rate unavailable") if is_rate else t("数量不可计算", "Quantity unavailable"),
                         x=.5, y=.5, xref="paper", yref="paper", showarrow=False, font=dict(color="#64748b", size=13))
                 st.session_state["_pending_chart_context"] = {"kind": "trend", "stage": stage, "supplier": selected_suppliers,
                     "rate_unavailable": is_rate and not trend_long.value.notna().any(),
-                    "exception_only": stage == "IQC" and (is_tu or is_cpt), "cutoff": str(end_date),
-                    "monthly": [{"month": str(month), "numerator": finite_number(row.defect_qty), "denominator": finite_number(row.po_qty) if is_rate and bool(row.complete_denominator) else None} for month, row in monthly.iterrows()]}
+                    "exception_only": stage == "IQC" and (is_tu or is_cpt), "cutoff": str(end_date), "start": str(start_date),
+                    "frequency": "W-SUN" if is_tu else "M",
+                    "periods" if is_tu else "monthly": [{"period" if is_tu else "month": str(period.start_time.date()) if is_tu else str(period),
+                        "numerator": finite_number(row.defect_qty), "denominator": finite_number(row.po_qty) if is_rate and bool(row.complete_denominator) else None} for period, row in periods.iterrows()]}
                 render_unified_plotly(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}", insight_group=gate_charts)
 
                 category_type = (
@@ -14553,8 +14560,9 @@ def render_quality_gate_analysis(
 
                 if is_tu:
                     note = tu_notes[stage] + t(" Pareto 显示 Top 5，累计占比以当前环节全部问题为分母。", " Pareto shows Top 5; cumulative share uses all issues in this gate.")
+                    note += t(" 趋势按周一至周日汇总，首末周仅包含当前日期筛选内的记录。", " Trends aggregate Monday–Sunday; boundary weeks include only records within the selected dates.")
                     if not has_denominator and stage != "IQC":
-                        note += t(" 当前范围检验分母不完整，整体疵点率显示 —；仅绘制分子和分母均完整的月份，其他月份留空。", " Overall rate is unavailable with incomplete denominators. Only months with complete numerators/denominators are plotted; other months remain empty.")
+                        note += t(" 当前范围检验分母不完整，整体疵点率显示 —；仅绘制分子和分母均完整的周，其他周留空。", " Overall rate is unavailable with incomplete denominators. Only weeks with complete numerators/denominators are plotted; other weeks remain empty.")
                 elif stage == "IQC":
                     if is_cpt:
                         note = t(
@@ -21149,7 +21157,7 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
                 schema = {"actions": [{"action": "", "priority_ccs": []} for _ in range(3)],
                     "charts": [{"id": chart["id"], "interpretation": "", "action": ""} for chart in model_charts]}
                 instruction += " Fill this exact JSON template, preserving every chart id and array length: " + json.dumps(schema, ensure_ascii=False)
-                instruction += " A quality_gate entry combines the stage's trend and Pareto: provide one integrated interpretation and action for that stage. Keep monthly changes and full-period leading categories distinct; verify monthly detail before linking them. Preserve both sources' denominator, traceability and partial-period limitations."
+                instruction += " A quality_gate entry combines the stage's trend and Pareto: provide one integrated interpretation and action for that stage. Follow its reporting frequency: W-SUN means Monday–Sunday ISO weeks; M means months. Keep period changes and full-period leading categories distinct; verify matching weekly or monthly detail before linking them. Preserve both sources' denominator, traceability and partial-period limitations."
                 instruction += " The factual finding is rendered by the application. Interpretation/action prose must contain NO Arabic digits, dates, percentages, quantitative claims, or numbered lists. Put CC identifiers only in priority_ccs; preserve chart ids only in id fields. Refer to the leading defect name, current/prior/peak period, or highest-axis object qualitatively; the application already displays their exact identifiers and values. Do not invent causes, targets, owners, completed actions, CP links or AQL rules. Clearly distinguish a plausible hypothesis from a verified cause and recommendations from recorded activity. Risk scores are priorities, not defect probabilities. Undated customer N0 snapshots are not time series. Do not combine quantities with different units; missing data is not zero. Retain chart ids exactly; SPC has independent supplier/process filters."
                 messages = [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
                 def request_analysis(request_messages):

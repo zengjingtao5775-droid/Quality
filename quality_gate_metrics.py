@@ -8,12 +8,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-GATE_METRICS_VERSION = "2026-10-14-v1-qty-and-rates"
+GATE_METRICS_VERSION = "2026-10-16-v2-weekly-gates"
 
 
-def gate_metrics(frame: pd.DataFrame, stage: str) -> tuple[dict, pd.DataFrame]:
+def gate_metrics(frame: pd.DataFrame, stage: str, *, frequency: str = "M") -> tuple[dict, pd.DataFrame]:
     if stage not in {"IQC", "PQC", "FQC"}:
         raise ValueError("Unsupported inspection gate")
+    if frequency not in {"M", "W-SUN"}:
+        raise ValueError("Unsupported gate reporting frequency")
     frame = frame.copy()
     defects = pd.to_numeric(frame.get("defect_qty", pd.Series(np.nan, index=frame.index)), errors="coerce")
     inspected = pd.to_numeric(frame.get("po_qty", pd.Series(np.nan, index=frame.index)), errors="coerce")
@@ -32,17 +34,17 @@ def gate_metrics(frame: pd.DataFrame, stage: str) -> tuple[dict, pd.DataFrame]:
         return metrics, pd.DataFrame(columns=["defect_qty", "po_qty", "defect_rate", "complete_denominator"])
     frame["_defects"], frame["_inspected"] = defects, inspected
     frame["_valid_qty"], frame["_valid_rate"] = valid_qty, valid_rate
-    frame["month"] = pd.to_datetime(frame["date"]).dt.to_period("M")
-    monthly = frame.groupby("month").agg(
+    frame["period"] = pd.to_datetime(frame["date"]).dt.to_period(frequency)
+    periods = frame.groupby("period").agg(
         defect_qty=("_defects", lambda values: values.sum(min_count=1)),
         po_qty=("_inspected", lambda values: values.sum(min_count=1)),
         complete_quantity=("_valid_qty", "all"),
         complete_denominator=("_valid_rate", "all"),
     )
-    # Keep missing months in the trace so Plotly displays a gap instead of
-    # connecting two observed months through an unmeasured interval.
-    if not monthly.empty:
-        monthly = monthly.reindex(pd.period_range(monthly.index.min(), monthly.index.max(), freq="M"))
-    monthly.loc[~monthly.complete_quantity.eq(True), "defect_qty"] = np.nan
-    monthly["defect_rate"] = monthly.defect_qty / monthly.po_qty.where(monthly.complete_denominator.eq(True))
-    return metrics, monthly
+    # Retain unmeasured periods as gaps. W-SUN is Monday through Sunday,
+    # including ISO weeks that cross calendar years.
+    if not periods.empty:
+        periods = periods.reindex(pd.period_range(periods.index.min(), periods.index.max(), freq=frequency))
+    periods.loc[~periods.complete_quantity.eq(True), "defect_qty"] = np.nan
+    periods["defect_rate"] = periods.defect_qty / periods.po_qty.where(periods.complete_denominator.eq(True))
+    return metrics, periods

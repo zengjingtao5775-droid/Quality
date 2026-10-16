@@ -9,7 +9,7 @@ import json
 
 import pandas as pd
 
-INSIGHTS_VERSION = "2026-10-14-v12-gate-rate-coverage"
+INSIGHTS_VERSION = "2026-10-16-v13-weekly-gates"
 
 
 def numeric(value):
@@ -60,6 +60,37 @@ def _month(value):
     return text[:7] if re.match(r"\d{4}-\d{2}", text) else text
 
 
+def _week(value):
+    date = pd.Timestamp(value)
+    iso = date.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _weekly_evidence(evidence, trace, context):
+    """Match each weekly point to its own denominator, never by month."""
+    evidence.pop("months", None)
+    evidence["weeks"] = evidence["period_count"] = len([y for y in trace.get("y", []) if numeric(y) is not None])
+    evidence["period_unit"] = "week"
+    rows = context.get("periods", [])
+    volumes = {str(row["period"]): row for row in rows}
+    key = lambda value: str(pd.Timestamp(value).date())
+    latest, previous = evidence["latest"], evidence.get("previous")
+    evidence["latest_volume"] = volumes.get(key(latest[0]), {})
+    evidence["previous_volume"] = volumes.get(key(previous[0]), {}) if previous else None
+    evidence["missing_periods"] = sum(numeric(row.get("numerator")) is None or
+        evidence["is_rate"] and numeric(row.get("denominator")) is None for row in rows)
+    evidence["latest_period_missing"] = bool(rows and rows[-1]["period"] != key(latest[0]))
+    if previous and pd.Timestamp(latest[0]) - pd.Timestamp(previous[0]) != pd.Timedelta(days=7):
+        evidence["change"] = evidence["relative_change"] = None
+    cutoff = pd.to_datetime(context.get("cutoff"), errors="coerce")
+    start = pd.to_datetime(context.get("start"), errors="coerce")
+    if pd.notna(cutoff) and cutoff.to_period("W-SUN") == pd.Timestamp(latest[0]).to_period("W-SUN"):
+        evidence["partial_latest"] = cutoff.weekday() != 6
+    if pd.notna(start) and start.to_period("W-SUN") == pd.Timestamp(evidence["first"][0]).to_period("W-SUN"):
+        evidence["partial_first"] = start.weekday() != 0
+    return evidence
+
+
 def chart_evidence(traces, y_format="", context=None):
     context = dict(context or {})
     kind = context.get("kind")
@@ -77,6 +108,8 @@ def chart_evidence(traces, y_format="", context=None):
                     "first": pairs[0], "latest": latest, "previous": previous, "peak": peak,
                     "change": latest[1] - previous[1] if previous else None,
                     "relative_change": (latest[1] / previous[1] - 1) if previous and previous[1] > 0 else None}
+        if context.get("frequency") == "W-SUN":
+            return _weekly_evidence(evidence, trace, context)
         monthly = context.get("monthly", [])
         if monthly:
             # Older callers supplied aligned volumes without a month key.
@@ -162,9 +195,14 @@ def chart_signal(facts, language="中文"):
         # full-period leading category. The two observations remain distinct.
         return chart_signal(trend if not trend.get("empty", True) else pareto, language)
     if kind == "trend":
+        weekly = evidence.get("frequency") == "W-SUN"
         if evidence.get("latest_period_missing"):
+            if weekly:
+                return signal("warning", "最新周数据待补齐", "Latest week data unavailable")
             return signal("warning", "最新月份分母待补齐", "Latest month denominator unavailable")
         if evidence.get("partial_latest"):
+            if weekly:
+                return signal("warning", "末周未完整 · 待对齐", "Partial week · align periods")
             return signal("warning", "末月未完整 · 待对齐", "Partial month · align periods")
         delta = numeric(evidence.get("change"))
         if delta is None:
@@ -234,8 +272,11 @@ def build_chart_insight(facts, language="中文"):
         ]
         interpretation = " ".join(part["interpretation"] for part in parts)
         if not trend.get("empty") and not pareto.get("empty"):
-            interpretation += (" 全期首位问题不一定导致最新月变化，需用同月明细核对。" if zh else
-                               "The full-period leading issue may not explain the latest month's change; verify monthly detail.")
+            weekly = (trend.get("evidence") or {}).get("frequency") == "W-SUN"
+            interpretation += ((" 全期首位问题不一定导致最新周变化，需用同周明细核对。" if zh else
+                                "The full-period leading issue may not explain the latest week's change; verify weekly detail.") if weekly else
+                               (" 全期首位问题不一定导致最新月变化，需用同月明细核对。" if zh else
+                                "The full-period leading issue may not explain the latest month's change; verify monthly detail."))
         # Keep the source limitations and targeted checks from both charts in
         # one stage account; neither source is promoted to a causal claim.
         return {"finding": " ".join(part["finding"] for part in parts),
@@ -253,18 +294,21 @@ def build_chart_insight(facts, language="中文"):
                 "action": "补齐该环节的日期、对象编码、检验数和问题数后再判断；先核对筛选是否排除了业务范围。" if zh else "Check the selection and supply dated object codes, inspection volumes and issue counts before assessing performance."}
     if kind == "trend":
         rate = e.get("is_rate", False)
+        weekly = e.get("frequency") == "W-SUN"
+        period_label = _week if weekly else _month
         fmt = (lambda v: f"{v:.2%}") if rate else (lambda v: f"{v:,.2f}".rstrip("0").rstrip("."))
         latest, peak, first = e["latest"], e["peak"], e["first"]
         previous = e.get("previous")
         change = e.get("change")
         delta = f"{change * 100:+.2f} " + ("个百分点" if zh else "pp") if rate and change is not None else f"{change:+,.0f}" if change is not None else ""
-        finding = f"最新 {_month(latest[0])} 为 {fmt(latest[1])}" if zh else f"Latest {_month(latest[0])}: {fmt(latest[1])}"
+        finding = f"最新 {period_label(latest[0])} 为 {fmt(latest[1])}" if zh else f"Latest {period_label(latest[0])}: {fmt(latest[1])}"
         if previous and change is not None:
-            finding += f"，较 {_month(previous[0])} {delta}" if zh else f", {delta} vs {_month(previous[0])}"
-        finding += f"；峰值 {_month(peak[0])} 为 {fmt(peak[1])}。" if zh else f"; peak {_month(peak[0])}: {fmt(peak[1])}."
+            finding += f"，较 {period_label(previous[0])} {delta}" if zh else f", {delta} vs {period_label(previous[0])}"
+        finding += f"；峰值 {period_label(peak[0])} 为 {fmt(peak[1])}。" if zh else f"; peak {period_label(peak[0])}: {fmt(peak[1])}."
         rebound = previous and latest[1] < first[1] and latest[1] > previous[1]
         if previous and change is None:
-            interpretation = "上一自然月缺少可比数据，不能判断环比上升或下降。" if zh else "The immediately preceding month has no comparable data; a month-on-month increase or decline cannot be assessed."
+            interpretation = (("上一自然周缺少可比数据，不能判断周环比上升或下降。" if zh else "The immediately preceding week has no comparable data; a week-on-week change cannot be assessed.") if weekly else
+                              ("上一自然月缺少可比数据，不能判断环比上升或下降。" if zh else "The immediately preceding month has no comparable data; a month-on-month increase or decline cannot be assessed."))
         elif rebound:
             interpretation = "首末下降，但最新一期反弹，不能判断为持续改善。" if zh else "Below the first period but rising recently; sustained improvement is not established."
         elif previous and latest[1] > previous[1]:
@@ -280,14 +324,20 @@ def build_chart_insight(facts, language="中文"):
         if e.get("exception_only"):
             interpretation += " 该源只有异常记录，不能据此推算总体不良率。" if zh else "This exception-only log cannot estimate the full population defect rate."
         if e.get("partial_latest"):
-            interpretation += " 末月未完整，不能与完整月份直接比较。" if zh else "The latest month is partial and is not directly comparable with full months."
+            interpretation += ((" 末周未完整，不能与完整周直接比较。" if zh else "The latest week is partial and is not directly comparable with full weeks.") if weekly else
+                               (" 末月未完整，不能与完整月份直接比较。" if zh else "The latest month is partial and is not directly comparable with full months."))
+        if weekly and e.get("partial_first"):
+            interpretation += " 首周仅包含筛选起始日之后的记录。" if zh else "The first week contains only records on or after the selected start date."
+        if weekly and e.get("missing_periods"):
+            interpretation += " 数据不完整或无记录的周留空，隔周观测不能当作周环比。" if zh else "Weeks with incomplete or missing data remain empty; separated observations are not a week-on-week comparison."
         if e.get("missing_months"):
             interpretation += " 分母不完整的月份留空；仅比较有完整分子和分母的月份，隔月观测不能当作环比。" if zh else "Months with incomplete denominators remain empty. Compare only complete months; separated observations are not a month-on-month comparison."
-        action = f"复核 {_month(latest[0])} 与 {_month(peak[0])} 的主要问题、批次和处置记录；用相同分母及追溯范围验证措施效果。" if zh else f"Review leading issues, batches and disposition records in {_month(latest[0])} and {_month(peak[0])}; verify action effectiveness with comparable coverage and denominators."
+        action = f"复核 {period_label(latest[0])} 与 {period_label(peak[0])} 的主要问题、批次和处置记录；用相同分母及追溯范围验证措施效果。" if zh else f"Review leading issues, batches and disposition records in {period_label(latest[0])} and {period_label(peak[0])}; verify action effectiveness with comparable coverage and denominators."
         if e.get("exception_only"):
-            action = f"复核 {_month(latest[0])} 的问题、来料批次及处置记录；补齐含合格批次的全部来料检验记录，再评价总体合格率。" if zh else f"Review {_month(latest[0])} issues, incoming batches and disposition records; obtain the complete incoming inspection log, including passing batches, before calculating an overall pass rate."
+            action = f"复核 {period_label(latest[0])} 的问题、来料批次及处置记录；补齐含合格批次的全部来料检验记录，再评价总体合格率。" if zh else f"Review {period_label(latest[0])} issues, incoming batches and disposition records; obtain the complete incoming inspection log, including passing batches, before calculating an overall pass rate."
         elif e.get("partial_latest"):
-            action = f"先将 {_month(latest[0])} 与上期相同天数、相同检验范围对齐，再复核主要问题及批次；保留完整月结果作后续验证。" if zh else f"Align {_month(latest[0])} with the same elapsed days and inspection scope in the previous period before reviewing defects/batches; retain full-month results for follow-up verification."
+            unit_cn, unit_en = ("周", "week") if weekly else ("月", "month")
+            action = f"先将 {period_label(latest[0])} 与上期相同天数、相同检验范围对齐，再复核主要问题及批次；保留完整{unit_cn}结果作后续验证。" if zh else f"Align {period_label(latest[0])} with the same elapsed days and inspection scope in the previous period before reviewing defects/batches; retain full-{unit_en} results for follow-up verification."
         return {"finding": finding, "interpretation": interpretation, "action": action}
     if kind == "pareto" and e.get("ranked"):
         first = e["ranked"][0]
