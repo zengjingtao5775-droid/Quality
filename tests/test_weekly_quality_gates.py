@@ -130,11 +130,44 @@ class WeeklyGateTests(unittest.TestCase):
         self.assertIn("同周明细", text["interpretation"])
         self.assertNotIn("最新月", text["interpretation"])
 
+    def test_narrow_cards_have_evenly_spaced_week_labels_including_endpoints(self):
+        dates = pd.date_range("2025-12-29", periods=27, freq="7D")
+        fig = go.Figure(go.Scatter(x=dates, y=list(range(27)), mode="lines"))
+        style_quality_trend(fig, height=245, weekly=True)
+        ticks = list(fig.layout.xaxis.tickvals)
+        self.assertEqual(len(ticks), 5)
+        self.assertEqual(ticks[0], dates[0])
+        self.assertEqual(ticks[-1], dates[-1])
+        self.assertTrue(all(b-a >= pd.Timedelta(weeks=6) for a, b in zip(ticks, ticks[1:])))
+
     def test_monthly_default_for_bme_is_preserved(self):
         frame = self.frame(["2026-01-05", "2026-01-12", "2026-02-02"], [100, 200, 100], [2, 4, 1])
         _, monthly = gate_metrics(frame, "PQC")
         self.assertEqual(monthly.index.astype(str).tolist(), ["2026-01", "2026-02"])
         self.assertAlmostEqual(monthly.defect_rate.iloc[0], .02)
+
+    def test_zero_sample_zero_defect_records_are_neutral_in_pooled_rate(self):
+        frame = self.frame(["2026-01-05", "2026-01-06", "2026-01-12"], [100, 0, 200], [2, 0, 4])
+        result, weeks = gate_metrics(frame, "FQC", frequency="W-SUN")
+        self.assertEqual(result["zero_exposure_rows"], 1)
+        self.assertEqual(result["valid_rate_rows"], 2)
+        self.assertEqual(result["rows"], 3)
+        self.assertAlmostEqual(result["rate"], 6/300)
+        self.assertAlmostEqual(weeks.defect_rate.iloc[0], .02)
+
+    def test_zero_exposure_only_week_remains_unavailable(self):
+        frame = self.frame(["2026-01-05"], [0], [0])
+        result, weeks = gate_metrics(frame, "FQC", frequency="W-SUN")
+        self.assertTrue(pd.isna(result["rate"]))
+        self.assertTrue(pd.isna(weeks.defect_rate.iloc[0]))
+        self.assertFalse(weeks.complete_denominator.iloc[0])
+
+    def test_missing_sample_or_positive_defects_with_zero_sample_still_block_rate(self):
+        for sample, defect in ((None, 0), (0, 2)):
+            frame = self.frame(["2026-01-05", "2026-01-06"], [100, sample], [2, defect])
+            result, weeks = gate_metrics(frame, "FQC", frequency="W-SUN")
+            self.assertTrue(pd.isna(result["rate"]))
+            self.assertTrue(pd.isna(weeks.defect_rate.iloc[0]))
 
 
 if __name__ == "__main__":
