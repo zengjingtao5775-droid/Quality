@@ -17,7 +17,7 @@ import pandas as pd
 
 from dashboard_scope import DashboardScope, filter_records, identifiers, customer_totals
 
-RISK_POC_VERSION = "2026-10-14-v2-return-iv-quantities"
+RISK_POC_VERSION = "2026-10-16-v3-binary-strategy"
 DEPARTMENTS = ("Hugss", "Knit", "Woven")
 GRAINS = ("Model", "CC", "Supplier")
 
@@ -181,7 +181,7 @@ def id_tokens(value, digits):
 def load_strategy_workbook(path):
     """Read only the formal follow-up input sheet, not archives or formula tabs.
 
-    The user's supplied follow-up is partial; missing matches cannot mean No.
+    The supplied follow-up is partial; the user's current POC policy treats unlisted Models as 0.
     PE move, planned milestones, sport and development codes do not add risk.
     Preserve row-level ID sets without inventing CC/Model Cartesian links.
     """
@@ -210,31 +210,23 @@ def load_strategy_workbook(path):
 
 
 def strategic_identity(models, cc, registry, supplier_code="49425", season=""):
+    """Binary list membership: any exact strategic Model makes its CC strategic.
+
+    Supplier identity is mandatory. An explicitly selected season narrows the
+    list; no selected season means all available seasons. Unlisted = 0 under
+    the user's POC policy. This flag does not modify the two chart coordinates.
+    """
     models = set(models) - {""}
-    if not models:
-        return {"status": "pending", "score": None, "matched_models": 0, "model_count": 0,
-                "reason": "No verified Model identity", "source_rows": []}
-    statuses, rows = [], []
-    for model in sorted(models):
-        exact = [record for record in registry
-                 if model in record.get("models", ())
-                 and record.get("supplier_code") == supplier_code
-                 and season and str(record.get("season", "")).upper() == season.upper()]
-        flags = {record.get("strategic") for record in exact if isinstance(record.get("strategic"), bool)}
-        statuses.append(next(iter(flags)) if len(flags) == 1 else None)
-        rows.extend(record.get("source_row") for record in exact)
-    known = sum(status is not None for status in statuses)
-    # A CC score requires all contributing Model identities. One confirmed Yes
-    # cannot erase unresolved models or act as a supplier-wide label.
-    if known == len(statuses):
-        return {"status": "yes" if any(statuses) else "no", "score": 100. if any(statuses) else 0.,
-                "matched_models": known, "model_count": len(models), "reason": "All Models confirmed; CC uses highest Strategy priority",
-                "source_rows": sorted(set(row for row in rows if row is not None))}
-    candidates = any(model in rec.get("models", ()) or (cc and cc in rec.get("ccs", ()))
-                     for rec in registry for model in models)
-    return {"status": "candidate" if candidates else "pending", "score": None,
-            "matched_models": known, "model_count": len(models), "reason": "Partial follow-up; exact supplier/Model/season confirmation required",
-            "source_rows": sorted(set(row for row in rows if row is not None))}
+    matches = [record for record in registry
+               if record.get("supplier_code") == supplier_code
+               and (not season or str(record.get("season", "")).upper() == season.upper())
+               and bool(models.intersection(record.get("models", ())))]
+    strategic = any(record.get("strategic") is True for record in matches)
+    return {"status": "yes" if strategic else "no", "indicator": int(strategic),
+            "score": 100. if strategic else 0.,
+            "matched_models": len({model for record in matches for model in record.get("models", ()) if model in models}),
+            "model_count": len(models), "reason": "Binary Strategy list membership; any listed strategic Model applies to the CC",
+            "source_rows": sorted({record["source_row"] for record in matches if record.get("source_row") is not None})}
 
 
 def normalize_source(frame, kind):
@@ -318,7 +310,7 @@ def score_entity(pqc, aql, customer, cases, profile, strategy, *, iv_available=T
                   "supplier_contribution": supplier["lower"]*profile.supplier_weight/100,
                   "risk_score": lower if math.isclose(lower, upper) else None,
                   "risk_lower": lower, "risk_upper": upper, "known_weight": coverage,
-                  "strategy_status": strategy["status"], "strategy_reason": strategy["reason"],
+                  "strategy_status": strategy["status"], "strategy_indicator": strategy.get("indicator"), "strategy_reason": strategy["reason"],
                   "strategy_models_matched": strategy["matched_models"], "strategy_models_total": strategy["model_count"],
                   "strategy_source_rows": strategy["source_rows"], "complete": math.isclose(lower, upper)})
     return facts
@@ -383,5 +375,5 @@ def build_tu_risk(pqc, aql, voice, iv_cases, scope: DashboardScope, *, grain="Mo
                     "iv_available": iv_available, "customer_period": "N0 snapshot; no calendar dates",
                     "client_measure": "Return Qty / PRODUCT QUANTITY", "return_reference": reference,
                     "return_reference_scope": "Same supplier/department/product type/grain and inspection population; individual CC/Model filters excluded",
-                    "strategy_source": "Partial follow-up; unmatched = pending", "season": season,
+                    "strategy_source": "Binary Strategy list: listed strategic Model = 1, otherwise = 0", "season": season,
                     "profile": profile.__dict__, "ranking": "known weighted contribution; incomplete bounds do not prove total-risk ordering"}

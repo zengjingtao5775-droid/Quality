@@ -44,10 +44,10 @@ if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-
     importlib.reload(_quality_gate_metrics)
 from quality_gate_metrics import gate_metrics
 import tu_risk_poc as _tu_risk_poc
-if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-14-v2-return-iv-quantities":
+if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-16-v3-binary-strategy":
     importlib.reload(_tu_risk_poc)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-14-v3-return-iv-quantities":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-16-v4-compact-binary-strategy":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 import quality_chart_ui as _quality_chart_ui
@@ -14344,8 +14344,6 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
     """Keep the three-column template visible without inventing zero data."""
     label = t("异常记录数（QTY）", "Exception records (QTY)") if is_tu and stage == "IQC" else t("问题数量（QTY）", "Issue quantity (QTY)") if stage == "IQC" else t("疵点率", "Defect-point rate")
     metric_items = [(label, "—")]
-    if stage != "IQC" and not is_tu:
-        metric_items.append((t("返工率", "Rework rate"), "—"))
     metric_html = "".join(
         f'<div class="bme-fg-metric"><div class="bme-fg-metric-label">{html.escape(name)}</div>'
         f'<div class="bme-fg-metric-value">{value}</div></div>' for name, value in metric_items
@@ -14409,7 +14407,7 @@ def render_quality_gate_analysis(
         }
     st.markdown(
         f'<div class="bme-fg-heading">{html.escape(t(heading_cn, heading_en))}</div>'
-        + (f'<div class="bme-fg-subheading">{html.escape(t(subheading_cn, subheading_en))}</div>' if not is_tu else ""),
+        ,
         unsafe_allow_html=True,
     )
     chart_key_prefix = "tu_zx" if is_tu else "cpt" if is_cpt else "fg"
@@ -14430,7 +14428,7 @@ def render_quality_gate_analysis(
             with st.container(border=True, key=meta["key"]):
                 st.markdown(
                     f'<div class="bme-fg-stage-title">{meta["title"]}</div>'
-                    + (f'<div class="bme-fg-stage-scope">{html.escape(t(meta["scope_cn"], meta["scope_en"]))}</div>' if not is_tu else ""),
+                    ,
                     unsafe_allow_html=True,
                 )
                 stage_summary = summary[
@@ -14465,7 +14463,7 @@ def render_quality_gate_analysis(
                 rate_label = t("疵点率", "Defect-point rate")
                 count_label = t("异常记录数（QTY）", "Exception records (QTY)") if is_tu else t("问题数量（QTY）", "Issue quantity (QTY)")
                 metric_items = [(rate_label, rate_text(defect_rate))] if is_rate else [(count_label, f"{measured['quantity']:,.0f}" if pd.notna(measured["quantity"]) else "—")]
-                if stage != "IQC" and not is_tu:
+                if stage != "IQC" and pd.notna(rework_rate):
                     metric_items.append((t("返工率", "Rework rate"), rate_text(rework_rate)))
                 metric_help = (t("疵点数量合计 ÷ 有效抽检数量合计；0 疵点 / 0 抽检量的记录不产生检验量。", "Total defect points / total valid sampled units; zero-defect, zero-sample records contribute no exposure.")
                                if is_tu and stage == "FQC" else "")
@@ -21259,11 +21257,12 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
     with st.container(key="quality_header"):
         brand, language = st.columns([0.76, 0.24], vertical_alignment="center")
         with brand:
-            st.markdown('<div class="quality-brand">DECATHLON · NEA QUALITY</div><div class="quality-brand-sub">TU / BME · Quality Dashboard</div>', unsafe_allow_html=True)
+            st.markdown('<div class="quality-brand-lockup"><div class="quality-brand-kicker">DECATHLON</div><div class="quality-brand">NEA QUALITY</div><div class="quality-brand-sub">TU / BME Quality Dashboard</div></div>', unsafe_allow_html=True)
         with language:
             if st.session_state.get("quality_language") != st.session_state.lang:
                 st.session_state["quality_language"] = st.session_state.lang
             st.segmented_control("Language", ["中文", "English"], key="quality_language", on_change=switch_language, label_visibility="collapsed")
+    data_map_slot = st.container(key="quality_top_data_map")
     with st.container(key="quality_unified_filter"):
         st.markdown('<span class="quality-default-view">Default</span>', unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns(4, gap="small")
@@ -21328,8 +21327,7 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
             with p4:
                 with st.container(key="quality_filter_reset"):
                     st.button(t("重置筛选", "Reset Filters"), icon=":material/restart_alt:", key="quality_reset_filters", on_click=reset_filters, use_container_width=True)
-        st.markdown(f'<div class="quality-filter-context">{html.escape(t("请先选择 Community；其他字段空选表示全部。同一字段可多选，不同字段同时生效，筛选自动应用。", "Choose a Community. Other empty filters mean all. Multi-select within each field; different fields apply together. Changes apply automatically."))}</div>', unsafe_allow_html=True)
-    return DashboardScope(communities=tuple(communities), suppliers=tuple(selected_suppliers), ccs=tuple(ccs), models=tuple(models), period=period, start=start, end=end, product_types=tuple(product_types))
+    return DashboardScope(communities=tuple(communities), suppliers=tuple(selected_suppliers), ccs=tuple(ccs), models=tuple(models), period=period, start=start, end=end, product_types=tuple(product_types)), data_map_slot
 
 
 def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFrame:
@@ -21428,7 +21426,7 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
     st.session_state["_active_ai_community"] = "TU"
     st.markdown('<div class="quality-community-heading">TU · Textile Unit</div>', unsafe_allow_html=True)
     st.caption(t("ZX · 中兴（49425）", "ZX · Zhongxing (49425)"))
-    jdy = render_scope_data_map("ZX", finished_all, voice_all, incoming_all, start_date=scope.start, end_date=scope.end)
+    jdy = jdy_all.copy()
     finished = filter_records(finished_all, scope, supplier="ZX")
     incoming = filter_records(incoming_all, scope, supplier="ZX")
     jdy = jdy.copy()
@@ -21518,8 +21516,6 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
 def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
     st.session_state["_active_ai_community"] = "BME"
     st.markdown('<div class="quality-community-heading">BME · Bike Mobility</div>', unsafe_allow_html=True)
-    with st.expander(t("数据地图", "Data Map"), expanded=False):
-        _render_bme_data_map(events, customer_nc, orders)
     fqc, rpm, mapping = cluster_inputs
     links = fsd_item_model_links(mapping, rpm.product_code) if not mapping.empty and not rpm.empty else {}
     view = filter_records(events, scope, cc_col="model_item_code", model_col="model_item_code", item_models=links)
@@ -21552,7 +21548,6 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
     cards.append({"label": "BME IV", "value": "—", "note": t("暂无可关联 CC / Model 的 IV 数据源", "No IV source linked to CC / Model"), "level": "medium"})
     st.subheader("Problem Card")
     render_kpi_cards(cards, variant="bme-overall")
-    st.caption(t("RPM 统一为每百万件口径；客户 RPM/NQC 使用 N0 快照及精确 CC → Model 映射，关联的同一 Model 只计一次。源净销量包含正负调整，总销量非正时不计算 RPM。自定义期间不推算无日期快照。", "RPM uses a per-million basis. Customer RPM/NQC use the N0 snapshot and exact CC → Model mapping; each model is counted once. Net sales retain signed source adjustments; RPM requires a positive total denominator. Undated snapshots cannot be estimated for custom dates."))
     risks = []
     if scope.includes_supplier("FSD") and not fqc.empty:
         scoped_fqc = filter_records(fqc, scope, supplier="FSD", cc_col="item_code", model_col="model_code", item_models=links)
@@ -21673,7 +21668,13 @@ def render_unified_dashboard():
         nc, orders = load_bme_customer_quality_cached(fingerprint, _BME_QUALITY_LOGIC_VERSION)
         fqc, rpm, mapping = load_fsd_rpm_cluster_inputs_cached(fingerprint, _BME_QUALITY_LOGIC_VERSION)
         iv = load_unified_zx_iv(DATA_SCOPE_CACHE_VERSION)
-    scope = render_unified_filters(finished, voice, incoming, jdy, events, fqc, rpm, mapping)
+    scope, data_map_slot = render_unified_filters(finished, voice, incoming, jdy, events, fqc, rpm, mapping)
+    with data_map_slot:
+        if "TU" in scope.communities:
+            jdy = render_scope_data_map("ZX", finished, voice, incoming, start_date=scope.start, end_date=scope.end)
+        if "BME" in scope.communities:
+            with st.expander(t("BME 数据地图", "BME Data Map") if len(scope.communities) > 1 else t("数据地图", "Data Map"), expanded=False):
+                _render_bme_data_map(events, nc, orders)
     st.session_state["_unified_scope"] = scope.facts()
     if not scope.communities:
         st.info(t("请选择 TU 或 BME 查看质量分析。", "Select TU or BME to view quality analysis."))

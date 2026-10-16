@@ -16,7 +16,7 @@ from tu_risk_poc import (RISK_POC_VERSION, DEPARTMENTS, GRAINS, RiskProfile, def
                          build_tu_risk, load_strategy_workbook, number, profile_from_saved)
 from quality_chart_ui import apply_quality_chart_style
 
-RISK_POC_UI_VERSION = "2026-10-14-v3-return-iv-quantities"
+RISK_POC_UI_VERSION = "2026-10-16-v4-compact-binary-strategy"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876", "single": "#2854c5"}
 
 CSS = """
@@ -106,7 +106,7 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
             lower = number(row.get("risk_lower"))
             score = f"{lower:.1f}–{upper:.1f}" if lower is not None and upper is not None else "—"
             custom.append([html.escape(str(row.get("entity", ""))), html.escape(str(row.get("cc", ""))),
-                html.escape(str(row.get("models", ""))), score, html.escape(str(row.get("strategy_status", "pending"))),
+                html.escape(str(row.get("models", ""))), score, _fmt(row.get("strategy_indicator"), 0),
                 _fmt(row.get("returns"), 0), _fmt(row.get("iv"), 0)])
         fig.add_trace(go.Scatter(x=part.supplier_score, y=part.client_score, name=labels[key],
             text=part.entity.astype(str), mode="markers", cliponaxis=False,
@@ -161,7 +161,7 @@ def _registry():
 
     Production can connect an access-controlled, already synchronized workbook
     through TU_STRATEGY_WORKBOOK, or approved normalized records through secrets.
-    A missing/invalid source is visible and yields pending identities.
+    Registry membership uses the binary Strategy policy; connection state is retained in the audit.
     """
     path = os.environ.get("TU_STRATEGY_WORKBOOK", "")
     records = []
@@ -233,8 +233,9 @@ def _profile_controls(department, grain, t):
     profile_key = f"{department}:{grain}"
     defaults = profile_from_saved(saved_profiles.get(profile_key), grain)
     prefix = f"tu_poc_{department.lower()}_{grain.lower()}"
-    with st.expander(t("试算参数 · 三维权重及换分阈值", "Trial parameters · weights and score thresholds"), expanded=False):
+    with st.expander(t("权重设置与评分阈值", "Risk weights and score thresholds"), expanded=False):
         st.markdown(t("这些是 POC 建议值，尚未校准；当前会话内各部门、各粒度独立保存，可下载配置。只调整评分政策，原始记录自动读取。", "These are uncalibrated POC proposals. Departments and grains have separate session settings; export the policy to retain it. Source records load automatically."))
+        st.markdown(t("Strategy：是 = 1，否 = 0；产品风险分 = Strategy × 100。", "Strategy: Yes = 1, No = 0; product score = Strategy × 100."))
         a, b, c = st.columns(3)
         client = a.number_input(t("W1 · 客户端 %", "W1 · Client %"), 0., 100., float(defaults.client_weight), step=5., key=prefix+"_w1")
         product = b.number_input(t("W2 · 产品 %", "W2 · Product %"), 0., 100., float(defaults.product_weight), step=5., disabled=grain=="Supplier", key=prefix+"_w2")
@@ -289,21 +290,18 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
     st.session_state["_tu_risk_poc_cc_audit"] = {}
     st.markdown('<style>'+CSS+'</style>', unsafe_allow_html=True)
     with st.container(border=True, key="tu_three_dimension_risk"):
-        st.markdown('<div class="tu-poc-head"><h2>'+html.escape(t("TU · 三维 Risk Score POC", "TU · Three-Dimension Risk POC"))+'</h2><span>'+html.escape(t("试算 · 未校准", "Trial · Uncalibrated"))+'</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="tu-poc-head"><h2>'+html.escape(t("Risk Score 设置", "Risk Score Settings"))+'</h2><span>'+html.escape(t("试算 · 未校准", "Trial · Uncalibrated"))+'</span></div>', unsafe_allow_html=True)
         c1,c2,c3,c4=st.columns([1,1,1.5,1])
         department = c1.selectbox(t("部门", "Department"), DEPARTMENTS, key="tu_poc_department")
         grain = c2.selectbox(t("计算粒度", "Risk grain"), GRAINS, key="tu_poc_grain")
         population = c3.selectbox(t("产品范围", "Population"), ["inspected", "all"], format_func=lambda x: t("有检验记录", "With inspections") if x=="inspected" else t("全部可用产品", "All available products"), key="tu_poc_population")
         registry, connection = _registry() if registry_override is None else (registry_override, "connected")
         seasons = sorted({record.get("season", "") for record in registry} - {""})
-        season = c4.selectbox(t("Strategy 季节", "Strategy season"), [""]+seasons, format_func=lambda x:x or t("待指定", "Unspecified"), key="tu_poc_season")
+        season = c4.selectbox(t("Strategy 季节", "Strategy season"), [""]+seasons, format_func=lambda x:x or t("全部季节", "All seasons"), key="tu_poc_season")
         profile = _profile_controls(department, grain, t)
         if profile is None:
             st.session_state["_tu_risk_poc_audit"]={"status":"invalid_policy"}
             return pd.DataFrame()
-        st.markdown('<div class="tu-poc-formula">'+html.escape(t(
-            f"Risk = 客户端（Return Qty + IV Qty）× {profile.client_weight:g}% + 产品（Strategy）× {profile.product_weight:g}% + 供应商（PQC + AQL）× {profile.supplier_weight:g}%",
-            f"Risk = Client (Return Qty + IV Qty) × {profile.client_weight:g}% + Product (Strategy) × {profile.product_weight:g}% + Supplier (PQC + AQL) × {profile.supplier_weight:g}%"))+'</div>',unsafe_allow_html=True)
         rows, audit = build_tu_risk(pqc,aql,voice,cases,scope,grain=grain,department=department,profile=profile,registry=registry,season=season,inspection_only=population=="inspected")
         audit["strategy_connection"]=connection
         st.session_state["_tu_risk_poc_audit"]=audit
@@ -312,35 +310,6 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
             st.session_state["_tu_risk_poc_cc_audit"] = {**audit, "grain": "CC"}
             st.info(t("当前部门/筛选暂无接入的检验产品。现有试点覆盖 Hugss · ZX；Knit 和 Woven 保留部门位置，待接入自动数据源。", "No inspection products are connected for this department/selection. Current pilot: Hugss · ZX. Knit and Woven await automatic sources."))
             return pd.DataFrame()
-        reference = audit.get("return_reference", {})
-        st.markdown('<div class="tu-poc-source">'+html.escape(t(
-            f"Return Qty 基准：{reference.get('count', 0)} 个{grain}，退货合计 {_fmt(reference.get('total'), 0)} 件；平均 {_fmt(reference.get('mean'), 2)} 件 = 50 分，{_fmt(number(reference.get('mean')) * profile.return_critical_multiple if number(reference.get('mean')) is not None else None, 2)} 件 = 100 分（POC：平均值 × {profile.return_critical_multiple:g}）。",
-            f"Return Qty reference: {reference.get('count', 0)} {grain}s, total {_fmt(reference.get('total'), 0)} units; mean {_fmt(reference.get('mean'), 2)} units = 50 points; mean × {profile.return_critical_multiple:g} = 100 points (POC)."))+'</div>', unsafe_allow_html=True)
-        if reference.get("count") == 1:
-            st.info(t("当前退货基准只有一个有效对象，仅可试算，无法比较对象间的退货数量差异。", "Only one valid return reference is available; this trial cannot compare return quantities across peers."))
-        complete = int(rows.complete.sum())
-        status = t(f"{len(rows)} 个{grain} · 展示前 {min(10,len(rows))} 个 · 完整总分 {complete} 个", f"{len(rows)} {grain}s · Top {min(10,len(rows))} shown · {complete} complete scores")
-        missing = t("Strategy 跟进表未接入", "Strategy follow-up not connected") if connection=="unavailable" else t("Strategy 来源需修复", "Strategy source requires repair") if connection=="invalid" else t("Strategy 未匹配仍待确认", "Unmatched Strategy identities remain pending")
-        st.markdown('<div class="tu-poc-status"><span>'+html.escape(status)+'</span><b>'+html.escape(missing)+'</b><span>'+html.escape(t("暂按已知贡献排列，缺失项不当作零；区间重叠时不能断言谁的总风险更高。", "Ordered by known contributions; missing is not zero. Overlapping bounds do not establish total-risk order."))+'</span></div>',unsafe_allow_html=True)
-        st.markdown(_table(rows.head(10),t),unsafe_allow_html=True)
-        with st.expander(t("计算明细 · 分子、分母及每项贡献", "Calculation detail · denominators and contributions"),expanded=False):
-            entity=st.selectbox(t("查看产品 / 供应商", "Inspect product / supplier"),rows.entity.tolist(),key=f"tu_poc_{grain.lower()}_example")
-            example=rows.loc[rows.entity.eq(entity)].iloc[0]
-            pdpu = _fmt(example.pqc_dpu*100,3) if number(example.pqc_dpu) is not None else "—"
-            aqlrate = _fmt(example.aql_fail_rate*100,2) if number(example.aql_fail_rate) is not None else "—"
-            explanation = [
-                t(f"PQC：{_fmt(example.pqc_defects,0)} 疵点 ÷ {_fmt(example.pqc_inspected,0)} 检验 = {pdpu}%。平滑后（D + {profile.pqc_prior_defects:g}）÷（N + {profile.pqc_prior_samples:g}），换分后 {_fmt(example.pqc_score)} 分。", f"PQC: {_fmt(example.pqc_defects,0)} defects / {_fmt(example.pqc_inspected,0)} inspections = {pdpu}%. Smooth (D + {profile.pqc_prior_defects:g}) / (N + {profile.pqc_prior_samples:g}); score {_fmt(example.pqc_score)}."),
-                t(f"AQL：{example.aql_fail} 条首验未通过 ÷ {example.aql_valid_records} 条有效记录 = {aqlrate}%；共 {example.aql_records} 条记录，换分后 {_fmt(example.aql_score)} 分。重验后 PASS 仍视为首验未通过。", f"AQL: {example.aql_fail} first-result failures / {example.aql_valid_records} valid of {example.aql_records} records = {aqlrate}%; score {_fmt(example.aql_score)}. PASS after recheck is a first-result failure."),
-                t(f"Return Qty：直接读取 {_fmt(example.returns,0)} 件退货，不除以销量；同范围 {example.return_reference_count} 个{grain}，退货合计 {_fmt(example.return_reference_total,0)} 件 ÷ {example.return_reference_count} = 平均 {_fmt(example.return_qty_mean,4)} 件（50 分），100 分阈值 {_fmt(example.return_critical_qty,4)} 件；换分后 {_fmt(example.return_qty_score)} 分。", f"Return Qty: {_fmt(example.returns,0)} units, without dividing by sales. Peer total {_fmt(example.return_reference_total,0)} / {example.return_reference_count} = mean {_fmt(example.return_qty_mean,4)} units (50 points); critical {_fmt(example.return_critical_qty,4)} units; score {_fmt(example.return_qty_score)}."),
-                t(f"IV Qty：Before Sales 记录去重后，汇总 PRODUCT QUANTITY = {_fmt(example.iv,0)} 件；源案例 {_fmt(example.iv_records,0)} 条用于追溯，不用案例条数代替数量。{profile.iv_warning:g} 件 = 50 分，{profile.iv_critical:g} 件 = 100 分，换分后 {_fmt(example.iv_score)} 分。", f"IV Qty: sum deduplicated Before Sales PRODUCT QUANTITY = {_fmt(example.iv,0)} units. {_fmt(example.iv_records,0)} source cases are an audit fact, not the scoring quantity. {profile.iv_warning:g} units = 50, {profile.iv_critical:g} = 100; score {_fmt(example.iv_score)}."),
-                t(f"客户端 = Return Qty 分 × {profile.return_weight:g}% + IV Qty 分 × {profile.iv_weight:g}% = {_fmt(example.client_score)}；供应商 = PQC 分 × {profile.pqc_weight:g}% + AQL 分 × {profile.aql_weight:g}% = {_fmt(example.supplier_score)}。", f"Client = Return Qty score × {profile.return_weight:g}% + IV Qty score × {profile.iv_weight:g}% = {_fmt(example.client_score)}; Supplier = PQC score × {profile.pqc_weight:g}% + AQL score × {profile.aql_weight:g}% = {_fmt(example.supplier_score)}."),
-                t(f"已知贡献：客户端 {_fmt(example.client_contribution)} + 供应商 {_fmt(example.supplier_contribution)}" + (f" + 产品 {_fmt(example.product_contribution)}" if number(example.product_contribution) is not None else "；产品待确认，未计入已知贡献") + f" → {_fmt(example.risk_lower)}。完整总分 {_fmt(example.risk_score)}；可能区间 {_fmt(example.risk_lower)}–{_fmt(example.risk_upper)}。", f"Known contribution: Client {_fmt(example.client_contribution)} + Supplier {_fmt(example.supplier_contribution)}" + (f" + Product {_fmt(example.product_contribution)}" if number(example.product_contribution) is not None else "; Product pending, not included in known contributions") + f" → {_fmt(example.risk_lower)}. Complete score {_fmt(example.risk_score)}; bounds {_fmt(example.risk_lower)}–{_fmt(example.risk_upper)}."),
-            ]
-            st.markdown('<div class="tu-poc-source">'+'<br><br>'.join(html.escape(line) for line in explanation)+'</div>',unsafe_allow_html=True)
-            st.markdown(t("换分规则：不超过 50 分阈值，得分 = 50 × 数值 ÷ 阈值；两阈值之间，得分 = 50 + 50 ×（数值 − 50 分阈值）÷（100 分阈值 − 50 分阈值）；超过上限记 100 分。Strategy 确认是战略款记 100、明确非战略记 0、未匹配记待确认。", "Scoring: up to the warning threshold, score = 50 × value / warning; between thresholds, score = 50 + 50 × (value − warning) / (critical − warning); cap at 100. Strategy: confirmed Yes = 100, explicit No = 0, unmatched = pending."))
-            st.markdown(t(f"退货平均值按同供应商、部门、FG/CPT、粒度及产品范围计算：计入明确为 0 的数量，排除未知值与冲突记录；单独筛选 CC/Model 不重算基准。平均值为 0 且全部为零时退货得 0 分；没有有效基准则待确认。当前 100 分采用平均值的 {profile.return_critical_multiple:g} 倍，是可调整的 POC 建议。", f"The return mean uses the same supplier, department, FG/CPT, grain and population. Include explicit zeros; exclude unknown/conflicting values. Individual CC/Model filters do not recalibrate the mean. All measured zero returns score zero; no valid reference remains unknown. The current critical anchor of {profile.return_critical_multiple:g} times the mean is a configurable POC proposal."))
-            st.markdown(t("分数用于复核优先级，不是不良概率。PQC 是每件检验的疵点数；AQL 是记录层面的首验未通过率。客户 N0 源无日期，自定义日期不用于 Return Qty；Strategy 季节须明确匹配。", "Scores prioritize review, not defect probability. PQC is defects per inspected unit; AQL is first-result failure per record. Undated N0 snapshots cannot supply Return Qty for custom calendar ranges. Strategy season requires an explicit match."))
-            st.download_button(t("下载当前计算明细", "Download current calculations"),rows.to_csv(index=False).encode("utf-8-sig"),file_name=f"tu-risk-poc-{grain.lower()}.csv",mime="text/csv",key="tu_poc_download_rows")
         with st.container(key="tu_poc_distribution_panel"):
             st.subheader(t("高风险产品聚类分析", "High-Risk Product Cluster Analysis"))
             plotted = risk_distribution_groups(rows)
@@ -356,9 +325,6 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
                         config={"displayModeBar":True, "scrollZoom":False, "displaylogo":False})
                 else:
                     st.info(t("请选择至少一个风险分组。", "Select at least one risk group."))
-                st.markdown('<div class="tu-poc-chart-note">'+html.escape(t(
-                    "颜色表示当前筛选下的相对风险分组；Strategy 身份仍以表格为准，分组不会改变 Risk Score 或总分区间。",
-                    "Colors show relative risk groups within the selection. Strategy identity remains in the table; grouping does not change Risk Score or its bounds."))+'</div>', unsafe_allow_html=True)
             else:
                 st.info(t("当前范围没有同时可计算两轴的记录，保留空图。", "No records with both scores; the plot remains empty."))
         # CC Pareto/report always recompute at CC grain; Model scores are never
