@@ -14,7 +14,7 @@ from plotly.subplots import make_subplots
 
 
 QUALITY_SERIES_COLORS = ["#2855C5", "#148A83", "#6B5CC5", "#D98200", "#C83C55", "#475467"]
-QUALITY_CHART_UI_VERSION = "2026-10-16-v4-weekly-gates"
+QUALITY_CHART_UI_VERSION = "2026-10-16-v5-weekly-gates"
 
 
 def apply_quality_chart_style(fig: go.Figure, *, height: int | None = None,
@@ -46,10 +46,10 @@ def style_quality_trend(fig: go.Figure, *, height: int, is_rate: bool = True,
                      title_font=dict(size=13), title_standoff=8, tickangle=0, automargin=True, tickfont=dict(size=tick_size))
     if weekly:
         dates = sorted({pd.Timestamp(value) for trace in fig.data for value in trace.x if pd.notna(value)})
-        step = max(1, (len(dates) + 4) // 5)
-        ticks = dates[::step]
-        if dates and dates[-1] not in ticks:
-            ticks.append(dates[-1])
+        count = min(5, len(dates))
+        # Evenly spaced endpoints prevent the final week colliding with a
+        # nearby regular tick in narrow three-column cards.
+        ticks = [dates[round(i * (len(dates) - 1) / (count - 1))] for i in range(count)] if count > 1 else dates
         labels = [f"W{date.isocalendar().week:02d}<br>{date.isocalendar().year}" for date in ticks]
         fig.update_xaxes(type="date", tickmode="array", tickvals=ticks, ticktext=labels,
                          title_text=x_label or "Week")

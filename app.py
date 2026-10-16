@@ -40,7 +40,7 @@ from dashboard_scope import (
 )
 from tu_quality import build_zx_quality_gates
 import quality_gate_metrics as _quality_gate_metrics
-if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v2-weekly-gates":
+if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-weekly-zero-exposure":
     importlib.reload(_quality_gate_metrics)
 from quality_gate_metrics import gate_metrics
 import tu_risk_poc as _tu_risk_poc
@@ -51,7 +51,7 @@ if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-14-v3-return-
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 import quality_chart_ui as _quality_chart_ui
-if getattr(_quality_chart_ui, "QUALITY_CHART_UI_VERSION", "") != "2026-10-16-v4-weekly-gates":
+if getattr(_quality_chart_ui, "QUALITY_CHART_UI_VERSION", "") != "2026-10-16-v5-weekly-gates":
     importlib.reload(_quality_chart_ui)
 from quality_chart_ui import (
     QUALITY_SERIES_COLORS,
@@ -14344,7 +14344,7 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
     """Keep the three-column template visible without inventing zero data."""
     label = t("异常记录数（QTY）", "Exception records (QTY)") if is_tu and stage == "IQC" else t("问题数量（QTY）", "Issue quantity (QTY)") if stage == "IQC" else t("疵点率", "Defect-point rate")
     metric_items = [(label, "—")]
-    if stage != "IQC":
+    if stage != "IQC" and not is_tu:
         metric_items.append((t("返工率", "Rework rate"), "—"))
     metric_html = "".join(
         f'<div class="bme-fg-metric"><div class="bme-fg-metric-label">{html.escape(name)}</div>'
@@ -14409,7 +14409,7 @@ def render_quality_gate_analysis(
         }
     st.markdown(
         f'<div class="bme-fg-heading">{html.escape(t(heading_cn, heading_en))}</div>'
-        f'<div class="bme-fg-subheading">{html.escape(t(subheading_cn, subheading_en))}</div>',
+        + (f'<div class="bme-fg-subheading">{html.escape(t(subheading_cn, subheading_en))}</div>' if not is_tu else ""),
         unsafe_allow_html=True,
     )
     chart_key_prefix = "tu_zx" if is_tu else "cpt" if is_cpt else "fg"
@@ -14430,7 +14430,7 @@ def render_quality_gate_analysis(
             with st.container(border=True, key=meta["key"]):
                 st.markdown(
                     f'<div class="bme-fg-stage-title">{meta["title"]}</div>'
-                    f'<div class="bme-fg-stage-scope">{html.escape(t(meta["scope_cn"], meta["scope_en"]))}</div>',
+                    + (f'<div class="bme-fg-stage-scope">{html.escape(t(meta["scope_cn"], meta["scope_en"]))}</div>' if not is_tu else ""),
                     unsafe_allow_html=True,
                 )
                 stage_summary = summary[
@@ -14447,8 +14447,6 @@ def render_quality_gate_analysis(
                 ].copy()
                 if stage_summary.empty:
                     render_empty_quality_gate(stage, f"{chart_key_prefix}_{stage}", is_tu=is_tu)
-                    if is_tu:
-                        st.markdown(f'<div class="bme-fg-data-note">{html.escape(tu_notes[stage])}</div>', unsafe_allow_html=True)
                     continue
 
                 measured, periods = gate_metrics(stage_summary, stage, frequency="W-SUN" if is_tu else "M")
@@ -14467,11 +14465,13 @@ def render_quality_gate_analysis(
                 rate_label = t("疵点率", "Defect-point rate")
                 count_label = t("异常记录数（QTY）", "Exception records (QTY)") if is_tu else t("问题数量（QTY）", "Issue quantity (QTY)")
                 metric_items = [(rate_label, rate_text(defect_rate))] if is_rate else [(count_label, f"{measured['quantity']:,.0f}" if pd.notna(measured["quantity"]) else "—")]
-                if stage != "IQC":
+                if stage != "IQC" and not is_tu:
                     metric_items.append((t("返工率", "Rework rate"), rate_text(rework_rate)))
+                metric_help = (t("疵点数量合计 ÷ 有效抽检数量合计；0 疵点 / 0 抽检量的记录不产生检验量。", "Total defect points / total valid sampled units; zero-defect, zero-sample records contribute no exposure.")
+                               if is_tu and stage == "FQC" else "")
                 metric_html = "".join(
                     f'<div class="bme-fg-metric"><div class="bme-fg-metric-label">{html.escape(label)}</div>'
-                    f'<div class="bme-fg-metric-value">{html.escape(value)}</div></div>'
+                    f'<div class="bme-fg-metric-value" title="{html.escape(metric_help, quote=True)}">{html.escape(value)}</div></div>'
                     for label, value in metric_items
                 )
                 metric_class = "bme-fg-metrics one" if len(metric_items) == 1 else "bme-fg-metrics"
@@ -14590,7 +14590,8 @@ def render_quality_gate_analysis(
                         "疵点率沿用源口径：源不良数量 ÷ 检验批量。返工数量仅统计处理措施明确标记 Rework/返工的源不良数量。",
                         "The displayed defect-point rate retains source NC quantity / inspection lot quantity. Rework includes only source NC quantities explicitly marked Rework.",
                     )
-                st.markdown(f'<div class="bme-fg-data-note">{html.escape(note)}</div>', unsafe_allow_html=True)
+                # Definitions remain in the source/evidence layer; keep the
+                # stage cards free of explanatory footnotes.
 
 
 
@@ -21229,6 +21230,8 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         for key in ["quality_suppliers", "quality_ccs", "quality_models", "quality_product_types"]:
             st.session_state[key] = []
         st.session_state["quality_period"] = "R12M"
+        for source_key in ("tu_defect_pareto_source", "bme_defect_pareto_source"):
+            st.session_state[source_key] = "PQC+AQL"
 
     def switch_community():
         choices = st.session_state.get("quality_communities", [])
@@ -21359,7 +21362,6 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
     st.session_state["_pending_chart_context"] = {"kind": "pareto", "measure": "risk_score", "poc_pending": pending, "names": ranked.cc.tolist(), "total": stats["score_total"] if "score_total" in stats else float(risks.risk_score.fillna(0).sum())}
     render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{community.lower()}_unified_risk_pareto")
     st.markdown(quality_pareto_rows_html(ranked, name_col="cc", qty_col="risk_score", value_format=".1f"), unsafe_allow_html=True)
-    st.caption(t("蓝柱：CC 已知风险贡献；橙线：累计已知贡献 ÷ 全部已知贡献。完整总分未确认，不能据此确定完整风险排序。" if pending else "蓝柱：CC 风险分；橙线：累计风险分 ÷ 当前范围全部 CC 风险分。横轴编号对应下方 CC。", "Blue bars: known CC contributions. Line: cumulative / all known contributions. Pending complete scores do not establish total-risk ordering." if pending else "Blue bars: CC risk score. Orange line: cumulative score / all scored CCs in the selection. Axis numbers map to the CC list below."))
     return risks
 
 
@@ -21376,7 +21378,7 @@ def render_unified_defect_pareto(cases: pd.DataFrame, scope: DashboardScope, com
     with mode_col:
         mode = st.segmented_control("Defects", ["top", "all"], default="top", format_func=lambda v: t("Top 10 疵点", "Top 10 Defects") if v == "top" else t("全部疵点", "All Defects"), key=f"{community.lower()}_defect_pareto_mode", label_visibility="collapsed")
     with source_col:
-        source = st.selectbox(t("数据来源", "Data source"), ["PQC+AQL", "PQC", "AQL", "IV"], format_func=lambda v: "PQC + AQL" if v == "PQC+AQL" else v, key=f"{community.lower()}_defect_pareto_source", label_visibility="collapsed")
+        source = st.selectbox(t("数据来源", "Data source"), ["PQC+AQL", "PQC", "AQL", "IV"], index=0, format_func=lambda v: "PQC + AQL" if v == "PQC+AQL" else v, key=f"{community.lower()}_defect_pareto_source", label_visibility="collapsed")
     is_iv = source == "IV"
     sources = ("PQC", "AQL") if source == "PQC+AQL" else (source,)
     ranked = (build_iv_issue_pareto(cases, scope) if community == "TU" else pd.DataFrame()) if is_iv else ranked_inspection_defects(defect_rows, sources)
@@ -21411,10 +21413,6 @@ def render_unified_defect_pareto(cases: pd.DataFrame, scope: DashboardScope, com
     st.session_state["_pending_chart_context"] = context
     render_unified_plotly(fig, config={"displayModeBar": False}, key=f"{community.lower()}_unified_defect_pareto_{source}")
     st.markdown(quality_pareto_rows_html(display, name_col="issue_type", qty_col=qty_col), unsafe_allow_html=True)
-    if is_iv:
-        st.caption(t("IV 按反馈编号去重，与 Problem Card 的 IV 口径一致。", "IV feedback IDs are deduplicated and match the Problem Card population."))
-    else:
-        st.caption(t(f"PQC {ranked.pqc_qty.sum():,.0f} · AQL {ranked.aql_qty.sum():,.0f}。按各次检验累加，组合描述保留；合计不代表唯一不良件数。", f"PQC {ranked.pqc_qty.sum():,.0f} · AQL {ranked.aql_qty.sum():,.0f}. Quantities accumulate across inspections; composite descriptions remain intact. The total is not a unique defective-piece count."))
 
 
 def render_unified_pareto_pair(risks: pd.DataFrame, cases: pd.DataFrame, scope: DashboardScope, community: str, defect_rows: pd.DataFrame) -> pd.DataFrame:
@@ -21458,7 +21456,6 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
             card.pop("trend_label", None)
     st.subheader("Problem Card")
     render_kpi_cards(cards, variant="zx-top")
-    st.caption(t("检验和 IV 使用所选日期；RPM/NQC 使用已接入的 N0 明细快照，按 CC 或 Model 重新汇总。快照没有日期字段，自定义日期时不推算 RPM/NQC。", "Inspections and IV use the selected dates. RPM/NQC are recomputed from the connected N0 snapshot at CC or Model grain. The snapshot has no dates, so custom-period RPM/NQC are unavailable."))
     risk_voice = customer.iloc[0:0].copy() if scope.period == "Custom" else customer.copy()
     cases = filter_records(iv_cases, scope, supplier="ZX")
     cases = cases.loc[cases.get("responsibility_stage", pd.Series("", index=cases.index)).fillna("").str.casefold().str.startswith("before")]

@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-GATE_METRICS_VERSION = "2026-10-16-v2-weekly-gates"
+GATE_METRICS_VERSION = "2026-10-16-v3-weekly-zero-exposure"
 
 
 def gate_metrics(frame: pd.DataFrame, stage: str, *, frequency: str = "M") -> tuple[dict, pd.DataFrame]:
@@ -21,19 +21,24 @@ def gate_metrics(frame: pd.DataFrame, stage: str, *, frequency: str = "M") -> tu
     inspected = pd.to_numeric(frame.get("po_qty", pd.Series(np.nan, index=frame.index)), errors="coerce")
     valid_qty = defects.ge(0) & np.isfinite(defects)
     valid_rate = valid_qty & inspected.gt(0) & np.isfinite(inspected)
+    # An explicitly recorded 0 defects / 0 inspected contributes no exposure.
+    # It is neutral in pooled totals, never an observed zero rate. Unknown
+    # denominators or positive defects with zero exposure remain invalid.
+    zero_exposure = defects.eq(0) & inspected.eq(0)
     complete_qty = bool(len(frame) and valid_qty.all())
-    complete_rate = bool(len(frame) and valid_rate.all())
+    complete_rate = bool(len(frame) and (valid_rate | zero_exposure).all() and valid_rate.any())
     total = float(defects.sum()) if complete_qty else np.nan
     denominator = float(inspected.sum()) if complete_rate else np.nan
     rate = total / denominator if complete_rate else np.nan
     metrics = {"is_rate": stage != "IQC", "quantity": total, "denominator": denominator,
                "rate": rate if stage != "IQC" else np.nan,
                "complete_quantity": complete_qty, "complete_denominator": complete_rate,
-               "rows": len(frame), "valid_rate_rows": int(valid_rate.sum())}
+               "rows": len(frame), "valid_rate_rows": int(valid_rate.sum()),
+               "zero_exposure_rows": int(zero_exposure.sum())}
     if frame.empty:
         return metrics, pd.DataFrame(columns=["defect_qty", "po_qty", "defect_rate", "complete_denominator"])
     frame["_defects"], frame["_inspected"] = defects, inspected
-    frame["_valid_qty"], frame["_valid_rate"] = valid_qty, valid_rate
+    frame["_valid_qty"], frame["_valid_rate"] = valid_qty, valid_rate | zero_exposure
     frame["period"] = pd.to_datetime(frame["date"]).dt.to_period(frequency)
     periods = frame.groupby("period").agg(
         defect_qty=("_defects", lambda values: values.sum(min_count=1)),
@@ -45,6 +50,7 @@ def gate_metrics(frame: pd.DataFrame, stage: str, *, frequency: str = "M") -> tu
     # including ISO weeks that cross calendar years.
     if not periods.empty:
         periods = periods.reindex(pd.period_range(periods.index.min(), periods.index.max(), freq=frequency))
+    periods["complete_denominator"] = periods.complete_denominator.eq(True) & periods.po_qty.gt(0)
     periods.loc[~periods.complete_quantity.eq(True), "defect_qty"] = np.nan
     periods["defect_rate"] = periods.defect_qty / periods.po_qty.where(periods.complete_denominator.eq(True))
     return metrics, periods
