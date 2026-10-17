@@ -52,7 +52,7 @@ if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-17-v5-cluster
 from tu_risk_poc_ui import render_tu_risk_poc
 from cluster_weights import current_weights, fsd_cluster_view, cmw_cluster_view
 import cluster_settings_ui as _cluster_settings_ui
-if getattr(_cluster_settings_ui, "CLUSTER_SETTINGS_UI_VERSION", "") != "2026-10-17-v2-button-navigation":
+if getattr(_cluster_settings_ui, "CLUSTER_SETTINGS_UI_VERSION", "") != "2026-10-17-v3-readable-navigation":
     importlib.reload(_cluster_settings_ui)
 from cluster_settings_ui import render_quality_navigation, render_cluster_settings
 import quality_chart_ui as _quality_chart_ui

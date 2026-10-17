@@ -6,7 +6,7 @@ import streamlit as st
 from cluster_weights import DEFAULTS, apply_weights, current_weights
 
 
-CLUSTER_SETTINGS_UI_VERSION = "2026-10-17-v2-button-navigation"
+CLUSTER_SETTINGS_UI_VERSION = "2026-10-17-v3-readable-navigation"
 
 
 def render_quality_navigation(t):
@@ -23,7 +23,7 @@ def render_quality_navigation(t):
         st.markdown('<div class="quality-nav-section">'+t("工作空间", "WORKSPACE")+'</div>', unsafe_allow_html=True)
         with st.container(key="quality_nav_links"):
             for target, label, icon in (
-                ("dashboard", t("质量看板", "Quality Dashboard"), ":material/dashboard:"),
+                ("dashboard", t("质量看板", "Dashboard"), ":material/dashboard:"),
                 ("cluster-settings", t("聚类权重设置", "Cluster Weights"), ":material/tune:"),
             ):
                 st.button(label, icon=icon, key=f"quality_nav_{target}",
