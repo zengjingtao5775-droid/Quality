@@ -47,9 +47,11 @@ import tu_risk_poc as _tu_risk_poc
 if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-16-v3-binary-strategy":
     importlib.reload(_tu_risk_poc)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-16-v4-compact-binary-strategy":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-17-v5-cluster-only-settings":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
+from cluster_weights import current_weights, fsd_cluster_view, cmw_cluster_view
+from cluster_settings_ui import render_quality_navigation, render_cluster_settings
 import quality_chart_ui as _quality_chart_ui
 if getattr(_quality_chart_ui, "QUALITY_CHART_UI_VERSION", "") != "2026-10-16-v5-weekly-gates":
     importlib.reload(_quality_chart_ui)
@@ -15521,9 +15523,12 @@ def render_bme_priority_product_cluster_overview(
     return clusters
 
 
-def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
+def render_cmw_product_cluster_analysis(events: pd.DataFrame, *, cluster_weights=None) -> pd.DataFrame:
     """Render the CMW gate-aware product clustering block below Data Map."""
-    clusters = build_cmw_product_clusters(events)
+    baseline_clusters = build_cmw_product_clusters(events)
+    clusters = cmw_cluster_view(baseline_clusters, cluster_weights) if cluster_weights is not None else baseline_clusters.copy()
+    rate_weight = cluster_weights["cmw_rate_weight"] if cluster_weights else 60
+    volume_weight = cluster_weights["cmw_volume_weight"] if cluster_weights else 40
     st.subheader(t("CMW 产品风险聚类", "CMW Product Risk Clustering"))
     render_chart_heading(
         "IQC / PQC / FQC 聚类优先级",
@@ -15532,14 +15537,14 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
         "Group CMW quality objects that need investigation first and calculate a relative risk score.",
         "IQC 是来料零部件料号、PQC 是车型、FQC 是整车料号；三者没有正式主数据映射，因此分别聚类，不冒充同一个产品全生命周期。",
         "IQC uses incoming-component codes, PQC uses models, and FQC uses whole-bike item codes. Without a formal master-data map, each gate is clustered separately rather than presented as one product lifecycle.",
-        "有检验分母时，风险分=同环节不良率百分位60%+不良数量百分位40%；PQC 缺少分母，只按不良数量百分位评分。K-means 使用同环节标准化后的严重度与暴露度轴形成持续观察、重点关注和优先改善三组。分数只用于调查排序，不是放行结论。",
-        "With a valid denominator, risk score = 60% gate-level defect-rate percentile + 40% defect-volume percentile. PQC has no denominator and is scored by defect-volume percentile only. K-means uses gate-normalized severity and exposure axes to form Monitor, Attention, and Priority improvement groups. Scores rank investigations and are not release decisions.",
+        f"有检验分母时，风险分=同环节不良率百分位{rate_weight:g}%+不良数量百分位{volume_weight:g}%；PQC 缺少分母，只按不良数量百分位评分。K-means 使用同环节标准化后的严重度与暴露度轴形成持续观察、重点关注和优先改善三组。分数只用于调查排序，不是放行结论。",
+        f"With a valid denominator, risk score = {rate_weight:g}% gate-level defect-rate percentile + {volume_weight:g}% defect-volume percentile. PQC has no denominator and is scored by defect-volume percentile only. K-means uses gate-normalized severity and exposure axes to form Monitor, Attention, and Priority improvement groups. Scores rank investigations and are not release decisions.",
         "CMW IQC + PQC + FQC",
         "bme_cmw_product_cluster_v1",
     )
     if clusters.empty:
         st.info(t("当前期间没有可用于 CMW 产品聚类的数据。", "No CMW data is available for product clustering in the current period."))
-        return clusters
+        return baseline_clusters
 
     cluster_local = {
         "Monitor": t("持续观察", "Monitor"),
@@ -15674,7 +15679,7 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame) -> pd.DataFrame:
     )
     if clusters["quality_gate"].eq("PQC").any():
         st.caption(t("PQC 当前没有可靠检验分母，因此 PQC 风险分置信度标记为低，只用于定位优先级。补充正式分母后才可与 IQC/FQC 一样计算问题率。", "PQC currently lacks a valid inspection denominator, so its score has low confidence and is used only for prioritization. A formal denominator is required before calculating an issue rate like IQC/FQC."))
-    return clusters
+    return baseline_clusters
 
 
 
@@ -21218,6 +21223,28 @@ def _unified_filter_options(frame: pd.DataFrame, column: str) -> list[str]:
     return sorted(set(identifiers(frame[column])) - {"", "Unrecorded", "未记录", "nan"})
 
 
+def render_unified_header(include_data_map=True):
+    def switch_language():
+        st.session_state.lang = st.session_state["quality_language"]
+        lang = "en" if st.session_state.lang == "English" else "zh"
+        st.query_params["lang"] = lang
+        st.session_state._language_query_seen = lang
+
+    with st.container(key="quality_header"):
+        brand, source_map, language = st.columns([0.64, 0.18, 0.18], gap="small", vertical_alignment="center")
+        with brand:
+            st.markdown('<div class="quality-brand-lockup"><div class="quality-brand-kicker">DECATHLON</div><div class="quality-brand">NEA QUALITY</div><div class="quality-brand-sub">TU / BME Quality Dashboard</div></div>', unsafe_allow_html=True)
+        data_map_slot = None
+        if include_data_map:
+            with source_map, st.container(key="quality_data_map_access"):
+                data_map_slot = st.popover(t("数据地图", "Data Map"), icon=":material/account_tree:", use_container_width=True)
+        with language:
+            if st.session_state.get("quality_language") != st.session_state.lang:
+                st.session_state["quality_language"] = st.session_state.lang
+            st.segmented_control("Language", ["中文", "English"], key="quality_language", on_change=switch_language, label_visibility="collapsed")
+    return data_map_slot
+
+
 def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, fsd_fqc, fsd_rpm, fsd_mapping) -> DashboardScope:
     default = ["BME"] if get_active_scope_key() == "BME_CMW" else ["TU"]
     if "quality_communities" not in st.session_state:
@@ -21230,8 +21257,6 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         for key in ["quality_suppliers", "quality_ccs", "quality_models", "quality_product_types"]:
             st.session_state[key] = []
         st.session_state["quality_period"] = "R12M"
-        for source_key in ("tu_defect_pareto_source", "bme_defect_pareto_source"):
-            st.session_state[source_key] = "PQC"
 
     def switch_community():
         choices = st.session_state.get("quality_communities", [])
@@ -21241,29 +21266,13 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         for key in ["quality_suppliers", "quality_ccs", "quality_models"]:
             st.session_state[key] = []
 
-    def switch_language():
-        st.session_state.lang = st.session_state["quality_language"]
-        lang = "en" if st.session_state.lang == "English" else "zh"
-        st.query_params["lang"] = lang
-        st.session_state._language_query_seen = lang
-
     def multi_filter(label, options, key, format_func=None, on_change=None):
         selected = [v for v in st.session_state.get(key, []) if v in options]
         st.session_state[key] = selected
         placeholder = t("选择 Community", "Select community") if key == "quality_communities" else t("全部", "All")
         return st.multiselect(label, options, key=key, format_func=format_func or str, on_change=on_change, placeholder=placeholder)
 
-    with st.container(key="quality_header"):
-        brand, source_map, language = st.columns([0.64, 0.18, 0.18], gap="small", vertical_alignment="center")
-        with brand:
-            st.markdown('<div class="quality-brand-lockup"><div class="quality-brand-kicker">DECATHLON</div><div class="quality-brand">NEA QUALITY</div><div class="quality-brand-sub">TU / BME Quality Dashboard</div></div>', unsafe_allow_html=True)
-        with source_map:
-            with st.container(key="quality_data_map_access"):
-                data_map_slot = st.popover(t("数据地图", "Data Map"), icon=":material/account_tree:", use_container_width=True)
-        with language:
-            if st.session_state.get("quality_language") != st.session_state.lang:
-                st.session_state["quality_language"] = st.session_state.lang
-            st.segmented_control("Language", ["中文", "English"], key="quality_language", on_change=switch_language, label_visibility="collapsed")
+    data_map_slot = render_unified_header()
     with st.container(key="quality_unified_filter"):
         c1, c2, c3, c4 = st.columns(4, gap="small")
         with c1:
@@ -21338,7 +21347,7 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
         "Top 风险 CC 帕累托", "Top Risk CC Pareto",
         "按三维 POC 已知贡献暂排 CC；未完整得分显示待确认。" if is_poc else "按聚类风险分定位优先复核的 CC。", "Trial CC ranking by known three-dimension contributions; incomplete scores remain pending." if is_poc else "Rank CCs for investigation using cluster risk scores.",
         "按风险分降序排列，默认显示前 10 个 CC，也可查看全部；BME 使用源 code 作为 CC。", "Descending cluster risk score; show the top 10 CCs by default or all CCs. BME retains source codes as CCs.",
-        "CC 粒度单独重算客户端、Strategy、PQC/AQL；不相加 Model 分。缺失项保持未知，已知贡献累计占比不代表完整风险占比。" if is_poc else "直接沿用当前筛选后的聚类结果。少于 10 个时全部显示；占比为所展示风险分合计 ÷ 全部可计算 CC 风险分合计。", "Recompute each CC from client, Strategy and PQC/AQL records; never add Model scores. Unknown inputs remain unknown; known-contribution shares are not complete-risk shares." if is_poc else "Reuse the filtered cluster results. Show all when fewer than 10 are available; contribution = displayed score sum / total scored CC score sum.",
+        "CC 粒度单独重算客户端、Strategy、PQC/AQL；不相加 Model 分。缺失项保持未知，已知贡献累计占比不代表完整风险占比。" if is_poc else "使用当前筛选下的基准风险分，独立于聚类设置页的权重。少于 10 个时全部显示；占比为所展示风险分合计 ÷ 全部可计算 CC 风险分合计。", "Recompute each CC from client, Strategy and PQC/AQL records; never add Model scores. Unknown inputs remain unknown; known-contribution shares are not complete-risk shares." if is_poc else "Use baseline risk scores independently of the cluster settings page. Show all when fewer than 10 are available; contribution = displayed score sum / total scored CC score sum.",
         "TU PQC + AQL + Customer N0 + IV + Strategy follow-up" if community == "TU" else "BME FSD / CMW Cluster",
         f"{community.lower()}_unified_pareto_info",
     )
@@ -21366,54 +21375,42 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
 def render_unified_defect_pareto(cases: pd.DataFrame, scope: DashboardScope, community: str, defect_rows: pd.DataFrame) -> None:
     render_chart_heading(
         "疵点帕累托", "Defect Pareto",
-        "默认仅汇总 PQC 的疵点数量，其他来源可单独切换。", "Use PQC defect quantities by default; select other sources separately.",
+        "仅汇总 PQC 的疵点数量。", "PQC defect quantities only.",
         "跟随当前供应商、CC、Model、FG/CPT 及日期筛选，默认展示前 10 条。", "Uses the current supplier, CC, Model, FG/CPT and date selection; shows the top 10 by default.",
-        "PQC/AQL 按源检验疵点数量累加，同名描述合并，组合描述不拆分；空名称及仅有产品族的数量保留为未分类。累计占比以当前来源全部疵点为分母。IV 按 Before Sales 唯一反馈编号计数，单独切换，不与疵点数量相加。", "Sum source inspection quantities for PQC/AQL. Merge exact matching descriptions, retain composite descriptions and unclassified quantities, and use every selected defect in the cumulative denominator. IV counts unique Before Sales feedback IDs separately; cases are not added to inspection quantities.",
-        "ZX 工厂 PQC + 简道云 AQL/FQC + ZX intervoice.xlsx" if community == "TU" else "BME FG/CPT PQC + AQL/FQC · IV source unavailable",
+        "PQC 按源检验疵点数量累加，同名描述合并，组合描述不拆分；空名称及仅有产品族的数量保留为未分类。累计占比以当前范围全部 PQC 疵点为分母。", "Sum source PQC defect quantities. Merge exact matching descriptions, retain composite descriptions and unclassified quantities, and use all PQC defects in the current selection as the cumulative denominator.",
+        "ZX 工厂 PQC" if community == "TU" else "BME FG/CPT PQC",
         f"{community.lower()}_defect_pareto_info",
     )
-    mode_col, source_col = st.columns([.58, .42], vertical_alignment="center")
-    with mode_col:
-        mode = st.segmented_control("Defects", ["top", "all"], default="top", format_func=lambda v: t("Top 10 疵点", "Top 10 Defects") if v == "top" else t("全部疵点", "All Defects"), key=f"{community.lower()}_defect_pareto_mode", label_visibility="collapsed")
-    with source_col:
-        source_key = f"{community.lower()}_defect_pareto_source"
-        default_revision_key = f"_{source_key}_default_revision"
-        # Apply the revised default once to sessions retained across a hot reload.
-        if st.session_state.get(default_revision_key) != "2026-10-17-pqc-only":
-            st.session_state[source_key] = "PQC"
-            st.session_state[default_revision_key] = "2026-10-17-pqc-only"
-        source = st.selectbox(t("数据来源", "Data source"), ["PQC", "PQC+AQL", "AQL", "IV"], index=0, format_func=lambda v: "PQC + AQL" if v == "PQC+AQL" else v, key=source_key, label_visibility="collapsed")
-    is_iv = source == "IV"
-    sources = ("PQC", "AQL") if source == "PQC+AQL" else (source,)
-    ranked = (build_iv_issue_pareto(cases, scope) if community == "TU" else pd.DataFrame()) if is_iv else ranked_inspection_defects(defect_rows, sources)
+    mode = st.segmented_control("Defects", ["top", "all"], default="top", format_func=lambda v: t("Top 10 疵点", "Top 10 Defects") if v == "top" else t("全部疵点", "All Defects"), key=f"{community.lower()}_defect_pareto_mode", label_visibility="collapsed")
+    source = "PQC"
+    ranked = ranked_inspection_defects(defect_rows, ("PQC",))
     if ranked.empty:
         st.info(t(f"当前范围没有可用的 {source} 疵点数据。", f"No {source} defect data is available in this selection."))
         render_chart_ai({"id": f"{community.lower()}_defect_pareto_empty_{source}", "empty": True})
         return
-    qty_col = "case_count" if is_iv else "defect_qty"
+    qty_col = "defect_qty"
     total = float(ranked[qty_col].sum())
     shown = ranked.head(10) if mode != "all" else ranked
     share = float(shown[qty_col].sum() / total)
-    unit = t("个 IV 案例", "IV cases") if is_iv else t("个源疵点", "source defects")
+    unit = t("个 PQC 疵点", "PQC defects")
     chip = t(f"{total:,.0f} {unit} · 展示 {len(shown)} 条 · 占 {share:.0%}", f"{total:,.0f} {unit} · {len(shown)} shown · {share:.0%} covered")
     st.markdown(f'<span class="quality-risk-chip">{html.escape(chip)}</span>', unsafe_allow_html=True)
     display = shown.copy()
     display["issue_type"] = display.issue_type.replace({"未分类": t("未分类", "Unclassified"), "分类不一致": t("分类不一致", "Conflicting classification"), "未分类（仅有产品族）": t("未分类（仅有产品族）", "Unclassified (family only)")})
-    quantity_label = t("IV 案例数（QTY）", "IV cases (QTY)") if is_iv else t("疵点数量（QTY）", "Defect quantity (QTY)")
+    quantity_label = t("疵点数量（QTY）", "Defect quantity (QTY)")
     fig = build_quality_pareto(display, name_col="issue_type", qty_col=qty_col, cumulative_col="cumulative_share", height=360,
         quantity_label=quantity_label, cumulative_label=t("累计占比（%）", "Cumulative share (%)"), issue_label=t("问题类型", "Defect Type"),
-        x_label=t("IV 问题排名", "IV issue rank") if is_iv else t("疵点排名", "Defect rank"))
+        x_label=t("疵点排名", "Defect rank"))
     fig.update_xaxes(ticklabelstep=max(1, math.ceil(len(display) / 12)))
     if len(display) > 20:
         fig.data[0].text = None
         fig.data[0].texttemplate = None
         fig.data[0].textposition = "none"
-    context = {"kind": "pareto", "names": display.issue_type.tolist(), "total": total, "unit": unit, "sources": list(sources)}
-    if not is_iv:
-        fig.data[0].customdata = display[["issue_type", "pqc_qty", "aql_qty"]].values
-        fig.data[0].hovertemplate = "%{customdata[0]}<br>" + quantity_label + ": %{y:,.0f}<br>PQC: %{customdata[1]:,.0f}<br>AQL: %{customdata[2]:,.0f}<extra></extra>"
-        context.update({"inspection_quantities": True, "composite_descriptions": "AQL" in sources,
-                        "source_totals": {"PQC": float(ranked.pqc_qty.sum()), "AQL": float(ranked.aql_qty.sum())}})
+    context = {"kind": "pareto", "names": display.issue_type.tolist(), "total": total, "unit": unit,
+               "sources": ["PQC"], "inspection_quantities": True, "composite_descriptions": False,
+               "source_totals": {"PQC": float(ranked.pqc_qty.sum())}}
+    fig.data[0].customdata = display[["issue_type"]].values
+    fig.data[0].hovertemplate = "%{customdata[0]}<br>PQC: %{y:,.0f}<extra></extra>"
     st.session_state["_pending_chart_context"] = context
     render_unified_plotly(fig, config={"displayModeBar": False}, key=f"{community.lower()}_unified_defect_pareto_{source}")
     st.markdown(quality_pareto_rows_html(display, name_col="issue_type", qty_col=qty_col), unsafe_allow_html=True)
@@ -21556,14 +21553,16 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
     risks = []
     if scope.includes_supplier("FSD") and not fqc.empty:
         scoped_fqc = filter_records(fqc, scope, supplier="FSD", cc_col="item_code", model_col="model_code", item_models=links)
-        # Code is the displayed BME CC. The cluster and Pareto share this grain
-        # and the same scores, rather than assigning family scores to each item.
+        # Code is the displayed BME CC. Baseline scores feed Pareto/report;
+        # session weights affect only a separate cluster presentation frame.
         scoped_fqc["family"] = scoped_fqc["item_code"]
         cluster_rpm = customer.rename(columns={"returned_now": "returned_qty", "sold_now": "sold_qty"})
         if scope.period == "Custom":
             cluster_rpm = cluster_rpm.iloc[0:0]
         analysis, meta = build_fsd_rpm_cluster_analysis(scoped_fqc, cluster_rpm, mapping, scope.start, scope.end)
-        render_fsd_rpm_cluster_analysis(analysis, meta)
+        render_fsd_rpm_cluster_analysis(fsd_cluster_view(analysis, current_weights(st.session_state, "BME")), meta)
+        weights = current_weights(st.session_state, "BME")
+        st.caption(t(f"聚类权重：FQC {weights['fsd_fqc_weight']:g}% · RPM {weights['fsd_rpm_weight']:g}%", f"Cluster weights: FQC {weights['fsd_fqc_weight']:g}% · RPM {weights['fsd_rpm_weight']:g}%"))
         if not analysis.empty:
             report_risk = analysis.rename(columns={"fsd_model": "cc", "priority_score": "risk_score", "inspected_qty": "inspected", "nc_qty": "defects", "rpm": "rpm_now"}).copy()
             report_risk["supplier"] = "FSD"
@@ -21571,7 +21570,7 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
             report_risk["model"] = report_risk.get("rpm_model_codes", "")
             risks.append(report_risk)
     if scope.includes_supplier("CMW"):
-        clusters = render_cmw_product_cluster_analysis(view.loc[view.supplier.eq("CMW")])
+        clusters = render_cmw_product_cluster_analysis(view.loc[view.supplier.eq("CMW")], cluster_weights=current_weights(st.session_state, "BME"))
         if not clusters.empty:
             # Source keys contain the code used by the cluster. Retain gate
             # qualification because different gates lack a lifecycle bridge.
@@ -21660,6 +21659,15 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
 
 def render_unified_dashboard():
     st.markdown(f"<style>{(ROOT / 'unified_dashboard.css').read_text()}</style>", unsafe_allow_html=True)
+    # Preserve dashboard choices while Streamlit cleans widgets on the settings route.
+    for key in ("quality_communities", "quality_suppliers", "quality_ccs", "quality_models", "quality_product_types", "quality_period", "quality_dates"):
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
+    page = render_quality_navigation(t)
+    if page == "cluster-settings":
+        render_unified_header(include_data_map=False)
+        render_cluster_settings(t)
+        return
     st.session_state["_unified_chart_facts"] = {}
     st.session_state["_unified_report_facts"] = {}
     with st.spinner(t("正在读取质量数据…", "Loading quality data…")):
