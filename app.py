@@ -9677,6 +9677,7 @@ def render_scope_data_map(
     start_date: dt.date | None = None,
     end_date: dt.date | None = None,
     jdy_owners: list[str] | None = None,
+    expandable: bool = True,
 ) -> pd.DataFrame:
     scope_codes = DASHBOARD_SCOPES.get(scope_key, {}).get("factories", [])
     gap_matrix = build_data_gap_matrix(finished_df, voice_df, incoming_df, scope_codes)
@@ -9711,7 +9712,8 @@ def render_scope_data_map(
     jdy_fqc = pd.DataFrame()
     panel_key = "zx_data_map_panel" if scope_key == "ZX" else f"{scope_key.lower()}_data_map_panel"
     with st.container(key=panel_key):
-        with st.expander(t("数据地图", "Data Map"), expanded=False):
+        map_content = st.expander(t("数据地图", "Data Map"), expanded=False) if expandable else st.container()
+        with map_content:
             render_data_gap_matrix(gap_matrix)
             if scope_key == "ZX":
                 jdy_fqc, _, _ = render_tu_jdy_refresh_control("zx_panel", include_cp=True)
@@ -21229,7 +21231,7 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
             st.session_state[key] = []
         st.session_state["quality_period"] = "R12M"
         for source_key in ("tu_defect_pareto_source", "bme_defect_pareto_source"):
-            st.session_state[source_key] = "PQC+AQL"
+            st.session_state[source_key] = "PQC"
 
     def switch_community():
         choices = st.session_state.get("quality_communities", [])
@@ -21248,23 +21250,21 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
     def multi_filter(label, options, key, format_func=None, on_change=None):
         selected = [v for v in st.session_state.get(key, []) if v in options]
         st.session_state[key] = selected
-        suffix = t("全部", "All") if not selected else str(len(selected)) + t(" 项", " selected")
-        if key == "quality_communities":
-            suffix = " / ".join(selected) if selected else t("未选择", "None")
-        with st.popover(f"{label} · {suffix}", icon=":material/filter_alt:", use_container_width=True):
-            return st.multiselect(label, options, key=key, format_func=format_func or str, on_change=on_change, placeholder=t("全部（可多选）", "All (multi-select)"))
+        placeholder = t("选择 Community", "Select community") if key == "quality_communities" else t("全部", "All")
+        return st.multiselect(label, options, key=key, format_func=format_func or str, on_change=on_change, placeholder=placeholder)
 
     with st.container(key="quality_header"):
-        brand, language = st.columns([0.76, 0.24], vertical_alignment="center")
+        brand, source_map, language = st.columns([0.64, 0.18, 0.18], gap="small", vertical_alignment="center")
         with brand:
             st.markdown('<div class="quality-brand-lockup"><div class="quality-brand-kicker">DECATHLON</div><div class="quality-brand">NEA QUALITY</div><div class="quality-brand-sub">TU / BME Quality Dashboard</div></div>', unsafe_allow_html=True)
+        with source_map:
+            with st.container(key="quality_data_map_access"):
+                data_map_slot = st.popover(t("数据地图", "Data Map"), icon=":material/account_tree:", use_container_width=True)
         with language:
             if st.session_state.get("quality_language") != st.session_state.lang:
                 st.session_state["quality_language"] = st.session_state.lang
             st.segmented_control("Language", ["中文", "English"], key="quality_language", on_change=switch_language, label_visibility="collapsed")
-    data_map_slot = st.container(key="quality_top_data_map")
     with st.container(key="quality_unified_filter"):
-        st.markdown('<span class="quality-default-view">Default</span>', unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns(4, gap="small")
         with c1:
             communities = multi_filter("Community", ["TU", "BME"], "quality_communities", on_change=switch_community)
@@ -21307,12 +21307,15 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         eligible = [d.date() for d in dated if d.date() <= today]
         anchor = max(eligible) if eligible else today
         with st.container(key="quality_filter_details"):
-            p1, p2, p3, p4 = st.columns(4, gap="small")
+            p1, p2, p3, p4 = st.columns([1, 1, 1.55, 0.7], gap="small", vertical_alignment="bottom")
             with p1:
+                product_type_labels = {"FG": t("FG · 成品业务", "FG · Finished goods"), "CPT": t("CPT · 零部件业务", "CPT · Components")}
+                product_types = multi_filter("FG / CPT", ["FG", "CPT"], "quality_product_types", lambda v: product_type_labels[v])
+            with p2:
                 period = st.selectbox(t("日期周期", "Period"), ["R12M", "YTD", "Custom"], key="quality_period")
             start = dt.date(anchor.year, 1, 1) if period == "YTD" else (pd.Timestamp(anchor) - pd.DateOffset(years=1) + pd.Timedelta(days=1)).date()
             end = anchor
-            with p2:
+            with p3:
                 if period == "Custom":
                     dates = st.date_input(t("日期范围", "Date Range"), value=(start, end), key="quality_dates", format="YYYY-MM-DD")
                     if isinstance(dates, (list, tuple)) and len(dates) == 2:
@@ -21321,9 +21324,6 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
                         st.caption(t("请选择结束日期", "Select an end date"))
                 else:
                     st.text_input(t("日期范围", "Date Range"), value=f"{start} → {end}", disabled=True, key=f"quality_range_{period}_{start}_{end}")
-            with p3:
-                product_type_labels = {"FG": t("FG · 成品业务", "FG · Finished goods"), "CPT": t("CPT · 零部件业务", "CPT · Components")}
-                product_types = multi_filter("FG / CPT", ["FG", "CPT"], "quality_product_types", lambda v: product_type_labels[v])
             with p4:
                 with st.container(key="quality_filter_reset"):
                     st.button(t("重置筛选", "Reset Filters"), icon=":material/restart_alt:", key="quality_reset_filters", on_click=reset_filters, use_container_width=True)
@@ -21366,7 +21366,7 @@ def render_unified_risk_pareto(risks: pd.DataFrame, community: str) -> pd.DataFr
 def render_unified_defect_pareto(cases: pd.DataFrame, scope: DashboardScope, community: str, defect_rows: pd.DataFrame) -> None:
     render_chart_heading(
         "疵点帕累托", "Defect Pareto",
-        "默认汇总 PQC 与 AQL 的疵点数量，IV 案例可单独查看。", "Combine PQC and AQL defect quantities by default; view IV cases separately.",
+        "默认仅汇总 PQC 的疵点数量，其他来源可单独切换。", "Use PQC defect quantities by default; select other sources separately.",
         "跟随当前供应商、CC、Model、FG/CPT 及日期筛选，默认展示前 10 条。", "Uses the current supplier, CC, Model, FG/CPT and date selection; shows the top 10 by default.",
         "PQC/AQL 按源检验疵点数量累加，同名描述合并，组合描述不拆分；空名称及仅有产品族的数量保留为未分类。累计占比以当前来源全部疵点为分母。IV 按 Before Sales 唯一反馈编号计数，单独切换，不与疵点数量相加。", "Sum source inspection quantities for PQC/AQL. Merge exact matching descriptions, retain composite descriptions and unclassified quantities, and use every selected defect in the cumulative denominator. IV counts unique Before Sales feedback IDs separately; cases are not added to inspection quantities.",
         "ZX 工厂 PQC + 简道云 AQL/FQC + ZX intervoice.xlsx" if community == "TU" else "BME FG/CPT PQC + AQL/FQC · IV source unavailable",
@@ -21376,7 +21376,13 @@ def render_unified_defect_pareto(cases: pd.DataFrame, scope: DashboardScope, com
     with mode_col:
         mode = st.segmented_control("Defects", ["top", "all"], default="top", format_func=lambda v: t("Top 10 疵点", "Top 10 Defects") if v == "top" else t("全部疵点", "All Defects"), key=f"{community.lower()}_defect_pareto_mode", label_visibility="collapsed")
     with source_col:
-        source = st.selectbox(t("数据来源", "Data source"), ["PQC+AQL", "PQC", "AQL", "IV"], index=0, format_func=lambda v: "PQC + AQL" if v == "PQC+AQL" else v, key=f"{community.lower()}_defect_pareto_source", label_visibility="collapsed")
+        source_key = f"{community.lower()}_defect_pareto_source"
+        default_revision_key = f"_{source_key}_default_revision"
+        # Apply the revised default once to sessions retained across a hot reload.
+        if st.session_state.get(default_revision_key) != "2026-10-17-pqc-only":
+            st.session_state[source_key] = "PQC"
+            st.session_state[default_revision_key] = "2026-10-17-pqc-only"
+        source = st.selectbox(t("数据来源", "Data source"), ["PQC", "PQC+AQL", "AQL", "IV"], index=0, format_func=lambda v: "PQC + AQL" if v == "PQC+AQL" else v, key=source_key, label_visibility="collapsed")
     is_iv = source == "IV"
     sources = ("PQC", "AQL") if source == "PQC+AQL" else (source,)
     ranked = (build_iv_issue_pareto(cases, scope) if community == "TU" else pd.DataFrame()) if is_iv else ranked_inspection_defects(defect_rows, sources)
@@ -21486,7 +21492,6 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
     summary, pareto = build_zx_quality_gates(incoming, finished, jdy)
     risks = render_unified_pareto_pair(risks, iv_cases, scope, "TU", pareto)
     render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU")
-    render_unified_spc(pd.DataFrame(), scope, "TU")
     source_pack = build_tu_community_ai_fact_pack(finished, risk_voice, incoming, cluster, pd.DataFrame(), settings, jdy_fqc_override=jdy, use_cluster_ranking=True)
     cc_facts = cc_scores.set_index("cc").to_dict("index") if not cc_scores.empty else {}
     for fact in source_pack["product_risks"]:
@@ -21669,12 +21674,15 @@ def render_unified_dashboard():
         fqc, rpm, mapping = load_fsd_rpm_cluster_inputs_cached(fingerprint, _BME_QUALITY_LOGIC_VERSION)
         iv = load_unified_zx_iv(DATA_SCOPE_CACHE_VERSION)
     scope, data_map_slot = render_unified_filters(finished, voice, incoming, jdy, events, fqc, rpm, mapping)
-    with data_map_slot:
+    with data_map_slot, st.container(key="quality_top_data_map"):
         if "TU" in scope.communities:
-            jdy = render_scope_data_map("ZX", finished, voice, incoming, start_date=scope.start, end_date=scope.end)
+            if len(scope.communities) > 1:
+                st.subheader(t("TU 数据地图", "TU Data Map"))
+            jdy = render_scope_data_map("ZX", finished, voice, incoming, start_date=scope.start, end_date=scope.end, expandable=False)
         if "BME" in scope.communities:
-            with st.expander(t("BME 数据地图", "BME Data Map") if len(scope.communities) > 1 else t("数据地图", "Data Map"), expanded=False):
-                _render_bme_data_map(events, nc, orders)
+            if len(scope.communities) > 1:
+                st.subheader(t("BME 数据地图", "BME Data Map"))
+            _render_bme_data_map(events, nc, orders)
     st.session_state["_unified_scope"] = scope.facts()
     if not scope.communities:
         st.info(t("请选择 TU 或 BME 查看质量分析。", "Select TU or BME to view quality analysis."))
