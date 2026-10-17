@@ -6,22 +6,30 @@ import streamlit as st
 from cluster_weights import DEFAULTS, apply_weights, current_weights
 
 
+CLUSTER_SETTINGS_UI_VERSION = "2026-10-17-v2-button-navigation"
+
+
 def render_quality_navigation(t):
-    pages = ["dashboard", "cluster-settings"]
     page = "cluster-settings" if st.query_params.get("view") == "cluster-settings" else "dashboard"
-    st.session_state["quality_navigation_page"] = page
-    def navigate():
-        selected = st.session_state["quality_navigation_page"]
-        if selected == "dashboard":
+    def navigate(target):
+        if target == "dashboard":
             st.query_params.pop("view", None)
         else:
-            st.query_params["view"] = selected
+            st.query_params["view"] = target
     with st.sidebar, st.container(key="quality_navigation"):
-        st.markdown('<div class="quality-nav-brand">NEA QUALITY</div>', unsafe_allow_html=True)
-        st.caption(t("质量分析工作台", "Quality workspace"))
-        st.radio(t("页面导航", "Navigation"), pages, key="quality_navigation_page",
-                 format_func=lambda value: t("质量看板", "Quality Dashboard") if value == "dashboard" else t("聚类权重设置", "Cluster Weights"),
-                 on_change=navigate, label_visibility="collapsed")
+        st.markdown('<div class="quality-nav-brand-block"><div class="quality-nav-kicker">DECATHLON</div>'
+                    '<div class="quality-nav-brand">NEA QUALITY</div>'
+                    '<div class="quality-nav-subtitle">'+t("质量分析工作台", "Quality workspace")+'</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="quality-nav-section">'+t("工作空间", "WORKSPACE")+'</div>', unsafe_allow_html=True)
+        with st.container(key="quality_nav_links"):
+            for target, label, icon in (
+                ("dashboard", t("质量看板", "Quality Dashboard"), ":material/dashboard:"),
+                ("cluster-settings", t("聚类权重设置", "Cluster Weights"), ":material/tune:"),
+            ):
+                st.button(label, icon=icon, key=f"quality_nav_{target}",
+                          type="primary" if page == target else "secondary",
+                          use_container_width=True, on_click=navigate, args=(target,),
+                          help=t("当前页面", "Current page") if page == target else None)
     return page
 
 
