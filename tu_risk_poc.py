@@ -17,16 +17,16 @@ import pandas as pd
 
 from dashboard_scope import DashboardScope, filter_records, identifiers, customer_totals
 
-RISK_POC_VERSION = "2026-10-16-v3-binary-strategy"
+RISK_POC_VERSION = "2026-10-17-v4-40-10-50-return-qty"
 DEPARTMENTS = ("Hugss", "Knit", "Woven")
 GRAINS = ("Model", "CC", "Supplier")
 
 
 @dataclass(frozen=True)
 class RiskProfile:
-    client_weight: float = 30
+    client_weight: float = 40
     product_weight: float = 10
-    supplier_weight: float = 60
+    supplier_weight: float = 50
     return_weight: float = 50
     iv_weight: float = 50
     pqc_weight: float = 80
@@ -63,7 +63,7 @@ def default_profile(grain="Model"):
     if grain not in GRAINS:
         raise ValueError("Unsupported risk grain")
     # Strategy is a product characteristic, not a whole-supplier attribute.
-    return replace(RiskProfile(), product_weight=0, supplier_weight=70) if grain == "Supplier" else RiskProfile()
+    return replace(RiskProfile(), product_weight=0, supplier_weight=60) if grain == "Supplier" else RiskProfile()
 
 
 def profile_from_saved(saved, grain="Model"):

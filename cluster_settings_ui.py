@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import streamlit as st
 
-from cluster_weights import DEFAULTS, apply_weights, current_weights
+from cluster_weights import DEFAULTS, apply_weights, current_weights, migrate_cluster_defaults
 
 
-CLUSTER_SETTINGS_UI_VERSION = "2026-10-17-v3-readable-navigation"
+CLUSTER_SETTINGS_UI_VERSION = "2026-10-17-v4-new-defaults"
 
 
 def render_quality_navigation(t):
+    migrate_cluster_defaults(st.session_state)
     page = "cluster-settings" if st.query_params.get("view") == "cluster-settings" else "dashboard"
     def navigate(target):
         if target == "dashboard":

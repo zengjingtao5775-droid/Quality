@@ -10,14 +10,27 @@ import pandas as pd
 
 from tu_risk_poc import default_profile
 
-CLUSTER_WEIGHTS_VERSION = "2026-10-17-v1"
+CLUSTER_WEIGHTS_VERSION = "2026-10-17-v2-40-10-50"
 STATE_KEY = "_quality_cluster_weights"
 DEFAULTS = {
-    "TU": {"client_weight": 30., "product_weight": 10., "supplier_weight": 60.,
+    "TU": {"client_weight": 40., "product_weight": 10., "supplier_weight": 50.,
            "return_weight": 50., "iv_weight": 50., "pqc_weight": 80., "aql_weight": 20.},
     "BME": {"fsd_fqc_weight": 50., "fsd_rpm_weight": 50.,
             "cmw_rate_weight": 60., "cmw_volume_weight": 40.},
 }
+
+
+def migrate_cluster_defaults(state):
+    """Migrate the previous default without overwriting a custom policy."""
+    if state.get("_quality_cluster_default_revision") == CLUSTER_WEIGHTS_VERSION:
+        return
+    previous = {**DEFAULTS["TU"], "client_weight": 30., "supplier_weight": 60.}
+    policies = deepcopy(state.get(STATE_KEY, {}))
+    if policies.get("TU") == previous:
+        policies["TU"] = deepcopy(DEFAULTS["TU"])
+        state[STATE_KEY] = policies
+    state["_cluster_form_revision_TU"] = state.get("_cluster_form_revision_TU", 0) + 1
+    state["_quality_cluster_default_revision"] = CLUSTER_WEIGHTS_VERSION
 
 
 def validate_weights(community, values):

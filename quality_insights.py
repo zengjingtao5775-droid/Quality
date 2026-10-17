@@ -9,7 +9,52 @@ import json
 
 import pandas as pd
 
-INSIGHTS_VERSION = "2026-10-16-v13-weekly-gates"
+INSIGHTS_VERSION = "2026-10-17-v14-one-sentence"
+
+
+def chart_brief(facts, language="中文"):
+    """One source-calculated observation; AI prose never supplies the preview."""
+    zh = language == "中文"
+    e = facts.get("evidence") or chart_evidence(facts.get("traces", []), facts.get("y_format", ""), facts.get("context"))
+    kind = e.get("kind")
+    if kind == "quality_gate":
+        pareto, trend = e.get("pareto", {}), e.get("trend", {})
+        selected = pareto if not pareto.get("empty", True) and (pareto.get("evidence") or {}).get("ranked") else trend
+        text = chart_brief(selected, language)
+        return f'{e.get("stage", "")}：{text}' if zh else f'{e.get("stage", "")}: {text}'
+    if facts.get("empty") or kind == "empty":
+        if e.get("rate_unavailable"):
+            return "检验分母缺失，疵点率不可计算。" if zh else "The inspection denominator is missing; the defect rate is unavailable."
+        return "当前筛选没有可用记录。" if zh else "No records are available in this selection."
+    if kind == "pareto" and e.get("ranked"):
+        name, value = e["ranked"][0]
+        share = numeric(e.get("top_share"))
+        if e.get("measure") == "risk_score":
+            metric = ("已知风险贡献" if e.get("poc_pending") else "风险分") if zh else ("known risk contribution" if e.get("poc_pending") else "risk score")
+            return f'CC {name} 的{metric}最高，为 {value:.1f} 分。' if zh else f'CC {name} has the highest {metric}: {value:.1f} points.'
+        unit = str(e.get("unit", "个" if zh else "issues")).replace("源问题", "问题").replace("source issues", "issues")
+        subject = ("产品族" if zh else "Product family ") if e.get("category_type") == "product_family" else ""
+        fraction = (f"，占 {share:.1%}" if zh else f" ({share:.1%})") if share is not None else ""
+        return f'本期{subject}「{name}」{value:,.0f} {unit}{fraction}。' if zh else f'{subject}{name}: {value:,.0f} {unit}{fraction} in this selection.'
+    if kind == "trend" and e.get("latest"):
+        period, value = e["latest"]
+        period = _week(period) if e.get("frequency") == "W-SUN" else _month(period)
+        rendered = f"{value:.2%}" if e.get("is_rate") else f"{value:,.2f}".rstrip("0").rstrip(".")
+        partial = ("（未完整期间）" if zh else " (partial period)") if e.get("partial_latest") else ""
+        missing = ("；最新期间无有效分母" if zh else "; the latest period has no valid denominator") if e.get("latest_period_missing") else ""
+        return f"最近有效期间 {period}{partial}：{rendered}{missing}。" if zh else f"Latest available period {period}{partial}: {rendered}{missing}."
+    if kind == "cluster" and e.get("high_x"):
+        point = e["high_x"]
+        axis = re.sub(r"<[^>]+>", "", str(facts.get("x_label") or ("横轴值" if zh else "x value")))
+        axis = re.split(r"[（(]", axis)[0].strip()
+        value = point["x"]
+        rendered = f"{value:.2%}" if "%" in str(facts.get("x_format", "")) else f"{value:,.2f}".rstrip("0").rstrip(".")
+        name = point.get("label") or point.get("group")
+        return f"{name} 的{axis}最高，为 {rendered}。" if zh else f"{name} has the highest {axis}: {rendered}."
+    text = str(facts.get("summary") or "").strip()
+    if text:
+        return text.split("。", 1)[0].rstrip(".") + ("。" if zh else ".")
+    return "当前图表没有可汇总的数值。" if zh else "No numeric summary is available for this chart."
 
 
 def numeric(value):

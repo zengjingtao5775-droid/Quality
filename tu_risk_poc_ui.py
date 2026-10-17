@@ -15,7 +15,7 @@ from tu_risk_poc import default_profile, build_tu_risk, load_strategy_workbook, 
 from quality_chart_ui import apply_quality_chart_style
 from cluster_weights import tu_cluster_profile
 
-RISK_POC_UI_VERSION = "2026-10-17-v5-cluster-only-settings"
+RISK_POC_UI_VERSION = "2026-10-17-v6-new-defaults"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876", "single": "#2854c5"}
 
 CSS = """

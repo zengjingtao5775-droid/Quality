@@ -44,15 +44,18 @@ if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-
     importlib.reload(_quality_gate_metrics)
 from quality_gate_metrics import gate_metrics
 import tu_risk_poc as _tu_risk_poc
-if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-16-v3-binary-strategy":
+if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-17-v4-40-10-50-return-qty":
     importlib.reload(_tu_risk_poc)
+import cluster_weights as _cluster_weights
+if getattr(_cluster_weights, "CLUSTER_WEIGHTS_VERSION", "") != "2026-10-17-v2-40-10-50":
+    importlib.reload(_cluster_weights)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-17-v5-cluster-only-settings":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-17-v6-new-defaults":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 from cluster_weights import current_weights, fsd_cluster_view, cmw_cluster_view
 import cluster_settings_ui as _cluster_settings_ui
-if getattr(_cluster_settings_ui, "CLUSTER_SETTINGS_UI_VERSION", "") != "2026-10-17-v3-readable-navigation":
+if getattr(_cluster_settings_ui, "CLUSTER_SETTINGS_UI_VERSION", "") != "2026-10-17-v4-new-defaults":
     importlib.reload(_cluster_settings_ui)
 from cluster_settings_ui import render_quality_navigation, render_cluster_settings
 import quality_chart_ui as _quality_chart_ui
@@ -66,10 +69,10 @@ from quality_chart_ui import (
     style_quality_trend,
 )
 import quality_insights as _quality_insights
-if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-16-v13-weekly-gates":
+if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-17-v14-one-sentence":
     importlib.reload(_quality_insights)
 from quality_insights import (
-    INSIGHTS_VERSION, chart_evidence, chart_signal, inspection_signal,
+    INSIGHTS_VERSION, chart_evidence, chart_signal, chart_brief, inspection_signal,
     build_chart_insight, build_gate_insight_facts, validate_ai_response, validate_with_repair,
 )
 
@@ -20966,27 +20969,15 @@ def render_chart_ai(facts: dict) -> None:
     badge = f'<span class="quality-signal quality-signal-{signal["tone"]}">{html.escape(signal["label"])}</span>'
     labels = {"finding": t("发现", "Finding"), "interpretation": t("判断", "Interpretation"), "action": t("建议复核", "Next check")}
     paragraphs = "".join(f'<p class="quality-ai-{key}"><b>{labels[key]}</b> {html.escape(str(insight[key]))}</p>' for key in labels)
-    # Show the latest observation first; retain the complete, readable account
-    # behind a keyboard-accessible disclosure instead of a tall chart block.
-    preview = str(insight["finding"]).split("；", 1)[0].strip()
-    preview_limit = 72 if st.session_state.lang == "中文" else 160
-    if len(preview) > preview_limit:
-        preview = preview[:preview_limit].rstrip("，, ") + "…"
-    if is_gate:
-        preview_html = "".join(
-            f'<p class="quality-ai-preview quality-gate-finding" data-signal="{part["signal"]["tone"]}">'
-            f'<b>{html.escape(part["label"])}</b> {html.escape(str(part["finding"]).split("；", 1)[0].split(";", 1)[0])}</p>'
-            for part in baseline["parts"]
-        )
-    else:
-        preview_html = f'<p class="quality-ai-preview quality-ai-finding">{html.escape(preview)}</p>'
+    preview = chart_brief(facts, st.session_state.lang)
     provenance = t("基于当前筛选数据生成；点击页面的“生成 AI 报告”可补充 AI 判断和建议。", "Generated from the current filtered data. Generate the page's AI report to add AI interpretation and recommendations.") if not saved else t("发现来自源数据，判断和建议由 AI 补充。", "Observations come from source data; AI adds interpretation and recommendations.")
     st.markdown(
-        f'<div class="quality-inline-ai{" quality-gate-ai" if is_gate else ""}" data-signal="{signal["tone"]}">'
-        f'<div class="quality-ai-heading"><div class="quality-inline-ai-label">{label}</div>{badge}</div>'
-        f'{preview_html}'
-        f'<details class="quality-ai-details"><summary>{t("展开完整解读", "Read full insight")}</summary>'
-        f'{paragraphs}<p class="quality-ai-provenance">{html.escape(provenance)}</p></details></div>',
+        f'<details class="quality-inline-ai quality-insight-compact{" quality-gate-ai" if is_gate else ""}" data-signal="{signal["tone"]}">'
+        f'<summary><span class="quality-ai-summary-text">{html.escape(preview)}</span> '
+        f'<span class="quality-ai-toggle quality-ai-closed">{t("展开", "Details")}</span>'
+        f'<span class="quality-ai-toggle quality-ai-open">{t("收起", "Close")}</span></summary>'
+        f'<div class="quality-ai-expanded"><div class="quality-ai-heading"><div class="quality-inline-ai-label">{label}</div>{badge}</div>'
+        f'{paragraphs}<p class="quality-ai-provenance">{html.escape(provenance)}</p></div></details>',
         unsafe_allow_html=True,
     )
 
@@ -21027,7 +21018,8 @@ def render_unified_plotly(fig, *args, **kwargs):
         traces.append({k: (v[:12] if item["type"] == "bar" else v[-24:]) if isinstance(v, list) else v for k, v in item.items()})
     facts = {"id": chart_id, "points": points, "traces": traces,
              "summary": st.session_state.pop("_pending_chart_summary", None),
-             "empty": points == 0 or evidence.get("kind") == "empty", "y_format": y_format, "evidence": evidence}
+             "empty": points == 0 or evidence.get("kind") == "empty", "y_format": y_format, "evidence": evidence,
+             "x_label": str(fig.layout.xaxis.title.text or ""), "x_format": str(fig.layout.xaxis.tickformat or "")}
     if insight_group is not None:
         insight_group.append(facts)
     else:

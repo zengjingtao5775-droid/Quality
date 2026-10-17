@@ -145,7 +145,7 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {padding:1
 .st-key-tu_cc_pareto_panel, .st-key-tu_iv_pareto_panel, .st-key-bme_cc_pareto_panel, .st-key-bme_iv_pareto_panel {background:#fff; border:1px solid #dce3f2; border-top:4px solid #2855c5; border-radius:12px;}
 [data-testid="stDataFrame"], [data-testid="stPlotlyChart"] {max-width:100%; min-width:0;}
 @media(min-width:1051px) {
- .st-key-tu_zx_quality_gates .quality-gate-ai, .st-key-fg_quality_gates .quality-gate-ai, .st-key-cpt_quality_gates .quality-gate-ai {min-height:220px;}
+ .st-key-tu_zx_quality_gates .quality-gate-ai, .st-key-fg_quality_gates .quality-gate-ai, .st-key-cpt_quality_gates .quality-gate-ai {min-height:0;}
 }
 @media(max-width:1050px) {
  .st-key-tu_zx_quality_gates > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"], .st-key-fg_quality_gates > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"], .st-key-cpt_quality_gates > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {flex-wrap:wrap;}
@@ -191,3 +191,14 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {padding:1
  .st-key-quality_header [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {min-width:0;flex:1 1 calc((100% - 12px) / 2);}
  .st-key-quality_header [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {flex-basis:100%;}
 }
+
+/* One measured sentence by default; detail remains in a native disclosure. */
+.quality-insight-compact {padding:10px 12px;margin:6px 0 10px;min-height:0!important;}
+.quality-insight-compact > summary {cursor:pointer;font-size:15px;line-height:1.55;color:#344054;}
+.quality-ai-summary-text {font-weight:600;}
+.quality-ai-toggle {font-size:12px;font-weight:600;color:#244aaa;white-space:nowrap;margin-left:5px;}
+.quality-ai-open {display:none;}
+.quality-insight-compact[open] > summary .quality-ai-closed {display:none;}
+.quality-insight-compact[open] > summary .quality-ai-open {display:inline;}
+.quality-insight-compact > summary:focus-visible {outline:2px solid #2855c5;outline-offset:4px;border-radius:3px;}
+.quality-ai-expanded {border-top:1px solid #dce3f2;margin-top:10px;padding-top:10px;}
