@@ -69,7 +69,7 @@ from quality_chart_ui import (
     style_quality_trend,
 )
 import quality_insights as _quality_insights
-if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-17-v14-one-sentence":
+if getattr(_quality_insights, "INSIGHTS_VERSION", "") != "2026-10-17-v15-concrete-briefs":
     importlib.reload(_quality_insights)
 from quality_insights import (
     INSIGHTS_VERSION, chart_evidence, chart_signal, chart_brief, inspection_signal,
@@ -15651,6 +15651,10 @@ def render_cmw_product_cluster_analysis(events: pd.DataFrame, *, cluster_weights
     fig.update_yaxes(range=[-4, 112], dtick=20)
     fig.update_layout(height=440, margin=dict(l=20, r=20, t=30, b=30), legend=dict(orientation="h", y=1.12, x=0))
     apply_bme_chart_style(fig)
+    leading = plot_view.loc[plot_view.risk_score.idxmax()]
+    st.session_state["_pending_chart_summary"] = t(
+        f"{leading['quality_gate']}「{leading['product_label']}」相对风险分最高，为 {leading['risk_score']:.1f} 分。",
+        f"{leading['quality_gate']} {leading['product_label']} has the highest relative risk score: {leading['risk_score']:.1f} points.")
     render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False})
 
     priority_view = clusters[clusters["defect_qty"].gt(0)].head(12).copy()
@@ -16347,6 +16351,10 @@ def render_unified_spc(events: pd.DataFrame, scope: DashboardScope, community: s
                         f'<div class="bme-risk-rail-subtitle">{html.escape(t("高风险车型", "Models requiring attention"))}</div>',
                         unsafe_allow_html=True,
                     )
+                    leading_model = model_priority.iloc[0]
+                    st.session_state["_pending_chart_summary"] = t(
+                        f"车型 {leading_model['model_display']} 在图示范围内有 {int(leading_model['risk_components'])} 个风险扭力料件。",
+                        f"Model {leading_model['model_display']} has {int(leading_model['risk_components'])} torque components with risk in the plotted selection.")
                     render_unified_plotly(
                         model_rail_fig,
                         use_container_width=True,
@@ -16357,6 +16365,11 @@ def render_unified_spc(events: pd.DataFrame, scope: DashboardScope, community: s
                         f'<div class="bme-risk-rail-subtitle">{html.escape(t("高风险扭力料件", "Torque components requiring attention"))}</div>',
                         unsafe_allow_html=True,
                     )
+                    leading_component = component_priority.iloc[0]
+                    component_name = torque_component_display_name(leading_component['component'], "zh" if st.session_state.lang == "中文" else "en")
+                    st.session_state["_pending_chart_summary"] = t(
+                        f"料件「{component_name}」在 {int(leading_component['affected_models'])} 个车型出现规格超限或 SPC 异常。",
+                        f"Component {component_name} has specification breaches or SPC signals in {int(leading_component['affected_models'])} models.")
                     render_unified_plotly(
                         component_rail_fig,
                         use_container_width=True,
@@ -16376,6 +16389,9 @@ def render_unified_spc(events: pd.DataFrame, scope: DashboardScope, community: s
                         </div>''',
                         unsafe_allow_html=True,
                     )
+                    st.session_state["_pending_chart_summary"] = t(
+                        f"矩阵显示 {len(model_order)} 个车型、{len(component_order)} 个扭力料件，共 {len(matrix_view)} 个风险过程。",
+                        f"The matrix shows {len(model_order)} models, {len(component_order)} torque components and {len(matrix_view)} processes with risk.")
                     render_unified_plotly(
                         overview_fig,
                         use_container_width=True,

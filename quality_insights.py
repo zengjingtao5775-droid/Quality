@@ -9,7 +9,7 @@ import json
 
 import pandas as pd
 
-INSIGHTS_VERSION = "2026-10-17-v14-one-sentence"
+INSIGHTS_VERSION = "2026-10-17-v15-concrete-briefs"
 
 
 def chart_brief(facts, language="中文"):
@@ -26,6 +26,10 @@ def chart_brief(facts, language="中文"):
         if e.get("rate_unavailable"):
             return "检验分母缺失，疵点率不可计算。" if zh else "The inspection denominator is missing; the defect rate is unavailable."
         return "当前筛选没有可用记录。" if zh else "No records are available in this selection."
+    # Complex SPC matrices and cluster views supply their own calculated
+    # observation, preserving product identities rather than group labels.
+    if kind in ("cluster", "spc") and facts.get("summary"):
+        return str(facts["summary"]).split("。", 1)[0].rstrip(".") + ("。" if zh else ".")
     if kind == "pareto" and e.get("ranked"):
         name, value = e["ranked"][0]
         share = numeric(e.get("top_share"))
