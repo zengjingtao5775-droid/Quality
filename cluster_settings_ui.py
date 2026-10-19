@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import streamlit as st
 
-from cluster_weights import DEFAULTS, apply_weights, current_weights, migrate_cluster_defaults
+from cluster_weights import DEFAULTS, apply_weights, current_weights, migrate_cluster_defaults, tu_cluster_profile
+from tu_risk_reference import render_tu_scoring_reference
 
 
-CLUSTER_SETTINGS_UI_VERSION = "2026-10-17-v4-new-defaults"
+CLUSTER_SETTINGS_UI_VERSION = "2026-10-19-v5-pdf-policy-fields"
 
 
 def render_quality_navigation(t):
@@ -45,12 +46,13 @@ def render_cluster_settings(t):
             revision_key = f"_cluster_form_revision_{community}"
             revision = st.session_state.get(revision_key, 0)
             def control(col, key, label):
-                return col.number_input(label, min_value=0., max_value=100., value=current[key], step=5., key=f"cluster_{community}_{revision}_{key}")
+                return col.number_input(label, min_value=0., max_value=100., value=current[key], step=1., key=f"cluster_{community}_{revision}_{key}")
             with st.form(f"cluster_weights_{community}_{revision}", border=True):
                 values = {}
                 if community == "TU":
                     st.subheader(t("TU 聚类风险分", "TU cluster risk score"))
                     st.caption(t("Model 粒度 · Hugss · 有检验记录产品 · 全部 Strategy 季节，跟随主看板全局筛选。", "Model grain · Hugss · inspected products · all Strategy seasons, within the global dashboard selection."))
+                    st.caption(t("与 2026-10-19 PDF 一致：Return Quantity 只用退货件数，平均量 μ 对应 50 分，1.8μ 对应 100 分。默认权重 40/10/50、50/50、80/20。", "Aligned with the 2026-10-19 PDF: Return Quantity uses returned units; mean μ = 50 points and 1.8μ = 100 points. Default weights: 40/10/50, 50/50, 80/20."))
                     a,b,c = st.columns(3)
                     for col, key, label in ((a,"client_weight",t("客户端 %", "Client %")), (b,"product_weight",t("产品 · Strategy %", "Product · Strategy %")), (c,"supplier_weight",t("供应商 %", "Supplier %"))):
                         values[key] = control(col, key, label)
@@ -90,3 +92,5 @@ def render_cluster_settings(t):
                     st.error(t("每组权重须合计 100%，请调整后保存。已应用的配置保持不变。", "Each group must total 100%. Adjust and save again; the applied policy is unchanged."))
             if st.session_state.pop(f"_cluster_saved_{community}", False):
                 st.success(t(f"{community} 聚类权重已应用。", f"{community} cluster weights applied."))
+            if community == "TU":
+                render_tu_scoring_reference(t,tu_cluster_profile(st.session_state))

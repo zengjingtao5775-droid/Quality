@@ -14,8 +14,9 @@ import streamlit as st
 from tu_risk_poc import default_profile, build_tu_risk, load_strategy_workbook, number
 from quality_chart_ui import apply_quality_chart_style
 from cluster_weights import tu_cluster_profile
+from tu_risk_reference import render_tu_scoring_reference
 
-RISK_POC_UI_VERSION = "2026-10-17-v6-new-defaults"
+RISK_POC_UI_VERSION = "2026-10-19-v7-pdf-policy-fields"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876", "single": "#2854c5"}
 
 CSS = """
@@ -264,4 +265,5 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
         else:
             st.info(t("当前范围没有同时可计算两轴的记录，保留空图。", "No records with both scores; the plot remains empty."))
         st.caption(t(f"聚类权重：客户端 {profile.client_weight:g}% · Strategy {profile.product_weight:g}% · 供应商 {profile.supplier_weight:g}% · 在左侧设置页调整", f"Cluster weights: client {profile.client_weight:g}% · Strategy {profile.product_weight:g}% · supplier {profile.supplier_weight:g}% · edit in the sidebar settings page"))
+        render_tu_scoring_reference(t,profile)
     return cc_rows

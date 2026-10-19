@@ -17,7 +17,7 @@ import pandas as pd
 
 from dashboard_scope import DashboardScope, filter_records, identifiers, customer_totals
 
-RISK_POC_VERSION = "2026-10-17-v4-40-10-50-return-qty"
+RISK_POC_VERSION = "2026-10-19-v5-return-quantity-1.8-mean"
 DEPARTMENTS = ("Hugss", "Knit", "Woven")
 GRAINS = ("Model", "CC", "Supplier")
 
@@ -37,7 +37,7 @@ class RiskProfile:
     pqc_prior_samples: float = 200
     aql_warning_pct: float = 10
     aql_critical_pct: float = 20
-    return_critical_multiple: float = 2
+    return_critical_multiple: float = 1.8
     iv_warning: float = 5
     iv_critical: float = 10
 
