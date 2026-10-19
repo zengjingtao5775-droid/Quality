@@ -30,7 +30,7 @@ def render_tu_scoring_reference(t, profile=None):
         sections = (
             (left,"PQC",r"\mathrm{PQC}(r)","r",f"{profile.pqc_warning_pct:g}\\%",f"{profile.pqc_critical_pct:g}\\%"),
             (right,"AQL",r"\mathrm{AQL}(q)","q",f"{profile.aql_warning_pct:g}\\%",f"{profile.aql_critical_pct:g}\\%"),
-            (left,"Return Quantity",r"T(R)","R",r"\mu",f"{profile.return_critical_multiple:g}\\mu"),
+            (left,"Return Quantity",r"T(R)","R",f"{profile.return_warning_multiple:g}\\mu",f"{profile.return_critical_multiple:g}\\mu"),
             (right,"IV",r"\mathrm{IV}(I)","I",f"{profile.iv_warning:g}",f"{profile.iv_critical:g}"),
         )
         for column,name,label,variable,warning,critical in sections:
@@ -42,10 +42,11 @@ def render_tu_scoring_reference(t, profile=None):
                 elif name == "AQL":
                     st.caption(t("按 record_id 去重；未通过的有效首检记录数 / 全部有效首检记录数。重验后 PASS 仍计首检未通过；不按抽检件数作分母。", "Deduplicate record_id. Divide failed first-result records by valid first-result records. A re-check PASS remains a first-result failure; sampled units are not the denominator."))
                 elif name == "Return Quantity":
-                    st.caption(t(f"只看实际退货件数。50 分 = 同范围同粒度有效对象的平均退货量 μ；100 分 = {profile.return_critical_multiple:g}μ。明确零值参与均值；缺失或冲突值不补零。单选产品不重算参考均值。",f"Use actual returned units. 50 points = mean μ of valid same-scope, same-grain objects; 100 points = {profile.return_critical_multiple:g}μ. Include explicit zero; preserve missing/conflicting inputs. Selecting a product does not recalibrate the peer mean."))
+                    st.caption(t(f"只看实际退货件数。μ 为同范围同粒度有效对象的平均退货量；当前 50 分 = {profile.return_warning_multiple:g}μ，100 分 = {profile.return_critical_multiple:g}μ。明确零值参与均值；缺失或冲突值不补零。单选产品不重算参考均值。",f"Use actual returned units. μ is the mean of valid same-scope, same-grain objects; current 50-point anchor = {profile.return_warning_multiple:g}μ and 100-point anchor = {profile.return_critical_multiple:g}μ. Include explicit zero; preserve missing/conflicting inputs. Selecting a product does not recalibrate the peer mean."))
                 else:
                     st.caption(t("Before or after Sales 筛选 Before Sales；按 FEEDBACK No. + MODEL CODE 去重后汇总 PRODUCT QUANTITY。", "Filter Before or after Sales to Before Sales; deduplicate FEEDBACK No. + MODEL CODE, then sum PRODUCT QUANTITY."))
                 st.latex(_piecewise(label,variable,warning,critical))
         st.markdown(t("**当前权重**", "**Current weights**"))
+        st.caption(t("以上四项的 50 分、100 分阈值均可在设置页调整；公式使用已保存的阈值。", "All four 50- and 100-point anchors are editable in settings; these formulas use the saved thresholds."))
         st.caption(t(f"客户端 / Strategy / 供应商：{profile.client_weight:g}% / {profile.product_weight:g}% / {profile.supplier_weight:g}%；Return Quantity / IV：{profile.return_weight:g}% / {profile.iv_weight:g}%；PQC / AQL：{profile.pqc_weight:g}% / {profile.aql_weight:g}%。三组均可在权重设置页调整，每组合计 100%。", f"Client / Strategy / supplier: {profile.client_weight:g}% / {profile.product_weight:g}% / {profile.supplier_weight:g}%; Return Quantity / IV: {profile.return_weight:g}% / {profile.iv_weight:g}%; PQC / AQL: {profile.pqc_weight:g}% / {profile.aql_weight:g}%. All three groups are editable in Cluster Weights and must each total 100%."))
         st.caption(t("Strategy 名单字段：Supplier + Strategic Product Model code。按供应商与 Model 精确匹配，命中为 100 分，未命中为 0 分；系统未命中不代表正式业务身份已核实。", "Strategy list fields: Supplier + Strategic Product Model code. Match supplier and Model exactly: listed = 100, unlisted = 0. An unmatched system record does not verify the formal business identity."))

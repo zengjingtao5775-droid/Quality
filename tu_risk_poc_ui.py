@@ -16,7 +16,7 @@ from quality_chart_ui import apply_quality_chart_style
 from cluster_weights import tu_cluster_profile
 from tu_risk_reference import render_tu_scoring_reference
 
-RISK_POC_UI_VERSION = "2026-10-19-v7-pdf-policy-fields"
+RISK_POC_UI_VERSION = "2026-10-19-v8-anchors-quadrants-50-50"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876", "single": "#2854c5"}
 
 CSS = """
@@ -149,7 +149,7 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
     fig.update_yaxes(title_text=t("客户端风险分（Return Qty + IV Qty）", "Client score (Return Qty + IV Qty)"),
         range=[-5, 108], tickvals=[0, 20, 40, 60, 80, 100], title_font_size=15, title_standoff=10)
     fig.add_vline(x=50, line_dash="dash", line_color="#8b96b8", opacity=.45)
-    fig.add_hline(y=55, line_dash="dash", line_color="#8b96b8", opacity=.45)
+    fig.add_hline(y=50, line_dash="dash", line_color="#8b96b8", opacity=.45)
     fig.add_annotation(xref="paper", yref="paper", x=.98, y=.98,
         text=t("右上：检验表现与客户反馈双高", "Upper right: elevated inspections and client signals"),
         showarrow=False, font=dict(size=14, color="#dc2626"), bgcolor="rgba(255,255,255,0.85)")
@@ -266,4 +266,5 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
             st.info(t("当前范围没有同时可计算两轴的记录，保留空图。", "No records with both scores; the plot remains empty."))
         st.caption(t(f"聚类权重：客户端 {profile.client_weight:g}% · Strategy {profile.product_weight:g}% · 供应商 {profile.supplier_weight:g}% · 在左侧设置页调整", f"Cluster weights: client {profile.client_weight:g}% · Strategy {profile.product_weight:g}% · supplier {profile.supplier_weight:g}% · edit in the sidebar settings page"))
         render_tu_scoring_reference(t,profile)
+        st.caption(t("四象限分界：供应商风险分 50 / 客户端风险分 50。高中低颜色按相对聚类结果划分。", "Quadrant boundaries: supplier score 50 / client score 50. High, medium and low colors follow the relative cluster groups."))
     return cc_rows

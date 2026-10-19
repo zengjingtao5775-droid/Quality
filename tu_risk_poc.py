@@ -17,7 +17,7 @@ import pandas as pd
 
 from dashboard_scope import DashboardScope, filter_records, identifiers, customer_totals
 
-RISK_POC_VERSION = "2026-10-19-v5-return-quantity-1.8-mean"
+RISK_POC_VERSION = "2026-10-19-v6-configurable-anchors"
 DEPARTMENTS = ("Hugss", "Knit", "Woven")
 GRAINS = ("Model", "CC", "Supplier")
 
@@ -37,6 +37,7 @@ class RiskProfile:
     pqc_prior_samples: float = 200
     aql_warning_pct: float = 10
     aql_critical_pct: float = 20
+    return_warning_multiple: float = 1
     return_critical_multiple: float = 1.8
     iv_warning: float = 5
     iv_critical: float = 10
@@ -48,11 +49,10 @@ class RiskProfile:
                 raise ValueError("Each weight group must contain non-negative values summing to 100%")
         for warning, critical in ((self.pqc_warning_pct, self.pqc_critical_pct),
                                   (self.aql_warning_pct, self.aql_critical_pct),
+                                  (self.return_warning_multiple, self.return_critical_multiple),
                                   (self.iv_warning, self.iv_critical)):
             if not (math.isfinite(warning) and math.isfinite(critical) and 0 < warning < critical):
                 raise ValueError("Every warning threshold must be positive and below its critical threshold")
-        if not math.isfinite(self.return_critical_multiple) or self.return_critical_multiple <= 1:
-            raise ValueError("Return Qty critical multiple must exceed one")
         if not (math.isfinite(self.pqc_prior_samples) and math.isfinite(self.pqc_prior_defects)
                 and self.pqc_prior_samples >= 0 and self.pqc_prior_defects >= 0):
             raise ValueError("PQC smoothing inputs must be finite and non-negative")
@@ -160,7 +160,7 @@ def return_quantity_score(value, reference, profile):
         return None
     if mean == 0:
         return 0. if value == 0 else None
-    return threshold_score(value, mean, mean*profile.return_critical_multiple)
+    return threshold_score(value, mean*profile.return_warning_multiple, mean*profile.return_critical_multiple)
 
 
 def identifier(value, digits):
@@ -302,6 +302,7 @@ def score_entity(pqc, aql, customer, cases, profile, strategy, *, iv_available=T
     facts.update({"rpm": rpm, "returns": returned, "sales": totals.get("sold_now"), **iv_facts,
                   "return_qty_score": return_score, "return_qty_mean": reference.get("mean"),
                   "return_reference_count": reference.get("count", 0), "return_reference_total": reference.get("total"),
+                  "return_warning_qty": reference.get("mean")*profile.return_warning_multiple if number(reference.get("mean")) is not None else None,
                   "return_critical_qty": reference.get("mean")*profile.return_critical_multiple if number(reference.get("mean")) is not None else None,
                   "iv_score": iv_score, "client_score": client["score"],
                   "product_score": product_score, "supplier_score": supplier["score"],

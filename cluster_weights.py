@@ -12,6 +12,10 @@ from tu_risk_poc import default_profile
 
 CLUSTER_WEIGHTS_VERSION = "2026-10-17-v2-40-10-50"
 STATE_KEY = "_quality_cluster_weights"
+THRESHOLDS_STATE_KEY = "_quality_cluster_tu_thresholds"
+THRESHOLD_KEYS = ("pqc_warning_pct", "pqc_critical_pct", "aql_warning_pct", "aql_critical_pct",
+                  "return_warning_multiple", "return_critical_multiple", "iv_warning", "iv_critical")
+THRESHOLD_DEFAULTS = {key: float(getattr(default_profile("Model"), key)) for key in THRESHOLD_KEYS}
 DEFAULTS = {
     "TU": {"client_weight": 40., "product_weight": 10., "supplier_weight": 50.,
            "return_weight": 50., "iv_weight": 50., "pqc_weight": 80., "aql_weight": 20.},
@@ -63,8 +67,33 @@ def apply_weights(state, community, values):
     state[STATE_KEY] = policies
 
 
+def validate_thresholds(values):
+    if set(values) != set(THRESHOLD_DEFAULTS):
+        raise ValueError("Unknown TU threshold policy")
+    values = {key: float(value) for key, value in values.items()}
+    replace(default_profile("Model"), **values).validate()
+    return values
+
+
+def current_thresholds(state):
+    try:
+        return validate_thresholds(state.get(THRESHOLDS_STATE_KEY, THRESHOLD_DEFAULTS))
+    except (ValueError, TypeError, OverflowError):
+        return deepcopy(THRESHOLD_DEFAULTS)
+
+
+def apply_tu_policy(state, weights, thresholds):
+    # Validate both parts before saving either; invalid forms cannot partly apply.
+    weights = validate_weights("TU", weights)
+    thresholds = validate_thresholds(thresholds)
+    policies = deepcopy(state.get(STATE_KEY, {}))
+    policies["TU"] = weights
+    state[STATE_KEY] = policies
+    state[THRESHOLDS_STATE_KEY] = thresholds
+
+
 def tu_cluster_profile(state):
-    return replace(default_profile("Model"), **current_weights(state, "TU")).validate()
+    return replace(default_profile("Model"), **current_weights(state, "TU"), **current_thresholds(state)).validate()
 
 
 def _weighted_groups(points, scores, weights, *, single="Monitor"):

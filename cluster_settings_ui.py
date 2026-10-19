@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import streamlit as st
 
-from cluster_weights import DEFAULTS, apply_weights, current_weights, migrate_cluster_defaults, tu_cluster_profile
+from cluster_weights import (DEFAULTS, THRESHOLD_DEFAULTS, apply_weights, apply_tu_policy,
+                             current_weights, current_thresholds, migrate_cluster_defaults, tu_cluster_profile)
 from tu_risk_reference import render_tu_scoring_reference
 
 
-CLUSTER_SETTINGS_UI_VERSION = "2026-10-19-v5-pdf-policy-fields"
+CLUSTER_SETTINGS_UI_VERSION = "2026-10-19-v6-configurable-anchors"
 
 
 def render_quality_navigation(t):
@@ -43,6 +44,7 @@ def render_cluster_settings(t):
     for community, tab in (("TU", tu), ("BME", bme)):
         with tab, st.container(key=f"quality_cluster_settings_{community.lower()}"):
             current = current_weights(st.session_state, community)
+            thresholds = current_thresholds(st.session_state) if community == "TU" else {}
             revision_key = f"_cluster_form_revision_{community}"
             revision = st.session_state.get(revision_key, 0)
             def control(col, key, label):
@@ -52,7 +54,7 @@ def render_cluster_settings(t):
                 if community == "TU":
                     st.subheader(t("TU 聚类风险分", "TU cluster risk score"))
                     st.caption(t("Model 粒度 · Hugss · 有检验记录产品 · 全部 Strategy 季节，跟随主看板全局筛选。", "Model grain · Hugss · inspected products · all Strategy seasons, within the global dashboard selection."))
-                    st.caption(t("与 2026-10-19 PDF 一致：Return Quantity 只用退货件数，平均量 μ 对应 50 分，1.8μ 对应 100 分。默认权重 40/10/50、50/50、80/20。", "Aligned with the 2026-10-19 PDF: Return Quantity uses returned units; mean μ = 50 points and 1.8μ = 100 points. Default weights: 40/10/50, 50/50, 80/20."))
+                    st.caption(t("默认值与 2026-10-19 PDF 一致。Return Quantity 只用退货件数，默认 1μ 对应 50 分、1.8μ 对应 100 分。权重与各项评分阈值均可调整。", "Defaults match the 2026-10-19 PDF. Return Quantity uses returned units, with default anchors of 1μ = 50 points and 1.8μ = 100 points. Weights and all component scoring thresholds are editable."))
                     a,b,c = st.columns(3)
                     for col, key, label in ((a,"client_weight",t("客户端 %", "Client %")), (b,"product_weight",t("产品 · Strategy %", "Product · Strategy %")), (c,"supplier_weight",t("供应商 %", "Supplier %"))):
                         values[key] = control(col, key, label)
@@ -64,6 +66,21 @@ def render_cluster_settings(t):
                     a,b = st.columns(2)
                     values["pqc_weight"] = control(a, "pqc_weight", "PQC %")
                     values["aql_weight"] = control(b, "aql_weight", "AQL %")
+                    st.markdown(t("**各项评分阈值（50 分 / 100 分）**", "**Scoring thresholds (50 / 100 points)**"))
+                    st.caption(t("每项须满足 0 < 50 分阈值 < 100 分阈值。保留三段公式：0–50 分线性、50–100 分线性、达到上限后封顶 100 分。", "Each pair must satisfy 0 < the 50-point threshold < the 100-point threshold. The three-part formula remains linear from 0–50 and 50–100, capped at 100."))
+                    threshold_values = {}
+                    for name, warning, critical, unit, step in (
+                        ("PQC", "pqc_warning_pct", "pqc_critical_pct", "%", .1),
+                        ("AQL", "aql_warning_pct", "aql_critical_pct", "%", .1),
+                        ("Return Qty", "return_warning_multiple", "return_critical_multiple", t("μ 倍数", "× μ"), .1),
+                        ("IV Qty", "iv_warning", "iv_critical", t("件", "units"), 1.),
+                    ):
+                        a,b = st.columns(2)
+                        for col,key,points in ((a,warning,50),(b,critical,100)):
+                            label = t(f"{name} · {points} 分阈值（{unit}）", f"{name} · {points}-point threshold ({unit})")
+                            threshold_values[key] = col.number_input(label, min_value=0., value=thresholds[key], step=step,
+                                key=f"cluster_{community}_{revision}_{key}")
+                    st.caption(t("Return Qty 的 μ 按同范围、同粒度的有效对象计算；单选产品不重算 μ。Strategy 保留命中 100 分、未命中 0 分的规则。", "Return Qty μ uses valid objects at the same scope and grain; selecting a product does not recalibrate μ. Strategy remains 100 when matched and 0 when unmatched."))
                 else:
                     st.subheader(t("FSD 聚类", "FSD clusters"))
                     st.caption(t("FQC 不良率与成品 Model RPM 的相对权重。", "Relative weights for FQC defect rate and finished-model RPM."))
@@ -80,17 +97,23 @@ def render_cluster_settings(t):
                 save = a.form_submit_button(t("保存并应用", "Save and Apply"), type="primary", use_container_width=True)
                 reset = b.form_submit_button(t("恢复默认", "Restore Defaults"), use_container_width=True)
             if reset:
-                apply_weights(st.session_state, community, DEFAULTS[community])
+                if community == "TU":
+                    apply_tu_policy(st.session_state, DEFAULTS[community], THRESHOLD_DEFAULTS)
+                else:
+                    apply_weights(st.session_state, community, DEFAULTS[community])
                 st.session_state[revision_key] = revision+1
                 st.session_state[f"_cluster_saved_{community}"] = True
                 st.rerun()
             if save:
                 try:
-                    apply_weights(st.session_state, community, values)
+                    if community == "TU":
+                        apply_tu_policy(st.session_state, values, threshold_values)
+                    else:
+                        apply_weights(st.session_state, community, values)
                     st.session_state[f"_cluster_saved_{community}"] = True
-                except (ValueError, TypeError):
-                    st.error(t("每组权重须合计 100%，请调整后保存。已应用的配置保持不变。", "Each group must total 100%. Adjust and save again; the applied policy is unchanged."))
+                except (ValueError, TypeError, OverflowError):
+                    st.error(t("每组权重须合计 100%；每项阈值须满足 0 < 50 分阈值 < 100 分阈值。请调整后保存，已应用的配置保持不变。", "Each weight group must total 100%; each threshold pair must satisfy 0 < the 50-point threshold < the 100-point threshold. Adjust and save again; the applied policy is unchanged."))
             if st.session_state.pop(f"_cluster_saved_{community}", False):
-                st.success(t(f"{community} 聚类权重已应用。", f"{community} cluster weights applied."))
+                st.success(t(f"{community} 聚类设置已应用。", f"{community} cluster settings applied."))
             if community == "TU":
                 render_tu_scoring_reference(t,tu_cluster_profile(st.session_state))
