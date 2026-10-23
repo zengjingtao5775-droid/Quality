@@ -39,6 +39,7 @@ from dashboard_scope import (
     SUPPLIER_PRODUCT_TYPES,
 )
 from tu_quality import build_zx_quality_gates
+from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
 import quality_gate_metrics as _quality_gate_metrics
 if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-weekly-zero-exposure":
     importlib.reload(_quality_gate_metrics)
@@ -50,7 +51,7 @@ import cluster_weights as _cluster_weights
 if getattr(_cluster_weights, "CLUSTER_WEIGHTS_VERSION", "") != "2026-10-17-v2-40-10-50":
     importlib.reload(_cluster_weights)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-17-v6-new-defaults":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-21-v9-cc-gate-selection":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 from cluster_weights import current_weights, fsd_cluster_view, cmw_cluster_view
@@ -14350,7 +14351,7 @@ def load_fsd_rpm_cluster_inputs_cached(
     return load_fsd_rpm_cluster_inputs(ROOT)
 
 
-def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False) -> None:
+def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False, unavailable_reason: str = "") -> None:
     """Keep the three-column template visible without inventing zero data."""
     label = t("异常记录数（QTY）", "Exception records (QTY)") if is_tu and stage == "IQC" else t("问题数量（QTY）", "Issue quantity (QTY)") if stage == "IQC" else t("疵点率", "Defect-point rate")
     metric_items = [(label, "—")]
@@ -14360,6 +14361,9 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
     )
     metric_class = "bme-fg-metrics one" if len(metric_items) == 1 else "bme-fg-metrics"
     st.markdown(f'<div class="{metric_class}">{metric_html}</div>', unsafe_allow_html=True)
+    if unavailable_reason:
+        st.info(unavailable_reason)
+        return
     gate_charts = []
     for kind, title, height in [("trend", t("每周趋势", "Weekly trend") if is_tu else t("月度趋势", "Monthly trend"), 225),
                                 ("pareto", t("问题 Pareto", "Defect Pareto"), 245)]:
@@ -14385,6 +14389,8 @@ def render_quality_gate_analysis(
     start_date: dt.date,
     end_date: dt.date,
     analysis_kind: str = "FG",
+    focused_cc: str = "",
+    unavailable_stages: dict | None = None,
 ) -> None:
     is_cpt = analysis_kind.upper() == "CPT"
     is_tu = analysis_kind.upper() == "TU"
@@ -14420,6 +14426,13 @@ def render_quality_gate_analysis(
         ,
         unsafe_allow_html=True,
     )
+    if is_tu and focused_cc:
+        focus_label, clear = st.columns([.78, .22], vertical_alignment="center")
+        with focus_label:
+            st.markdown(t(f"**当前质量分析：CC {focused_cc}**", f"**Quality analysis: CC {focused_cc}**"))
+        with clear:
+            st.button(t("清除 CC 选择", "Clear CC selection"), key="tu_clear_quality_focus",
+                      on_click=clear_cluster_focus, args=(st.session_state,), use_container_width=True)
     chart_key_prefix = "tu_zx" if is_tu else "cpt" if is_cpt else "fg"
     with st.container(key=f"{chart_key_prefix}_quality_gates"):
         stage_columns = st.columns(3, gap="medium")
@@ -14454,7 +14467,9 @@ def render_quality_gate_analysis(
                     & pareto["date"].dt.date.between(start_date, end_date)
                 ].copy()
                 if stage_summary.empty:
-                    render_empty_quality_gate(stage, f"{chart_key_prefix}_{stage}", is_tu=is_tu)
+                    missing_link = (unavailable_stages or {}).get(stage)
+                    reason = t(f"{stage} 原始数据尚未建立 {missing_link} 关联，无法按所选产品统计。", f"{stage} source data has no {missing_link} link; selected-product results are unavailable.") if missing_link else ""
+                    render_empty_quality_gate(stage, f"{chart_key_prefix}_{stage}", is_tu=is_tu, unavailable_reason=reason)
                     continue
 
                 measured, periods = gate_metrics(stage_summary, stage, frequency="W-SUN" if is_tu else "M")
@@ -21265,11 +21280,13 @@ def render_unified_filters(tu_finished, tu_voice, tu_incoming, jdy, bme_events, 
         st.session_state["_unified_url_scope"] = get_active_scope_key()
 
     def reset_filters():
+        clear_cluster_focus(st.session_state)
         for key in ["quality_suppliers", "quality_ccs", "quality_models", "quality_product_types"]:
             st.session_state[key] = []
         st.session_state["quality_period"] = "R12M"
 
     def switch_community():
+        clear_cluster_focus(st.session_state)
         choices = st.session_state.get("quality_communities", [])
         target = "BME_CMW" if choices == ["BME"] else "ZX"
         st.query_params["scope"] = target
@@ -21427,13 +21444,9 @@ def render_unified_defect_pareto(cases: pd.DataFrame, scope: DashboardScope, com
     st.markdown(quality_pareto_rows_html(display, name_col="issue_type", qty_col=qty_col), unsafe_allow_html=True)
 
 
-def render_unified_pareto_pair(risks: pd.DataFrame, cases: pd.DataFrame, scope: DashboardScope, community: str, defect_rows: pd.DataFrame) -> pd.DataFrame:
-    left, right = st.columns(2, gap="large")
-    with left, st.container(border=True, key=f"{community.lower()}_cc_pareto_panel"):
-        result = render_unified_risk_pareto(risks, community)
-    with right, st.container(border=True, key=f"{community.lower()}_iv_pareto_panel"):
-        render_unified_defect_pareto(cases, scope, community, defect_rows)
-    return result
+def render_unified_risk_panel(risks: pd.DataFrame, community: str) -> pd.DataFrame:
+    with st.container(border=True, key=f"{community.lower()}_cc_pareto_panel"):
+        return render_unified_risk_pareto(risks, community)
 
 
 def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_cases):
@@ -21497,9 +21510,12 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
         risks = cc_scores[["cc", "risk_lower", "risk_upper", "complete"]].assign(risk_score=cc_scores.risk_lower)
     risks.attrs["poc"] = True
     risks.attrs["poc_pending"] = bool(not cc_scores.empty and not cc_scores.complete.all())
-    summary, pareto = build_zx_quality_gates(incoming, finished, jdy)
-    risks = render_unified_pareto_pair(risks, iv_cases, scope, "TU", pareto)
-    render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU")
+    risks = render_unified_risk_panel(risks, "TU")
+    quality_scope, gate_sources, unavailable = select_quality_gate_sources(
+        incoming, finished, jdy, scope, st.session_state.get(FOCUS_KEY, ""))
+    summary, pareto = build_zx_quality_gates(gate_sources["IQC"], gate_sources["PQC"], gate_sources["FQC"])
+    render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU",
+        focused_cc=st.session_state.get(FOCUS_KEY, ""), unavailable_stages=unavailable)
     source_pack = build_tu_community_ai_fact_pack(finished, risk_voice, incoming, cluster, pd.DataFrame(), settings, jdy_fqc_override=jdy, use_cluster_ranking=True)
     cc_facts = cc_scores.set_index("cc").to_dict("index") if not cc_scores.empty else {}
     for fact in source_pack["product_risks"]:
@@ -21523,7 +21539,8 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
     render_unified_ai_report("TU", {"community": "TU", "scope": scope.facts(), "customer": metrics, "iv": current_iv, "report_pack": pack,
         "inspected_qty": float(finished.qty_inspected.sum()), "defect_points": float(finished.defect_qty.sum()),
         "customer_period": "N0 snapshot: source contains no calendar dates", "iqc_scope": "Exception records only; no overall pass-rate denominator",
-        "risk_poc": st.session_state.get("_tu_risk_poc_cc_audit", {})}, cards, risks)
+        "risk_poc": st.session_state.get("_tu_risk_poc_cc_audit", {}),
+        "quality_analysis_scope": quality_scope.facts()}, cards, risks)
 
 
 def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
@@ -21615,8 +21632,7 @@ def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
         summary = filter_records(summary, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
         pareto = filter_records(pareto, scope, supplier=supplier, cc_col="code", model_col="model_code", item_models=links if supplier == "FSD" else None)
         gate_inputs.append((supplier, kind, summary, pareto))
-    combined_defects = pd.concat([item[3] for item in gate_inputs], ignore_index=True) if gate_inputs else pd.DataFrame()
-    render_unified_pareto_pair(risk_table, pd.DataFrame(), scope, "BME", combined_defects)
+    render_unified_risk_panel(risk_table, "BME")
     if scope.includes_supplier("CMW"):
         st.caption(t("CMW PQC 源只有车型名称，尚无可核对的 code；保留在聚类中，暂不进入 CC 排序。IQC/FQC 的 code 保留环节标记。", "CMW PQC has Model names without auditable item codes: these remain in the cluster and are excluded from CC ranking. IQC/FQC codes retain gate labels."))
     for supplier, kind, summary, pareto in gate_inputs:

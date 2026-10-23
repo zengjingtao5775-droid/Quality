@@ -15,8 +15,10 @@ from tu_risk_poc import default_profile, build_tu_risk, load_strategy_workbook, 
 from quality_chart_ui import apply_quality_chart_style
 from cluster_weights import tu_cluster_profile
 from tu_risk_reference import render_tu_scoring_reference
+from tu_cluster_selection import (REVISION_KEY, prepare_cluster_focus,
+                                 sync_cluster_focus)
 
-RISK_POC_UI_VERSION = "2026-10-19-v8-anchors-quadrants-50-50"
+RISK_POC_UI_VERSION = "2026-10-21-v9-cc-gate-selection"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876", "single": "#2854c5"}
 
 CSS = """
@@ -89,7 +91,7 @@ def risk_distribution_groups(rows):
     return view.drop(columns="_distribution_group")
 
 
-def build_risk_distribution_figure(grouped, grain, translate=None, selected_groups=None):
+def build_risk_distribution_figure(grouped, grain, translate=None, selected_groups=None, focused_cc=""):
     """Use exact scored coordinates; colors/labels never feed back into scoring."""
     t = translate or (lambda zh, en: zh)
     view = grouped if selected_groups is None else grouped.loc[grouped.risk_group.isin(selected_groups)]
@@ -138,12 +140,17 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
         fig.add_annotation(x=row.supplier_score,y=row.client_score,xref="x",yref="y",ax=dx,ay=dy,
             text=html.escape(label),showarrow=True,arrowhead=0,arrowwidth=.8,arrowcolor="#a7b1c2",
             standoff=10,font=dict(size=14,color="#344054"),bgcolor="rgba(255,255,255,0.88)",borderpad=2)
+    if focused_cc:
+        for trace in fig.data:
+            trace.selectedpoints = [i for i, point in enumerate(trace.customdata) if point[1] == focused_cc]
+            trace.selected = dict(marker=dict(opacity=1))
+            trace.unselected = dict(marker=dict(opacity=.3))
     apply_quality_chart_style(fig, height=500, showlegend=True)
     fig.update_layout(margin=dict(l=24, r=36, t=58, b=48),
         legend=dict(orientation="h", x=0, y=1.15, title_text=t("相对风险分组", "Relative risk groups"), font_size=14,
             itemclick=False, itemdoubleclick=False),
         hoverlabel=dict(bgcolor="#f8faff", bordercolor="#8795e8", font_size=15, align="left"),
-        transition=dict(duration=420, easing="cubic-in-out"))
+        transition=dict(duration=420, easing="cubic-in-out"), clickmode="event+select")
     fig.update_xaxes(title_text=t("供应商风险分（PQC + AQL）", "Supplier score (PQC + AQL)"),
         range=[-4, 104], tickvals=[0, 20, 40, 60, 80, 100], title_font_size=15, title_standoff=12)
     fig.update_yaxes(title_text=t("客户端风险分（Return Qty + IV Qty）", "Client score (Return Qty + IV Qty)"),
@@ -247,6 +254,7 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
     with st.container(key="tu_poc_distribution_panel"):
         st.subheader(t("高风险产品聚类分析", "High-Risk Product Cluster Analysis"))
         if rows.empty:
+            prepare_cluster_focus(st.session_state, scope, [])
             st.info(t("当前筛选暂无接入的检验产品。现有试点覆盖 Hugss · ZX。", "No connected inspection products in this selection. Current pilot: Hugss · ZX."))
             return cc_rows
         plotted = risk_distribution_groups(rows)
@@ -256,13 +264,19 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
                 "low": t("低风险组", "Low-risk group"), "single": t("当前分组", "Current group")}
             selected = st.multiselect(t("聚类筛选（可多选）", "Cluster filter (multi-select)"), options,
                 default=options, format_func=lambda value: group_names[value], key="tu_poc_groups_Hugss_Model")
+            visible_ccs = plotted.loc[plotted.risk_group.isin(selected), "cc"].tolist()
+            focused_cc = prepare_cluster_focus(st.session_state, scope, visible_ccs)
             if selected:
-                fig = build_risk_distribution_figure(plotted, "Model", t, selected)
-                st.plotly_chart(fig, use_container_width=True, key="tu_poc_distribution",
+                fig = build_risk_distribution_figure(plotted, "Model", t, selected, focused_cc=focused_cc)
+                chart_key = f"tu_poc_distribution_{st.session_state.get(REVISION_KEY, 0)}"
+                st.plotly_chart(fig, use_container_width=True, key=chart_key, theme=None,
+                    on_select=lambda: sync_cluster_focus(st.session_state, chart_key, visible_ccs), selection_mode="points",
                     config={"displayModeBar":True, "scrollZoom":False, "displaylogo":False})
+                st.caption(t("点击一个点，下方 IQC / PQC / FQC 按该点对应的 CC 联动。", "Click a point to filter IQC / PQC / FQC by its CC."))
             else:
                 st.info(t("请选择至少一个风险分组。", "Select at least one risk group."))
         else:
+            prepare_cluster_focus(st.session_state, scope, [])
             st.info(t("当前范围没有同时可计算两轴的记录，保留空图。", "No records with both scores; the plot remains empty."))
         st.caption(t(f"聚类权重：客户端 {profile.client_weight:g}% · Strategy {profile.product_weight:g}% · 供应商 {profile.supplier_weight:g}% · 在左侧设置页调整", f"Cluster weights: client {profile.client_weight:g}% · Strategy {profile.product_weight:g}% · supplier {profile.supplier_weight:g}% · edit in the sidebar settings page"))
         render_tu_scoring_reference(t,profile)
