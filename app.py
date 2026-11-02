@@ -40,6 +40,7 @@ from dashboard_scope import (
 )
 from tu_quality import build_zx_quality_gates
 from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
+from quality_chatbot_ui import render_quality_chatbot
 import quality_gate_metrics as _quality_gate_metrics
 if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-weekly-zero-exposure":
     importlib.reload(_quality_gate_metrics)
@@ -14490,6 +14491,11 @@ def render_quality_gate_analysis(
                 metric_items = [(rate_label, rate_text(defect_rate))] if is_rate else [(count_label, f"{measured['quantity']:,.0f}" if pd.notna(measured["quantity"]) else "—")]
                 if stage != "IQC" and pd.notna(rework_rate):
                     metric_items.append((t("返工率", "Rework rate"), rate_text(rework_rate)))
+                st.session_state.setdefault("_quality_chat_gate_metrics", {}).setdefault(
+                    st.session_state.get("_active_ai_community", "TU" if is_tu else "BME"), []).append(
+                    _safe_ai_value({"analysis": analysis_kind, "suppliers": selected_suppliers, "stage": stage,
+                        "displayed_metrics": dict(metric_items), "quantity": measured["quantity"],
+                        "denominator": po_total, "complete_denominator": has_denominator}))
                 metric_help = (t("疵点数量合计 ÷ 有效抽检数量合计；0 疵点 / 0 抽检量的记录不产生检验量。", "Total defect points / total valid sampled units; zero-defect, zero-sample records contribute no exposure.")
                                if is_tu and stage == "FQC" else "")
                 metric_html = "".join(
@@ -21166,7 +21172,12 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
     st.session_state.setdefault("_unified_report_facts", {})[community] = _safe_ai_value(pack)
     model_charts = [chart for chart in charts if not chart.get("empty")]
     payload = _safe_ai_value({**facts, "charts": model_charts, "unavailable_charts": [chart for chart in charts if chart.get("empty")],
-        "metrics": cards, "insights_version": INSIGHTS_VERSION})
+        "metrics": cards, "gate_metrics": st.session_state.get("_quality_chat_gate_metrics", {}).get(community, []),
+        "insights_version": INSIGHTS_VERSION})
+    # Chat reads the same computed, filtered evidence as the visible dashboard.
+    # It never reads raw workbooks or recomputes KPI definitions independently.
+    st.session_state.setdefault("_quality_chat_payloads", {})[community] = {
+        **payload, "risk_rows": _safe_ai_value(risks.to_dict("records"))}
     fingerprint = _ai_fingerprint({"facts": payload, "language": st.session_state.lang})
     reports = st.session_state.setdefault("_unified_reports", {})
     report = reports.get(fingerprint)
@@ -21540,7 +21551,10 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
         "inspected_qty": float(finished.qty_inspected.sum()), "defect_points": float(finished.defect_qty.sum()),
         "customer_period": "N0 snapshot: source contains no calendar dates", "iqc_scope": "Exception records only; no overall pass-rate denominator",
         "risk_poc": st.session_state.get("_tu_risk_poc_cc_audit", {}),
-        "quality_analysis_scope": quality_scope.facts()}, cards, risks)
+        "quality_analysis_scope": quality_scope.facts(), "quality_unavailable": unavailable,
+        "quality_cc_mapping": {stage: {"source_rows": len(frame),
+            "records_with_cc": int(identifiers(frame.get("product_code", pd.Series("", index=frame.index))).ne("").sum())}
+            for stage, frame in [("IQC", incoming), ("PQC", finished), ("FQC", jdy)]}}, cards, risks)
 
 
 def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
@@ -21697,6 +21711,8 @@ def render_unified_dashboard():
         return
     st.session_state["_unified_chart_facts"] = {}
     st.session_state["_unified_report_facts"] = {}
+    st.session_state["_quality_chat_payloads"] = {}
+    st.session_state["_quality_chat_gate_metrics"] = {}
     with st.spinner(t("正在读取质量数据…", "Loading quality data…")):
         finished, voice, incoming = load_all_data(DATA_SCOPE_CACHE_VERSION, ("ZX",))
         finished = finished.copy()
@@ -21726,6 +21742,12 @@ def render_unified_dashboard():
     if "BME" in scope.communities:
         render_unified_bme(scope, events, nc, orders, (fqc, rpm, mapping))
     st.session_state.pop("_active_ai_community", None)
+    if scope.communities:
+        render_quality_chatbot(ROOT, {
+            "scope": scope.facts(),
+            "focused_cc": st.session_state.get(FOCUS_KEY, "") if "TU" in scope.communities else "",
+            "communities": st.session_state.get("_quality_chat_payloads", {}),
+        }, t, get_qwen_api_key, get_secret_value, post_json)
 
 
 # ==========================================
