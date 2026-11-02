@@ -13,7 +13,7 @@ import re
 from urllib.error import HTTPError
 
 
-CHAT_VERSION = '2026-11-02-v2'
+CHAT_VERSION = '2026-11-02-v3'
 MAX_QUESTION = 2000
 ALIASES = {
     'QA': 'quality assessment audit grid', 'PQA': 'prepare quality assessment',
@@ -316,6 +316,25 @@ def generate_answer(question, snapshot, knowledge, history, request, language='�
         result = validate_answer(raw, context)
         used = {sid[0] for p in result['paragraphs'] for sid in p['sources']}
         text = '\n'.join(p['text'] for p in result['paragraphs'])
+        confirmed_unmapped = set()
+        for payload in snapshot.get('communities', {}).values():
+            confirmed_unmapped.update(payload.get('quality_unavailable', {}))
+            confirmed_unmapped.update(stage for stage, coverage in payload.get('quality_cc_mapping', {}).items()
+                                      if coverage.get('source_rows', 0) > 0 and coverage.get('records_with_cc') == 0)
+        for paragraph in result['paragraphs']:
+            if not any(sid.startswith('D') for sid in paragraph['sources']):
+                continue
+            for sentence in re.split(r'[。！？\n]', paragraph['text']):
+                negative_mapping = re.search(
+                    r'(?:无|没有|缺少|缺乏|未建立)[^。]{0,25}(?:CC|Model)[^。]{0,20}(?:映射|关联|链路|追溯)|(?:no|missing|lack)[^.]{0,30}(?:CC|Model)[^.]{0,20}(?:mapping|link)',
+                    sentence, re.I)
+                if negative_mapping and not any(re.search(r'(?<![A-Za-z])' + stage + r'(?![A-Za-z])', sentence, re.I)
+                                                for stage in confirmed_unmapped):
+                    raise ValueError('cc_mapping_claim_conflict: a negative CC/Model mapping claim must name '
+                                     'the specific confirmed unmapped stage. Confirmed stages: ' +
+                                     (', '.join(sorted(confirmed_unmapped)) or 'none supplied') +
+                                     '. Existing mapped PQC/FQC records must not be described as unmapped. '
+                                     'Unverified batch-to-customer linkage is a separate limitation.')
         if 'BME' in snapshot.get('communities', {}) and re.search(
                 r'(?:CPT|FG)\s*供应商|供应商\s*(?:CPT|FG)|(?:CPT|FG)\s+supplier|supplier\s+(?:CPT|FG)', text, re.I):
             raise ValueError('entity_type_conflict: CPT/FG are product types. '

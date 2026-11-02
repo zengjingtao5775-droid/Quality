@@ -146,6 +146,17 @@ class ChatTests(unittest.TestCase):
         result = generate_answer('当前 BME', snapshot(community='BME'), [], [], lambda _: next(responses))
         self.assertIn('FSD供应商', result['paragraphs'][0]['text'])
 
+    def test_mapping_gap_must_name_the_confirmed_unmapped_stage(self):
+        value = snapshot()
+        value['communities']['TU']['quality_cc_mapping'] = {
+            'IQC': {'source_rows': 80, 'records_with_cc': 0},
+            'PQC': {'source_rows': 100, 'records_with_cc': 100}}
+        responses = iter([
+            json.dumps({'paragraphs': [{'text': '当前无可用CC/Model映射信息。', 'sources': ['D1']}]}),
+            json.dumps({'paragraphs': [{'text': 'IQC没有CC/Model映射信息；PQC仍有CC关联。', 'sources': ['D1']}]})])
+        result = generate_answer('当前数据关联？', value, [], [], lambda _: next(responses))
+        self.assertIn('PQC仍有CC关联', result['paragraphs'][0]['text'])
+
     def test_context_is_bounded_and_snapshot_does_not_mutate(self):
         value = snapshot()
         original = fingerprint(value)
