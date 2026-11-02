@@ -59,8 +59,9 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
         knowledge, status = [], {'documents': 0, 'available': False}
     if not status['available'] and not modified:
         print('Quality knowledge unavailable: corpus_file_missing', flush=True)
+    model = get_setting(['QWEN_CHAT_MODEL'], default='qwen3.7-flash')
     identity = fingerprint({'data': snapshot, 'knowledge': [modified, fingerprint(knowledge_key), status['available']],
-                            'language': st.session_state.lang, 'version': CHAT_VERSION})
+                            'language': st.session_state.lang, 'version': CHAT_VERSION, 'model': model})
     state = st.session_state.setdefault('_quality_chat', {'identity': identity, 'messages': []})
     changed = state['identity'] != identity
     if changed:
@@ -90,7 +91,7 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
         dates = f'{scope.get("start", "")} → {scope.get("end", "")}'
         status_text = t(f'DPCP 资料 {status["documents"]} 份', f'{status["documents"]} DPCP documents') if knowledge else t('DPCP 资料待接入', 'DPCP documents unavailable')
         status_class = 'is-ready' if knowledge else 'is-pending'
-        st.markdown('<div class="qchat-context"><span class="qchat-scope">' + html.escape(scope_text) + '</span><span class="qchat-dates">' + html.escape(dates) + '</span><span class="qchat-status ' + status_class + '"><i></i>' + html.escape(status_text) + '</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="qchat-context"><span class="qchat-scope">' + html.escape(scope_text) + '</span><span class="qchat-dates">' + html.escape(dates) + '</span><span class="qchat-dates">' + html.escape(model) + '</span><span class="qchat-status ' + status_class + '"><i></i>' + html.escape(status_text) + '</span></div>', unsafe_allow_html=True)
         if not knowledge:
             st.info(t('当前筛选数据已接入；DPCP 资料正文尚未加载，暂不能核对资料中的具体要求。',
                       'Current filtered data is connected. DPCP document content is not yet loaded.'))
@@ -134,7 +135,7 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
         def request(messages):
             response = post_json(get_setting(['DASHSCOPE_BASE_URL', 'QWEN_BASE_URL'],
                 default='https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'),
-                {'model': get_setting(['QWEN_CHAT_MODEL', 'QWEN_MODEL'], default='qwen-flash'),
+                {'model': model, 'enable_thinking': False,
                  'messages': messages, 'temperature': .1, 'max_tokens': 2200,
                  'response_format': {'type': 'json_object'}}, {'Authorization': f'Bearer {api_key}'}, timeout=60)
             return response['choices'][0]['message']['content']

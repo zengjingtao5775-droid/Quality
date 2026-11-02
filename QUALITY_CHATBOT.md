@@ -4,7 +4,7 @@ The assistant appears after the TU/BME reports. It combines locally retrieved DP
 
 ## Configuration
 
-Keep `DASHSCOPE_API_KEY` (or `QWEN_API_KEY`) and `QWEN_MODEL` in Streamlit Secrets. Add `QUALITY_KNOWLEDGE_KEY` at the TOML root to decrypt `assets/quality-knowledge.bin`. Never commit the key, the plaintext corpus, provider responses, or original source documents. The production corpus contains 18 documents; archived documents and spreadsheet formula cells were excluded. Document versions remain source versions, not a claim of current approval.
+Keep `DASHSCOPE_API_KEY` (or `QWEN_API_KEY`) in Streamlit Secrets. The bottom assistant defaults to `qwen3.7-flash`; an optional `QWEN_CHAT_MODEL` overrides this model. The shared `QWEN_MODEL` remains independent for existing AI reports. Assistant requests explicitly disable thinking and retain JSON output. Model changes invalidate the current conversation, and the configured model appears in the assistant header. Add `QUALITY_KNOWLEDGE_KEY` at the TOML root to decrypt `assets/quality-knowledge.bin`. Never commit the key, the plaintext corpus, provider responses, or original source documents. The production corpus contains 18 documents; archived documents and spreadsheet formula cells were excluded. Document versions remain source versions, not a claim of current approval.
 
 The bundle uses authenticated encryption with [Fernet](https://cryptography.io/en/latest/fernet/). Plaintext can optionally be loaded from a local `QUALITY_KNOWLEDGE_INDEX` path for development; it is excluded from Git.
 
