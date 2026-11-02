@@ -44,8 +44,12 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
         if encrypted and not knowledge_key:
             raise ValueError('knowledge_key_missing')
         knowledge, status = _knowledge(str(index), modified, fingerprint(knowledge_key), knowledge_key)
-    except Exception:
+    except Exception as error:
+        print('Quality knowledge unavailable:', 'encrypted=' + str(encrypted),
+              'key_present=' + str(bool(knowledge_key)), type(error).__name__, flush=True)
         knowledge, status = [], {'documents': 0, 'available': False}
+    if not status['available'] and not modified:
+        print('Quality knowledge unavailable: corpus_file_missing', flush=True)
     identity = fingerprint({'data': snapshot, 'knowledge': [modified, fingerprint(knowledge_key), status['available']],
                             'language': st.session_state.lang, 'version': CHAT_VERSION})
     state = st.session_state.setdefault('_quality_chat', {'identity': identity, 'messages': []})
