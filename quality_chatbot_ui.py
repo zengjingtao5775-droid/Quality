@@ -85,8 +85,9 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
         if not state['messages']:
             st.markdown(t('可以问：当前最需要关注什么？这个 CC 的主要问题是什么？资料对 QA 准备有什么要求？',
                           'Ask: What needs attention? What are this CC’s main issues? What do the documents require for QA preparation?'))
+        transcript = st.container()
         for message in state['messages']:
-            with st.chat_message(message['role']):
+            with transcript, st.chat_message(message['role']):
                 if message['role'] == 'assistant':
                     _show_answer(message['answer'], t)
                 else:
@@ -97,7 +98,7 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
             return
         history = [{'role': m['role'], 'content': m['content']} for m in state['messages'][-6:]]
         state['messages'].append({'role': 'user', 'content': question})
-        with st.chat_message('user'):
+        with transcript, st.chat_message('user'):
             st.markdown(question)
         def request(messages):
             response = post_json(get_setting(['DASHSCOPE_BASE_URL', 'QWEN_BASE_URL'],
@@ -107,9 +108,9 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
                  'response_format': {'type': 'json_object'}}, {'Authorization': f'Bearer {api_key}'}, timeout=60)
             return response['choices'][0]['message']['content']
         try:
-            with st.spinner(t('正在查资料并核对当前数据…', 'Checking documents and current data…')):
+            with transcript, st.spinner(t('正在查资料并核对当前数据…', 'Checking documents and current data…')):
                 answer = generate_answer(question, snapshot, knowledge, history, request, st.session_state.lang)
-            with st.chat_message('assistant'):
+            with transcript, st.chat_message('assistant'):
                 _show_answer(answer, t)
             state['messages'].append({'role': 'assistant', 'answer': answer,
                 'content': '\n'.join(p['text'] for p in answer['paragraphs'])})
