@@ -74,7 +74,7 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
         with st.container(key='quality_chat_header'):
             heading, clear = st.columns([.78, .22], vertical_alignment='center')
             with heading:
-                st.markdown('<div class="qchat-heading"><div class="qchat-mark" aria-hidden="true">Q</div><div><p class="qchat-eyebrow">NEA QUALITY</p><h3 class="qchat-title">' + html.escape(t('质量助手', 'Quality Assistant')) + '</h3></div></div>', unsafe_allow_html=True)
+                st.markdown('<div class="qchat-heading"><div class="qchat-mark" aria-hidden="true">Q</div><div><p class="qchat-eyebrow">NEA QUALITY</p><h3 class="qchat-title">' + 'Quality AI chat bot' + '</h3></div></div>', unsafe_allow_html=True)
             with clear, st.container(key='quality_chat_clear_action'):
                 if st.button(t('清空对话', 'Clear chat'), key='quality_chat_clear', icon=':material/delete_sweep:', type='tertiary'):
                     state['messages'] = []
@@ -103,12 +103,11 @@ def render_quality_chatbot(root, snapshot, t, get_key, get_setting, post_json):
         starters = st.empty()
         if not state['messages']:
             with starters.container(), st.container(key='quality_chat_starters'):
-                st.markdown('<div class="qchat-welcome"><h4>' + html.escape(t('从一个具体问题开始', 'Start with a specific question')) + '</h4><p>' + html.escape(t('查 DPCP 资料，解读当前看板。', 'Find DPCP guidance. Understand the current dashboard.')) + '</p></div>', unsafe_allow_html=True)
-                selected_product = bool(focus or len(scope.get('ccs', [])) == 1)
+                st.markdown('<div class="qchat-welcome"><h4>' + html.escape(t('今天有什么质量问题？', 'How can I help you today?')) + '</h4><p>' + html.escape(t('结合当前看板数据和 DPCP 资料，为你解答质量问题。', 'Get answers grounded in your dashboard data and DPCP guidance.')) + '</p></div>', unsafe_allow_html=True)
                 prompts = [
                     ('data', t('**当前质量** 当前最需要关注什么？', '**Current quality** What needs attention?'), ':material/monitoring:', t('当前最需要关注什么？', 'What needs attention in the current dashboard?')),
-                    ('product', t('**当前 CC** 这个产品有哪些主要问题？', '**Current CC** What are this product’s main issues?') if selected_product else t('**指标解读** 这些质量指标说明什么？', '**Read the metrics** What do these quality metrics show?'), ':material/center_focus_strong:' if selected_product else ':material/query_stats:', t('这个 CC 的主要问题是什么？', 'What are this CC’s main issues?') if selected_product else t('当前看板的关键质量指标如何解读？', 'How should I read the current dashboard’s key quality metrics?')),
-                    ('docs', t('**DPCP 资料** QA 准备有哪些要求？', '**DPCP guidance** What is required for QA preparation?'), ':material/menu_book:', t('资料对 QA 准备有什么要求？', 'What do the documents require for QA preparation?')),
+                    ('product', t('**指标解读** 这些质量指标说明什么？', '**Read the metrics** What do these quality metrics show?'), ':material/query_stats:', t('这些质量指标说明什么？', 'What do these quality metrics show?')),
+                    ('docs', t('**DPCP 资料** QA 准备有哪些要求？', '**DPCP guidance** What is required for QA preparation?'), ':material/menu_book:', t('QA 准备有哪些要求？', 'What is required for QA preparation?')),
                 ]
                 for column, (name, label, icon, prompt) in zip(st.columns(3, gap='small'), prompts):
                     with column:
