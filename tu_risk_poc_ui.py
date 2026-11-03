@@ -272,13 +272,10 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
                 st.plotly_chart(fig, use_container_width=True, key=chart_key, theme=None,
                     on_select=lambda: sync_cluster_focus(st.session_state, chart_key, visible_ccs), selection_mode="points",
                     config={"displayModeBar":True, "scrollZoom":False, "displaylogo":False})
-                st.caption(t("点击一个点，下方 IQC / PQC / FQC 按该点对应的 CC 联动。", "Click a point to filter IQC / PQC / FQC by its CC."))
             else:
                 st.info(t("请选择至少一个风险分组。", "Select at least one risk group."))
         else:
             prepare_cluster_focus(st.session_state, scope, [])
             st.info(t("当前范围没有同时可计算两轴的记录，保留空图。", "No records with both scores; the plot remains empty."))
-        st.caption(t(f"聚类权重：客户端 {profile.client_weight:g}% · Strategy {profile.product_weight:g}% · 供应商 {profile.supplier_weight:g}% · 在左侧设置页调整", f"Cluster weights: client {profile.client_weight:g}% · Strategy {profile.product_weight:g}% · supplier {profile.supplier_weight:g}% · edit in the sidebar settings page"))
         render_tu_scoring_reference(t,profile)
-        st.caption(t("四象限分界：供应商风险分 50 / 客户端风险分 50。高中低颜色按相对聚类结果划分。", "Quadrant boundaries: supplier score 50 / client score 50. High, medium and low colors follow the relative cluster groups."))
     return cc_rows
