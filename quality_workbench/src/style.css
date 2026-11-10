@@ -16,7 +16,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 main { padding: 2px 1px 12px; display: grid; gap: 16px; }
-h1, h2, p { margin: 0; }
+h1, h2, h3, p, dl, dd { margin: 0; }
 button, input, textarea, select { font: inherit; }
 button, input, textarea, select { border: 1px solid #c7d4e7; border-radius: 8px; }
 button { color: var(--ink); background: #fff; padding: 8px 13px; cursor: pointer; font-weight: 650; }
@@ -60,19 +60,24 @@ textarea { min-height: 62px; resize: vertical; }
 .feedback { min-height: 30px; display: flex; align-items: center; gap: 8px; color: #16614f; font-size: 13px; }
 .feedback .error { color: #a13228; }
 .empty { background: var(--pale); border: 1px solid var(--line); border-radius: 8px; color: var(--muted); padding: 8px 10px; margin-top: 10px; }
-.record { padding-top: 13px; margin-top: 12px; border-top: 1px solid var(--line); }
-.record-context { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.record-context span:first-child { color: #254ba6; background: #e8efff; border-radius: 5px; padding: 1px 7px; font-weight: 750; }
-.record-context span:nth-of-type(2) { overflow: hidden; text-overflow: ellipsis; }
-.description { color: var(--ink); font-size: clamp(19px, 3.6vw, 26px); font-weight: 730; line-height: 1.35; block-size: 2.7em; overflow: auto; overflow-wrap: anywhere; margin: 5px 0; }
+.record-source { padding: 13px 15px; border: 1px solid var(--line); border-radius: 10px; background: #f8faff; }
+.record-context { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; color: var(--muted); font-size: 13px; }
+.record-context .stage { color: #254ba6; background: #e8efff; border-radius: 5px; padding: 1px 7px; font-weight: 750; }
+.record-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+.record-fields dt { color: var(--muted); font-size: 12px; }
+.record-fields dd { color: var(--ink); font-size: 14px; font-weight: 650; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.record-source h3, .type-heading { color: var(--ink); font-size: 14px; font-weight: 750; }
+.type-heading { margin-top: 15px; }
+.description { color: var(--ink); font-size: clamp(19px, 3.6vw, 24px); font-weight: 730; line-height: 1.35; max-block-size: 5.4em; overflow: auto; overflow-wrap: anywhere; margin-top: 3px; }
 .record details { color: var(--muted); font-size: 12px; margin: 7px 0 10px; }
 .record summary { width: fit-content; cursor: pointer; color: var(--blue); }
 .details { padding: 6px 0 0 12px; overflow-wrap: anywhere; }
 .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .actions .next { margin-inline-start: auto; }
-.choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
-.choice { display: flex; align-items: center; gap: 10px; text-align: left; height: 62px; overflow-wrap: anywhere; }
+.choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
+.choice { display: flex; align-items: center; gap: 10px; text-align: left; min-height: 62px; overflow-wrap: anywhere; }
 .choice.suggested { background: #edf3ff; border-color: #a9bcf1; color: #2149ac; }
+.choice-type small { display: block; font-weight: 550; color: #52647d; }
 .alternative { border: 1px solid #c7d4e7; border-radius: 8px; padding: 0 12px; }
 .alternative:only-child { grid-column: 1 / -1; }
 .alternative select { border: 0; border-radius: 0; padding: 8px 0; background: transparent; font-weight: 650; cursor: pointer; }

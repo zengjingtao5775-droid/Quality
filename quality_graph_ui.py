@@ -13,13 +13,13 @@ import pandas as pd
 import streamlit as st
 
 from quality_graph import (EVALUATION_MINIMUMS, Observation, ReviewStore, accepted_samples, candidate_aliases, clean,
-                           csv_bytes, defect_types, evaluate_with_readiness, graph_db, graph_mode, guide_path, link_candidates,
+                           csv_bytes, defect_types, evaluate_with_readiness, extract_decathlon_model, graph_db, graph_mode, guide_path, link_candidates,
                            link_key, normalized, read_controls, read_csv_observations, read_zx_observations,
                            report_control_candidates, save_defect_type)
 from quality_graph_seed import GLOVES, GUIDE_DIGEST, LABELING_STAGES, STAGES, TAXONOMY, TAXONOMY_VERSION
 from quality_workbench_ui import render_labeling_workbench
 
-QUALITY_GRAPH_RELEASE = 5
+QUALITY_GRAPH_RELEASE = 6
 
 
 def review_store(root):
@@ -72,7 +72,8 @@ def dashboard_observations(jdy, bme):
             unique.add(normalized(desc))
             rows.append(Observation("TU", "ZX", GLOVES, "FQC", desc, field,
                 clean(record.get("source")) or "Jiandaoyun FQC", f"{record_id}/{field}", clean(record.get("po")),
-                clean(record.get("date"))[:10], clean(record.get("cc")).removesuffix(".0"), raw_type=field))
+                clean(record.get("date"))[:10], clean(record.get("cc")).removesuffix(".0"), raw_type=field,
+                model=extract_decathlon_model(record.get("model")) or clean(record.get("model"))))
     if not bme.empty:
         for record in bme.loc[bme["is_alert"].fillna(False)].to_dict("records"):
             stage = clean(record.get("stage")).upper()
@@ -84,7 +85,7 @@ def dashboard_observations(jdy, bme):
             family = clean(record.get("family")) or "Unspecified BME family"
             rows.append(Observation("BME", supplier, family, stage, desc, clean(record.get("process")),
                 f"{source} / {clean(record.get('source_sheet'))}", row, clean(record.get("order_po")),
-                clean(record.get("date"))[:10]))
+                clean(record.get("date"))[:10], model=clean(record.get("model_code"))))
     return rows
 
 

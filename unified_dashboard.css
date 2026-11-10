@@ -137,8 +137,6 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {padding:1
 .quality-report-cp:not(.quality-report-cp-visual)[open] + .quality-report-cell-note {display:none;}
 .quality-report-cp-visual figure {margin:8px 0;}
 .quality-report-cp-visual img {display:block;width:100%;height:auto;border:1px solid #dce3f2;border-radius:8px;}
-.quality-report-cp-visual figcaption {font-size:12px;color:#475467;margin-top:4px;}
-.quality-report-cp-visual figcaption a {margin-inline-start:8px;}
 .quality-report-plan-table .quality-report-cp summary {font-size:14px !important;white-space:normal;overflow:visible;}
 .quality-report-plan-table .quality-report-aql-detail summary {font-size:14px !important;white-space:normal;overflow:visible;}
 .quality-report-plan-table tbody tr[data-cc] {background:#fff;}

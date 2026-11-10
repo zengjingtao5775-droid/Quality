@@ -24,7 +24,7 @@ from quality_graph_seed import (
     TAXONOMY_VERSION, ZX_ALIASES, ZX_LINKS,
 )
 
-QUALITY_GRAPH_RELEASE = 5
+QUALITY_GRAPH_RELEASE = 6
 
 
 def clean(value):
@@ -34,6 +34,11 @@ def clean(value):
 
 def normalized(value):
     return " ".join(unicodedata.normalize("NFKC", clean(value)).casefold().split())
+
+
+def extract_decathlon_model(value: object) -> str:
+    match = re.match(r"^(\d{7})(?!\d)", clean(value))
+    return match.group(1) if match else ""
 
 
 def key_for(*parts):
@@ -74,6 +79,7 @@ class Observation:
     date: str = ""
     cc: str = ""
     raw_type: str = ""
+    model: str = ""
 
     def __post_init__(self):
         if self.community not in TAXONOMY or self.stage not in STAGES:
@@ -83,7 +89,8 @@ class Observation:
 
     @property
     def id(self):
-        return key_for(*asdict(self).values())
+        # Model is display metadata. Existing decisions retain their record IDs.
+        return key_for(*(value for name, value in asdict(self).items() if name != "model"))
 
     @property
     def alias_key(self):
@@ -140,12 +147,12 @@ def read_zx_observations(directory):
             else:
                 sheet = workbook.worksheets[0]
                 for index, row in enumerate(sheet.iter_rows(min_row=2, max_col=19, values_only=True), 2):
-                    record, kind, _, _, _, batch, work_order, _, _, cc, _, _, _, _, qty, issue, process, _, date = row
+                    record, kind, _, _, _, batch, work_order, _, _, cc, color, _, _, _, qty, issue, process, _, date = row
                     stage = {"中间检验": "PQC", "成品检验": "FQC"}.get(clean(kind))
                     if stage and isinstance(qty, (int, float)) and qty > 0 and clean(issue):
                         result.append(Observation("TU", "ZX", GLOVES, stage, clean(issue), clean(process),
                             f"{path.name} / {sheet.title}", clean(record) or f"P{index}", clean(batch) or clean(work_order),
-                            clean(date)[:10], clean(cc)))
+                            clean(date)[:10], clean(cc), model=extract_decathlon_model(color)))
         finally:
             workbook.close()
     return result

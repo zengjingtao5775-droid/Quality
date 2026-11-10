@@ -7,7 +7,7 @@ type Status = 'labeled' | 'uncertain' | 'remaining';
 type Gate = { stage: string; total: number; trainable: number } & Record<Status, number>;
 type Sample = {
   id: string; description: string; rawType: string; factory: string; family: string;
-  stage: string; process: string; date: string; source: string; record: string; revision: number;
+  stage: string; process: string; date: string; cc: string; model: string; source: string; record: string; revision: number;
   suggestion: string; options: { id: string; name: string }[];
 };
 type View = {
@@ -23,21 +23,21 @@ const content = {
   zh: {
     progress: '标注进度', scope: '当前范围', labeled: '已标注', uncertain: '待判断', remaining: '待作答',
     trainable: '可训练单标签', overview: '按检验环节', total: '范围内记录', done: '已处理',
-    task: '这条记录属于哪类疵点？',
-    search: '搜索记录', placeholder: '疵点、工序或记录号', find: '查找', clear: '清空',
+    task: '检验记录', original: '原始 Defect Description', date: '检验日期',
+    search: '搜索记录', placeholder: '疵点、CC、Model 或记录号', find: '查找', clear: '清空',
     empty: '当前范围没有待作答记录。可以清空搜索或调整上方范围。',
     noRecords: '当前范围没有记录。可以调整范围，或从「数据与评估」导入。',
-    other: '选其他类型', unsure: '暂无法判断', options: '选择一个标准类型',
+    other: '选其他类型', unsure: '暂无法判断', options: '选择标准 Defect Type',
     detail: '查看原始来源', process: '工序', type: '原始分类', next: '跳过', undo: '撤销上一条', saving: '保存中…',
   },
   en: {
     progress: 'Labeling progress', scope: 'Current scope', labeled: 'Labeled', uncertain: 'Undetermined', remaining: 'Unanswered',
     trainable: 'Single-label training records', overview: 'By inspection gate', total: 'Records in scope', done: 'Answered',
-    task: 'Which defect does this record describe?',
-    search: 'Find a record', placeholder: 'Defect, process or record ID', find: 'Find', clear: 'Clear',
+    task: 'Inspection record', original: 'Original Defect Description', date: 'Inspection date',
+    search: 'Find a record', placeholder: 'Defect, CC, Model or record ID', find: 'Find', clear: 'Clear',
     empty: 'No unanswered records in this selection. Clear the search or adjust the filters.',
     noRecords: 'No records in this scope. Adjust the filters or import in Data and evaluation.',
-    other: 'Choose another type', unsure: 'Unable to determine', options: 'Choose one canonical type',
+    other: 'Choose another type', unsure: 'Unable to determine', options: 'Choose a Standard Defect Type',
     detail: 'View source record', process: 'Process', type: 'Original category', next: 'Skip', undo: 'Undo last answer', saving: 'Saving…',
   },
 };
@@ -79,11 +79,20 @@ function RecordCard({ sample, copy, busy, send }: {
   const suggestion = sample.options.find(option => option.id === sample.suggestion);
   const answer = (choice: string) => send({ action: 'answer', id: sample.id, revision: sample.revision, choice });
   return <div className="record">
-    <div className="record-context"><span>{sample.stage}</span><b>{sample.factory}</b><span>{sample.family}</span>{sample.date && <time>{sample.date}</time>}</div>
-    <p className="description">{sample.description}</p>
-    <div className="choices">
+    <section className="record-source" aria-labelledby="original-description">
+      <div className="record-context"><span className="stage">{sample.stage}</span><b>{sample.factory}</b><span>{sample.family}</span></div>
+      <dl className="record-fields">
+        <div><dt>{copy.date}</dt><dd>{sample.date ? <time>{sample.date}</time> : '—'}</dd></div>
+        <div><dt>CC</dt><dd>{sample.cc || '—'}</dd></div>
+        <div><dt>Model</dt><dd>{sample.model || '—'}</dd></div>
+      </dl>
+      <h3 id="original-description">{copy.original}</h3>
+      <p className="description">{sample.description}</p>
+    </section>
+    <h3 id="standard-defect-type" className="type-heading">{copy.options}</h3>
+    <div className="choices" role="group" aria-labelledby="standard-defect-type">
       {suggestion && <button className="choice suggested" type="button" disabled={busy} onClick={() => answer(suggestion.id)}>
-        <span className="letter">A</span>{suggestion.name}
+        <span className="letter">A</span><span className="choice-type">{suggestion.name}<small>{suggestion.id}</small></span>
       </button>}
       <label className="choice alternative">
         <span className="letter" aria-hidden="true">B</span>
@@ -91,7 +100,7 @@ function RecordCard({ sample, copy, busy, send }: {
           if (event.currentTarget.value) answer(event.currentTarget.value);
         }}>
           <option value="">{copy.other}</option>
-          {sample.options.filter(option => option.id !== suggestion?.id).map(option => <option key={option.id} value={option.id}>{option.name}</option>)}
+          {sample.options.filter(option => option.id !== suggestion?.id).map(option => <option key={option.id} value={option.id}>{option.name} · {option.id}</option>)}
         </select>
       </label>
     </div>

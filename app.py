@@ -43,18 +43,18 @@ from tu_quality import build_zx_quality_gates
 from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
 from quality_chatbot_ui import render_quality_chatbot
 import quality_graph_seed as _quality_graph_seed
-if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 5:
+if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 6:
     importlib.reload(_quality_graph_seed)
 import quality_graph as _quality_graph
-if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 5:
+if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 6:
     importlib.reload(_quality_graph)
 import quality_workbench_ui as _quality_workbench_ui
-if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 5:
+if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 6:
     importlib.reload(_quality_workbench_ui)
 import quality_graph_ui as _quality_graph_ui
-if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 5:
+if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 6:
     importlib.reload(_quality_graph_ui)
-from quality_graph import graph_mode
+from quality_graph import extract_decathlon_model, graph_mode
 from quality_graph_ui import render_quality_graph, report_control_evidence
 import quality_gate_metrics as _quality_gate_metrics
 if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-weekly-zero-exposure":
@@ -3031,13 +3031,6 @@ def normalize_decathlon_cc(value: object) -> str:
     text = "" if value is None or pd.isna(value) else str(value).strip()
     text = re.sub(r"\.0$", "", text)
     return text if re.fullmatch(r"\d{6}", text) else ""
-
-
-def extract_decathlon_model(value: object) -> str:
-    text = "" if value is None or pd.isna(value) else str(value).strip()
-    text = re.sub(r"\.0$", "", text)
-    match = re.match(r"^(\d{7})(?!\d)", text)
-    return match.group(1) if match else ""
 
 
 def safe_rate(numerator: pd.Series | float, denominator: pd.Series | float) -> pd.Series | float:
@@ -21106,6 +21099,8 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
     is_poc = bool(pack.get("risk_poc"))
     action_map = {str(item.get("cc")): item for item in pack.get("ps_actions", [])}
     aql_map = {str(item.get("cc")): item for item in pack.get("aql_recommendations", [])}
+    dcs_dir = os.environ.get("QUALITY_DCS_IMAGES_DIR")
+    local_dcs = Path(dcs_dir) if dcs_dir and st.get_option("server.address") == "127.0.0.1" else None
 
     def fmt(value, decimals=0):
         number = finite_number(value)
@@ -21151,15 +21146,20 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
         note = f'<div class="quality-report-cell-note">{e(primary["action"])}</div>'
         source_row = primary["row"]
         capture = ROOT / "assets/quality-graph" / f"cp-row-{source_row}.png"
-        if capture.is_file():
-            uri = base64.b64encode(capture.read_bytes()).decode("ascii")
-            caption = t(f"ZX 手套 CP 原表 · C{source_row}:E{source_row}", f"ZX Glove CP source · C{source_row}:E{source_row}")
-            alt = " · ".join(part for part in (primary["how"], primary["what"], primary["target"]) if part)
-            plm_link = t("在 PLM 中查找 DCS", "Find DCS in PLM")
+        dcs_number = primary["how"].removeprefix("DCS ")
+        pages = []
+        if local_dcs and dcs_number in {"100", "109", "111"}:
+            pages = sorted((local_dcs / f"DCS-{dcs_number}").glob("page-*.png"))
+        images = [(page, t(f"DCS {dcs_number} 原件第 {index} 页", f"DCS {dcs_number} original, page {index}"))
+                  for index, page in enumerate(pages, 1)]
+        if not images and capture.is_file():
+            alt = t(f"ZX 手套 CP 第 {source_row} 行", f"ZX Glove CP row {source_row}")
+            images = [(capture, f'{alt} · {primary["how"]} · {primary["target"]}')]
+        if images:
+            figures = "".join(f'<figure><img src="data:image/png;base64,{base64.b64encode(path.read_bytes()).decode("ascii")}" '
+                              f'alt="{e(alt)}"></figure>' for path, alt in images)
             return (f'<details class="quality-report-detail quality-report-cp quality-report-cp-visual"><summary>{e(preview)}</summary>'
-                    f'<figure><img src="data:image/png;base64,{uri}" alt="{e(alt)}"><figcaption>{e(caption)}'
-                    f' <a href="https://plm.decathlon.net/shapes-client-web/" target="_blank" rel="noopener noreferrer">{e(plm_link)}</a></figcaption>'
-                    f'</figure></details>{note}')
+                    f'{figures}</details>{note}')
         lines = []
         for item in matches:
             applicability = (item.get("review_evidence") if item["status"] == "linked" else

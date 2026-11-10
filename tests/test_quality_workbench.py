@@ -2,8 +2,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from quality_graph import GLOVES, Observation, ReviewStore, accepted_samples, defect_types, save_defect_type
-from quality_workbench_ui import _apply, progress_by_gate, work_queue
+from openpyxl import Workbook
+
+from quality_graph import GLOVES, Observation, ReviewStore, accepted_samples, defect_types, read_zx_observations, save_defect_type
+from quality_workbench_ui import _apply, _sample, progress_by_gate, work_queue
 
 
 class WorkbenchTests(unittest.TestCase):
@@ -21,6 +23,25 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual([row["total"] for row in gates], [1, 1])
         self.assertEqual([row["trainable"] for row in gates], [1, 0])
         self.assertEqual(work_queue(self.rows, decisions, ""), [c])
+
+    def test_zx_model_context_keeps_existing_label_identity(self):
+        with TemporaryDirectory() as folder:
+            workbook = Workbook()
+            workbook.active.title = "导出数据"
+            workbook.active.append(["检验记录编号", "质检类型"])
+            workbook.active.append(["1", "中间检验", None, None, None, "batch", None, None, None,
+                                    "347696", "8988588本色", None, None, None, 1, "明线不匀", "大指", None, "2026-07-01"])
+            filename = "05.7-06.6检验数据.xlsx"
+            workbook.save(Path(folder) / filename)
+            [sample] = read_zx_observations(Path(folder))
+
+        original = Observation("TU", "ZX", GLOVES, "PQC", "明线不匀", "大指", f"{filename} / 导出数据", "1",
+                               "batch", "2026-07-01", "347696")
+        self.assertEqual(sample.id, original.id)
+        context = _sample(sample, {}, {}, defect_types("TU"), lambda zh, en: zh)
+        self.assertEqual((context["description"], context["cc"], context["model"], context["suggestion"]),
+                         ("明线不匀", "347696", "8988588", "TU-008"))
+        self.assertEqual(work_queue([sample], {}, "8988588"), [sample])
 
     def test_save_accepts_a_label_and_undo_restores_its_queue_position(self):
         a, b, _ = self.rows

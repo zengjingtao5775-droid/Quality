@@ -9,9 +9,9 @@ from quality_graph import TextBaseline, accepted_samples, candidate_aliases, cle
 from quality_graph_seed import LABELING_STAGES
 
 
-QUALITY_GRAPH_RELEASE = 5
+QUALITY_GRAPH_RELEASE = 6
 DIST = Path(__file__).resolve().parent / "quality_workbench/dist"
-_workbench = components.declare_component("quality_defect_labeler_v5", path=str(DIST))
+_workbench = components.declare_component("quality_defect_labeler_v6", path=str(DIST))
 WIDGET_KEY = "quality_labeling_react"
 ANSWERED = {"confirmed", "approved"}
 ACTOR = "workbench"
@@ -39,7 +39,7 @@ def work_queue(observations, decisions, query):
     phrase = normalized(query)
     return [obs for obs in observations if obs.stage in LABELING_STAGES
             and decisions.get(obs.id, {}).get("status") not in ANSWERED
-            and (not phrase or phrase in normalized(f"{obs.description} {obs.record} {obs.process} {obs.raw_type}"))]
+            and (not phrase or phrase in normalized(f"{obs.description} {obs.record} {obs.process} {obs.raw_type} {obs.cc} {obs.model}"))]
 
 
 def _sample(obs, decision, decisions, types, t):
@@ -51,8 +51,10 @@ def _sample(obs, decision, decisions, types, t):
                  if item.stage in LABELING_STAGES and item.domain == obs.domain and len(result["labels"]) == 1]
         if len(train) >= 10 and len({label for _, label in train}) >= 2:
             suggestion, _ = TextBaseline(train).predict(obs.description)
-    return {"id": obs.id, "description": obs.description, "rawType": obs.raw_type, "factory": obs.factory,
+    factory = t("中兴（ZX）", "Zhongxing (ZX)") if obs.factory == "ZX" else obs.factory
+    return {"id": obs.id, "description": obs.description, "rawType": obs.raw_type, "factory": factory,
             "family": obs.family, "stage": obs.stage, "process": obs.process, "date": obs.date,
+            "cc": obs.cc.removesuffix(".0"), "model": obs.model,
             "source": obs.source, "record": obs.record, "revision": decision.get("revision", 0),
             "suggestion": suggestion,
             "options": [{"id": code, "name": t(zh, en)} for code, (zh, en, _) in types.items()]}
