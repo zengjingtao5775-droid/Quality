@@ -49,10 +49,10 @@ import quality_graph as _quality_graph
 if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 6:
     importlib.reload(_quality_graph)
 import quality_workbench_ui as _quality_workbench_ui
-if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 6:
+if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 8:
     importlib.reload(_quality_workbench_ui)
 import quality_graph_ui as _quality_graph_ui
-if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 7:
+if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 8:
     importlib.reload(_quality_graph_ui)
 from quality_graph import extract_decathlon_model, graph_mode
 from quality_graph_ui import render_quality_graph, report_control_evidence

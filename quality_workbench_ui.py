@@ -1,6 +1,7 @@
 """Server-owned annotation queue and progress."""
 from pathlib import Path
 import sqlite3
+from uuid import uuid4
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -9,10 +10,10 @@ from quality_graph import TextBaseline, accepted_samples, candidate_aliases, cle
 from quality_graph_seed import LABELING_STAGES
 
 
-QUALITY_GRAPH_RELEASE = 6
+QUALITY_GRAPH_RELEASE = 8
 DIST = Path(__file__).resolve().parent / "quality_workbench/dist"
-_workbench = components.declare_component("quality_defect_labeler_v6", path=str(DIST))
 WIDGET_KEY = "quality_labeling_react"
+NATIVE_EVENT_KEY = "_qg_native_labeling_event"
 ANSWERED = {"confirmed", "approved"}
 ACTOR = "workbench"
 
@@ -107,11 +108,84 @@ def _queue_state(scoped, decisions, settings):
     return queue, sample, decisions.get(sample.id, {}) if sample else {}
 
 
+def _queue_native_event(action, sample=None, choice=None, input_key=None):
+    event = {"action": action, "nonce": uuid4().hex}
+    if sample:
+        event.update(id=sample["id"], revision=sample["revision"])
+    if action == "answer":
+        event["choice"] = choice or st.session_state.get(input_key)
+        if not event["choice"]:
+            return
+    if action == "search":
+        event["query"] = st.session_state.get(input_key, "")
+    st.session_state[NATIVE_EVENT_KEY] = event
+
+
+def _native_workbench(view, t):
+    record, progress = st.columns([1.75, 1], gap="medium")
+    with progress, st.container(border=True):
+        st.subheader(t("标注进度", "Labeling progress"))
+        total = sum(gate["total"] for gate in view["gates"])
+        done = sum(gate["labeled"] + gate["uncertain"] for gate in view["gates"])
+        st.metric(t("已处理", "Answered"), f"{done:,} / {total:,}")
+        st.progress(done / total if total else 0.0)
+        for gate in view["gates"]:
+            completed = gate["labeled"] + gate["uncertain"]
+            st.text(f'{gate["stage"]}  {completed:,} / {gate["total"]:,}')
+
+    with record, st.container(border=True):
+        st.subheader(t("检验记录", "Inspection record"))
+        sample = view["sample"]
+        if sample:
+            st.text(f'{sample["stage"]} · {sample["factory"]} · {sample["family"]}')
+            fields = st.columns(3)
+            for column, name, key in zip(fields, (t("检验日期", "Inspection date"), "CC", "Model"), ("date", "cc", "model")):
+                column.text(f'{name}\n{sample[key] or "—"}')
+            st.markdown(t("**原始 Defect Description**", "**Original Defect Description**"))
+            st.text(sample["description"])
+            st.markdown(t("**选择标准 Defect Type**", "**Choose a Standard Defect Type**"))
+            types = {option["id"]: option["name"] for option in sample["options"]}
+            suggestion = sample["suggestion"]
+            sample_key = f'{sample["id"]}_{sample["revision"]}'
+            if suggestion in types:
+                st.button(f"A · {types[suggestion]} · {suggestion}", key=f"qg_native_a_{sample_key}", type="primary",
+                          on_click=_queue_native_event, args=("answer", sample, suggestion))
+            selector_key = f"qg_native_choice_{sample_key}"
+            st.selectbox(t("B · 选其他标准类型", "B · Choose another standard type"),
+                         [code for code in types if code != suggestion], index=None, key=selector_key,
+                         format_func=lambda code: f"{types[code]} · {code}",
+                         on_change=_queue_native_event, args=("answer", sample, None, selector_key))
+            unsure, skip = st.columns(2)
+            unsure.button(t("暂无法判断", "Unable to determine"), key=f"qg_native_unsure_{sample_key}",
+                          on_click=_queue_native_event, args=("answer", sample, "unsure"))
+            skip.button(t("跳过", "Skip"), key=f"qg_native_skip_{sample_key}",
+                        on_click=_queue_native_event, args=("next", sample))
+            with st.expander(t("查看原始来源", "View source record")):
+                st.text(" · ".join(filter(None, (sample["source"], sample["record"], sample["process"], sample["rawType"]))))
+        else:
+            st.info(t("当前筛选范围没有待作答的记录。", "No unanswered records match the current filters."))
+        if view["error"]:
+            st.error(view["error"])
+        elif view["message"]:
+            st.success(view["message"])
+        if view["canUndo"]:
+            st.button(t("撤销上一条", "Undo last answer"), key="qg_native_undo",
+                      on_click=_queue_native_event, args=("undo",))
+        with st.expander(t("搜索记录", "Find a record")):
+            search_key = f'qg_native_search_{view["scopeKey"]}'
+            with st.form(f"{search_key}_form"):
+                st.text_input(t("疵点、CC、Model 或记录号", "Defect, CC, Model or record ID"),
+                              value=view["query"], max_chars=150, key=search_key)
+                st.form_submit_button(t("查找", "Find"), on_click=_queue_native_event, args=("search", None, None, search_key))
+
+
 @st.fragment
 def render_labeling_workbench(scoped, store, scope, t):
-    if not (DIST / "index.html").is_file():
-        st.error(t("标注工作台前端尚未构建。", "The labeling workbench frontend has not been built."))
-        return
+    built = (DIST / "index.html").is_file()
+    native = st.toggle(t("兼容模式", "Compatibility mode"), value=not built, disabled=not built,
+                       help=t("自定义组件加载异常时，可以用兼容模式继续标注。",
+                              "Use compatibility mode to keep labeling if the custom workbench fails to load."),
+                       key="qg_native_labeling") or not built
     settings = st.session_state.setdefault("_qg_answer_queue", dict(query="", cursor=0))
     scope_key = key_for(*scope)
     if settings.get("scope") != scope_key:
@@ -121,7 +195,7 @@ def render_labeling_workbench(scoped, store, scope, t):
     community = scope[0]
     types = defect_types(community, store.latest("taxonomy").get(community))
     queue, sample, decision = _queue_state(scoped, decisions, settings)
-    event = st.session_state.get(WIDGET_KEY)
+    event = st.session_state.pop(NATIVE_EVENT_KEY, None) if native else st.session_state.get(WIDGET_KEY)
     if isinstance(event, dict) and event.get("nonce") and event["nonce"] != settings.get("event"):
         settings.update(event=event["nonce"], message="", error="")
         try:
@@ -130,8 +204,13 @@ def render_labeling_workbench(scoped, store, scope, t):
             settings["error"] = str(error)
         decisions = store.latest("label")
         queue, sample, decision = _queue_state(scoped, decisions, settings)
-    _workbench(language=t("zh", "en"), gates=progress_by_gate(scoped, decisions), query=settings["query"],
-               scope=[value for value in scope if value], scopeKey=scope_key, queueCount=len(queue),
-               queuePosition=settings["cursor"] + 1 if sample else 0, canUndo="undo" in settings,
-               sample=_sample(sample, decision, decisions, types, t), message=settings.get("message", ""),
-               error=settings.get("error", ""), acknowledgedEvent=settings.get("event"), key=WIDGET_KEY, default=None)
+    view = dict(language=t("zh", "en"), gates=progress_by_gate(scoped, decisions), query=settings["query"],
+                scope=[value for value in scope if value], scopeKey=scope_key, queueCount=len(queue),
+                queuePosition=settings["cursor"] + 1 if sample else 0, canUndo="undo" in settings,
+                sample=_sample(sample, decision, decisions, types, t), message=settings.get("message", ""),
+                error=settings.get("error", ""), acknowledgedEvent=settings.get("event"))
+    if native:
+        _native_workbench(view, t)
+    else:
+        workbench = components.declare_component("quality_defect_labeler_v8", path=DIST)
+        workbench(**view, key=WIDGET_KEY, default=None)

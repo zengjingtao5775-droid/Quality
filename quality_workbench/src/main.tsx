@@ -147,7 +147,15 @@ function Frame() {
   const root = useRef<HTMLDivElement>(null);
   const pending = useRef<string | null>(null);
   useEffect(() => {
+    let received = false;
+    let attempts = 1;
+    const retry = window.setInterval(() => {
+      Streamlit.setComponentReady();
+      if (++attempts >= 5) window.clearInterval(retry);
+    }, 1500);
     const receive = (event: Event) => {
+      received = true;
+      window.clearInterval(retry);
       const next = (event as CustomEvent<{ args: View }>).detail.args;
       document.documentElement.lang = next.language === 'zh' ? 'zh-CN' : 'en';
       setView(next);
@@ -158,9 +166,15 @@ function Frame() {
     };
     Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, receive);
     Streamlit.setComponentReady();
-    const resize = new ResizeObserver(entries => Streamlit.setFrameHeight(Math.ceil(entries[0].target.getBoundingClientRect().height) + 2));
+    const resize = new ResizeObserver(entries => {
+      if (received) Streamlit.setFrameHeight(Math.ceil(entries[0].target.getBoundingClientRect().height) + 2);
+    });
     if (root.current) resize.observe(root.current);
-    return () => { Streamlit.events.removeEventListener(Streamlit.RENDER_EVENT, receive); resize.disconnect(); };
+    return () => {
+      window.clearInterval(retry);
+      Streamlit.events.removeEventListener(Streamlit.RENDER_EVENT, receive);
+      resize.disconnect();
+    };
   }, []);
   return <div ref={root}>{view && <Workbench key={view.scopeKey} view={view} action={action} send={event => {
     if (pending.current) return;

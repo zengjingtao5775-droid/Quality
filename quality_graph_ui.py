@@ -19,7 +19,7 @@ from quality_graph import (EVALUATION_MINIMUMS, Observation, ReviewStore, accept
 from quality_graph_seed import GLOVES, GUIDE_DIGEST, LABELING_STAGES, STAGES, TAXONOMY, TAXONOMY_VERSION
 from quality_workbench_ui import render_labeling_workbench
 
-QUALITY_GRAPH_RELEASE = 7
+QUALITY_GRAPH_RELEASE = 8
 
 
 def review_store(root):
