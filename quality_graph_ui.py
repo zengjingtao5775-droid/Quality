@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import csv
+from collections import Counter
 from pathlib import Path
 import re
 import sqlite3
@@ -11,13 +12,13 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 import streamlit as st
 
-from quality_graph import (Observation, ReviewStore, accepted_samples, candidate_aliases, clean,
-                           csv_bytes, evaluate, graph_db, graph_mode, guide_path, link_candidates, link_key, normalized,
+from quality_graph import (EVALUATION_MINIMUMS, Observation, ReviewStore, accepted_samples, candidate_aliases, clean,
+                           csv_bytes, evaluate_with_readiness, graph_db, graph_mode, guide_path, link_candidates, link_key, normalized,
                            read_controls, read_csv_observations, read_zx_observations, report_control_candidates)
 from quality_graph_seed import GLOVES, GUIDE_DIGEST, STAGES, TAXONOMY, TAXONOMY_VERSION
 from quality_workbench_ui import render_labeling_workbench
 
-QUALITY_GRAPH_RELEASE = 2
+QUALITY_GRAPH_RELEASE = 3
 
 
 def review_store(root):
@@ -132,10 +133,7 @@ def mapping_rows(observations, aliases, links, controls):
     return rows
 
 
-def _mapping_editor(scoped, aliases, links, controls, store, actor, show_zx, stage_filter, t):
-    st.subheader(t("原始描述 → 标准疵点", "Source wording → canonical defect"))
-    st.caption(t("同一个社区、工厂、产品族和检验环节内确认同义词。表中的次数是描述记录数。",
-                 "Approve aliases within the same community, factory, product family and gate. Counts are observation records."))
+def _alias_editor(scoped, aliases, links, controls, store, actor, t):
     candidates = sorted(candidate_aliases(scoped), key=lambda item: (-item[3], item[1].description))
     if candidates:
         selected = st.selectbox(t("选择待映射描述", "Select a description"), candidates, index=None,
@@ -153,13 +151,12 @@ def _mapping_editor(scoped, aliases, links, controls, store, actor, show_zx, sta
                         for link, stage, defect, row, _, _ in link_candidates(links)
                         if (obs.community, obs.factory, obs.family) == ("TU", "ZX", GLOVES)
                         and stage == obs.stage and defect == seed and row in controls]
-                st.caption(f"{obs.description} → {_name(seed, t)} → Control Plan")
                 if path:
-                    st.dataframe(path, hide_index=True, width="stretch")
+                    with st.expander(t("关联的控制项", "Related controls")):
+                        st.dataframe(path, hide_index=True, width="stretch")
             with st.form(f"qg_alias_{key}_{previous.get('revision', 0)}"):
                 defect = st.selectbox(t("标准疵点", "Canonical defect"), codes, index=codes.index(seed) if seed in codes else None,
                                       format_func=lambda code: _name(code, t))
-                st.caption(t("当前状态", "Current status") + " · " + previous.get("status", "draft" if draft else "unmapped"))
                 reason = st.text_area(t("判定依据或适用边界", "Evidence or applicability limits"), value=previous.get("reason", ""))
                 approve = st.form_submit_button(t("确认同义映射", "Approve alias"), disabled=not bool(clean(actor)))
                 block = st.form_submit_button(t("标为待澄清", "Mark unresolved"), disabled=not bool(clean(actor)))
@@ -172,9 +169,9 @@ def _mapping_editor(scoped, aliases, links, controls, store, actor, show_zx, sta
     else:
         st.info(t("这个范围暂无描述。可以在「数据与评估」导入 CSV。", "No observations in this scope. Import a CSV in Data and evaluation."))
 
-    if not show_zx:
-        return
-    st.subheader(t("标准疵点 → Control Plan", "Canonical defect → Control Plan"))
+
+
+def _cp_editor(links, controls, store, actor, stage_filter, t):
     if not controls:
         st.info(t("请加载本试点对应版本的 ZX 手套 CP。", "Load the ZX glove guide version for this pilot."))
         return
@@ -185,12 +182,14 @@ def _mapping_editor(scoped, aliases, links, controls, store, actor, show_zx, sta
         key, stage, defect, row, relation, note = selected
         control = controls[row]
         previous = links.get(key, {})
-        st.write(control["reference"], control["section"], control["step"])
-        st.markdown(f"**What to control**  \n{control['what']}  \n**How to control**  \n{control['how']}")
-        st.text(f"Target · {control['target']}\nTolerance · {control['tolerance']}\nHow to React · {control['reaction'] or '—'}")
-        st.caption(f"{relation} · {note}")
+        with st.expander(t("查看 CP 原表信息", "View CP source details")):
+            for field, label in (("reference", t("来源", "Source")), ("what", t("控制项", "Control")),
+                                 ("how", t("方法", "Method")), ("target", t("目标", "Target")),
+                                 ("tolerance", t("公差", "Tolerance")), ("reaction", t("应对", "Reaction"))):
+                if control[field] not in {"", "NA", "N/A"}:
+                    st.write(label, control[field])
+            st.write(note)
         with st.form(f"qg_edge_{key}_{previous.get('revision', 0)}"):
-            st.caption(t("当前状态", "Current status") + " · " + previous.get("status", "draft"))
             ccs = st.text_input(t("已确认适用的 CC（六位，空格分隔）", "Confirmed applicable CCs (six digits, space separated)"), value=" ".join(previous.get("ccs", [])))
             reason = st.text_area(t("适用依据（如 ZX 批准 CP 或 Techpack 版本及定位）", "Applicability evidence (e.g. approved ZX CP or Techpack revision and reference)"), value=previous.get("reason", ""))
             approve = st.form_submit_button(t("确认控制项与适用 CC", "Approve control and CC scope"), disabled=not bool(clean(actor)))
@@ -222,27 +221,66 @@ def _mapping_editor(scoped, aliases, links, controls, store, actor, show_zx, sta
                 _save(store, "link", key, {}, actor, dict(ccs=[], reason="", edge=[stage, defect, row, relation, note], status="draft"), t)
 
 
-def _data_and_evaluation(scoped, decisions, store, trial, t):
-    st.subheader(t("导入检验样本", "Import inspection observations"))
-    st.caption(t("CSV 用 UTF-8。必填字段为 community、factory、family、stage、description、source、record。可带 raw_type、process、batch、date、cc。",
-                 "Use UTF-8 CSV. Required fields are community, factory, family, stage, description, source and record. Optional fields are raw_type, process, batch, date and cc."))
-    upload = st.file_uploader(t("上传 CSV", "Upload CSV"), type="csv", key="qg_import")
-    if st.button(t("导入本机队列", "Import to the local queue"), disabled=upload is None, key="qg_import_button"):
-        try:
-            if trial and upload.size > 2_000_000:
-                raise ValueError(t("试用单个 CSV 上限为 2 MB。", "Trial CSVs are limited to 2 MB."))
-            records = read_csv_observations(upload.getvalue())
-            if trial and len({obs.id for obs in [*records, *store.observations()]}) > 5000:
-                raise ValueError(t("试用每个会话最多导入 5,000 条记录。", "A trial session can import up to 5,000 records."))
-            count = store.import_observations(records)
-        except (UnicodeError, ValueError, csv.Error, sqlite3.Error) as error:
-            st.error(str(error))
+def _render_mapping(scoped, aliases, links, controls, store, community, factory, stage, family, t):
+    rows = [row for row in mapping_rows(scoped, aliases, links, controls) if row["community"] == community
+            and (not stage or row["stage"] == stage) and (not factory or row["factory"] == factory)
+            and (not family or row["family"] == family)]
+    descriptions = [row for row in rows if row["edge"] == "ALIAS_OF"]
+    control_links = [row for row in rows if row["edge"] == "CONTROL_LINK"]
+    heading, download = st.columns([3, 1], vertical_alignment="center")
+    heading.subheader("Defect Mapping")
+    download.download_button(t("下载映射 CSV", "Download CSV"), csv_bytes(rows), "quality-defect-mapping.csv", "text/csv",
+                             disabled=not rows, width="stretch")
+    with st.container(key="qg_mapping_metrics"):
+        cards = st.columns(3)
+        cards[0].metric(t("疵点描述", "Defect descriptions"), len(descriptions))
+        cards[1].metric(t("已确认映射", "Approved mappings"), sum(row["status"] == "approved" for row in descriptions))
+        cards[2].metric(t("CP 关联", "CP links"), len(control_links))
+    show_zx = community == "TU" and factory in (None, "ZX") and family in (None, GLOVES)
+    modes = {"aliases": t("疵点描述映射", "Defect descriptions"), "controls": "Control Plan"}
+    mode = st.radio(t("映射类型", "Mapping type"), modes if show_zx else ["aliases"], format_func=modes.get,
+                    horizontal=True, label_visibility="collapsed", key="qg_mapping_kind")
+    statuses = {"draft": t("待确认", "Pending"), "unmapped": t("未匹配", "Unmapped"),
+                "approved": t("已确认", "Approved"), "unresolved": t("待澄清", "Unresolved"),
+                "source_unavailable": t("来源缺失", "Source unavailable")}
+    name_key = "canonical_name" if t("zh", "en") == "zh" else "canonical_name_en"
+    fields = {"raw_description": t("原始描述", "Original wording"), "stage": t("环节", "Stage"),
+              name_key: t("标准疵点", "Canonical defect"), "records": t("记录数", "Records"),
+              "how": t("控制方法", "Method"), "what": t("控制项", "Control"), "status": t("状态", "Status")}
+    keys = ["raw_description", name_key, "stage", "records", "status"] if mode == "aliases" else ["stage", name_key, "how", "what", "status"]
+    table = pd.DataFrame(descriptions if mode == "aliases" else control_links, columns=keys)
+    table["status"] = table["status"].map(statuses)
+    listing, editor = st.columns([1.7, 1], gap="medium")
+    with listing:
+        st.dataframe(table.rename(columns=fields), hide_index=True, width="stretch", height=420)
+    with editor, st.container(border=True, key="qg_mapping_editor"):
+        st.subheader(t("审核描述映射", "Review defect mapping") if mode == "aliases" else t("审核控制项", "Review control link"))
+        actor = st.text_input(t("映射审核人", "Mapping reviewer"), key="qg_mapping_actor", max_chars=80)
+        if mode == "aliases":
+            _alias_editor(scoped, aliases, links, controls, store, actor, t)
         else:
-            st.session_state["qg_saved"] = t(f"新增 {count:,} 条，重复记录已跳过。", f"Imported {count:,} new records. Duplicates skipped.")
-            st.rerun()
-    st.subheader(t("标签与模型评估", "Labels and model evaluation"))
-    st.caption(t("分类基线在看板服务器的 Python 进程内，用当前标签即时拟合。评估会先留出测试样本，再计算准确率。",
-                 "The dashboard's Python process fits the baseline on the current labels. Evaluation holds out test records before calculating accuracy."))
+            _cp_editor(links, controls, store, actor, stage, t)
+
+
+def _import_evaluation_data(store, trial, t):
+    with st.popover(t("导入样本", "Import records"), width="stretch"):
+        upload = st.file_uploader(t("检验样本 CSV", "Inspection records CSV"), type="csv", key="qg_import")
+        if st.button(t("导入", "Import"), disabled=upload is None, key="qg_import_button"):
+            try:
+                if trial and upload.size > 2_000_000:
+                    raise ValueError(t("试用单个 CSV 上限为 2 MB。", "Trial CSVs are limited to 2 MB."))
+                records = read_csv_observations(upload.getvalue())
+                if trial and len({obs.id for obs in [*records, *store.observations()]}) > 5000:
+                    raise ValueError(t("试用每个会话最多导入 5,000 条记录。", "A trial session can import up to 5,000 records."))
+                count = store.import_observations(records)
+            except (UnicodeError, ValueError, csv.Error, sqlite3.Error) as error:
+                st.error(str(error))
+            else:
+                st.session_state["qg_saved"] = t(f"已导入 {count:,} 条新记录。", f"Imported {count:,} new records.")
+                st.rerun()
+
+
+def _data_and_evaluation(scoped, decisions, store, trial, t):
     scoped_ids = {obs.id for obs in scoped}
     accepted = [(obs, item) for obs, item in accepted_samples(decisions) if obs.id in scoped_ids]
     labels = [(obs, item["labels"][0]) for obs, item in accepted if len(item["labels"]) == 1]
@@ -252,39 +290,61 @@ def _data_and_evaluation(scoped, decisions, store, trial, t):
                "reviewed_at": item["at"] if item["status"] == "approved" else "",
                "confirmed_at": item["at"], "taxonomy": item["taxonomy"]}
               for obs, item in accepted]
-    st.caption(t(f"已处理 {len(accepted):,} 条，其中单标签 {len(labels):,} 条可用于本轮基线。", f"{len(accepted):,} answered records, including {len(labels):,} single-label baseline records."))
-    st.download_button(t("下载标签 CSV", "Download labels CSV"), csv_bytes(export), "quality-labels.csv", "text/csv", disabled=not export)
-    domains = sorted({(obs.community, obs.family, obs.stage) for obs, _ in labels})
-    domain = st.selectbox(t("评估范围", "Evaluation domain"), domains, index=None, format_func=lambda item: " / ".join(item), key="qg_eval_domain")
-    if not domain:
-        st.info(t("暂无可报告的准确率。先为同一产品族和检验环节标注足够样本。", "No accuracy to report yet. Label enough records within a product family and inspection gate first."))
-        return
-    rows = [(obs, label) for obs, label in labels if (obs.community, obs.family, obs.stage) == domain]
-    factories = sorted({obs.factory for obs, _ in rows})
-    holdout = st.selectbox(t("留出工厂（可选）", "Hold out a factory (optional)"), factories if len(factories) > 1 else [], index=None,
-                           key="qg_eval_factory")
-    metrics = evaluate(rows, holdout)
-    if not metrics:
-        st.info(t("去除重复描述和重叠批次后，至少需要 10 条训练、5 条测试、3 种测试描述和两个训练标签。",
-                  "After excluding repeated wording and overlapping batches, evaluation needs at least 10 train records, 5 test records, 3 test phrases and 2 train classes."))
-        return
-    cols = st.columns(4)
-    for column, label, metric in zip(cols, ["Accuracy", "Macro F1", t("预测覆盖率", "Coverage"), t("多数类基线", "Majority baseline")],
-                                     ["accuracy", "macro_f1", "coverage", "majority_accuracy"]):
-        column.metric(label, f"{metrics[metric]:.1%}")
-    st.caption(t(f"训练 {metrics['train_records']} 条，测试 {metrics['test_records']} 条，按 {metrics['test_groups']} 组去重计分。弃权计为未命中。",
-                 f"{metrics['train_records']} train records and {metrics['test_records']} test records scored as {metrics['test_groups']} deduplicated groups. Abstentions count as misses."))
-    st.dataframe(metrics["per_label"], hide_index=True, width="stretch")
-    with st.expander(t("混淆明细", "Confusion details")):
-        st.dataframe(metrics["confusion"], hide_index=True, width="stretch")
+    heading, importer, download = st.columns([3, 1, 1], vertical_alignment="center")
+    heading.subheader(t("模型评估", "Model evaluation"))
+    with importer:
+        _import_evaluation_data(store, trial, t)
+    download.download_button(t("下载标签 CSV", "Download labels CSV"), csv_bytes(export), "quality-labels.csv", "text/csv",
+                             disabled=not export, width="stretch")
+
+    def domain_of(obs):
+        return (obs.community, obs.family, obs.stage)
+
+    observations_by_domain = Counter(domain_of(obs) for obs in scoped)
+    labels_by_domain = Counter(domain_of(obs) for obs, _ in labels)
+    domains = sorted(observations_by_domain, key=lambda item: (-labels_by_domain[item], -observations_by_domain[item], item))
+    minimum_total = EVALUATION_MINIMUMS["train_records"] + EVALUATION_MINIMUMS["test_records"]
+    with st.container(border=True, key="qg_model_panel"):
+        model, selection, count = st.columns([1, 1.2, .65], vertical_alignment="center")
+        model.markdown(t("**当前模型**\n\n### 字符 TF-IDF + 最近质心", "**Current model**\n\n### Character TF-IDF + nearest centroid"))
+        domain = selection.selectbox(t("评估范围", "Evaluation domain"), domains, index=0 if domains else None,
+                                     format_func=lambda item: " / ".join(item), key="qg_eval_domain")
+        rows = [(obs, label) for obs, label in labels if domain_of(obs) == domain]
+        count.markdown(t(f"**有效单标签**\n\n### {len(rows):,} / 至少 {minimum_total}",
+                         f"**Single-label records**\n\n### {len(rows):,} / minimum {minimum_total}"))
+        factories = sorted({obs.factory for obs, _ in rows})
+        holdout = selection.selectbox(t("留出工厂", "Hold out factory"), factories, index=None,
+                                      placeholder=t("按描述分组", "Group by wording"), key="qg_eval_factory") if len(factories) > 1 else None
+    readiness, metrics = evaluate_with_readiness(rows, holdout)
+    with st.container(key="qg_eval_metrics"):
+        for column, label, metric in zip(st.columns(3), ["Accuracy", "Recall (Macro)", "F1 Score (Macro)"],
+                                         ["accuracy", "macro_recall", "macro_f1"]):
+            column.metric(label, f"{metrics[metric]:.1%}" if metrics else "—")
+
+    with st.container(border=True, key="qg_readiness"):
+        left, right = st.columns([2, 1], vertical_alignment="center")
+        left.subheader(t("评估样本门槛", "Evaluation requirements"))
+        status = t("可评估", "Ready") if metrics else t("样本不足", "More labels needed")
+        right.markdown(f'<span class="qg-eval-status {"ready" if metrics else "pending"}">{status}</span>', unsafe_allow_html=True)
+        headings = [t("训练样本", "Train records"), t("测试样本", "Test records"),
+                    t("训练类别", "Train classes"), t("测试描述", "Test descriptions")]
+        for column, label, (key, minimum) in zip(st.columns(4), headings, EVALUATION_MINIMUMS.items()):
+            column.metric(label, f"{readiness[key]:,} / {minimum}")
+            column.progress(min(readiness[key] / minimum, 1))
+    if metrics:
+        st.subheader(t("按疵点类别", "Performance by defect"))
+        per_label = pd.DataFrame([{
+            t("标准疵点", "Canonical defect"): _name(row["defect"], t), t("测试组", "Test groups"): row["test_groups"],
+            "Recall": f'{row["recall"]:.1%}', "F1 Score": f'{row["f1"]:.1%}',
+        } for row in metrics["per_label"]])
+        st.dataframe(per_label, hide_index=True, width="stretch")
+        with st.expander(t("混淆明细", "Confusion details")):
+            st.dataframe(metrics["confusion"], hide_index=True, width="stretch")
 
 
 def render_quality_graph(root, jdy, bme, t):
     st.header(t("质量知识图谱 · 疵点标注", "Quality Knowledge Graph · Defect Labeling"))
     trial = graph_mode() == "trial"
-    if trial:
-        st.caption(t("线上试用 · 标注、导入和审批保存在当前浏览器会话。离开前可从「数据与评估」导出标签。",
-                     "Online trial · Labels, imports and approvals stay in this session. Export labels from Data and evaluation before leaving."))
     store = review_store(root)
     controls, error = load_guide()
     if error:
@@ -308,19 +368,7 @@ def render_quality_graph(root, jdy, bme, t):
     panel = st.radio(t("质量知识图谱功能", "Quality graph view"), panels, format_func=panels.get,
                      horizontal=True, label_visibility="collapsed", key="qg_panel")
     if panel == "mapping":
-        actor = st.text_input(t("映射审核人", "Mapping reviewer"), key="qg_mapping_actor", max_chars=80)
-        if controls:
-            st.caption(t(f"ZX 手套 CP V2.0 · {len(controls)} 条控制条目", f"ZX glove guide V2.0 · {len(controls)} control entries"))
-        rows = [row for row in mapping_rows(scoped, aliases, links, controls) if row["community"] == community
-                and (not stage or row["stage"] == stage) and (not factory or row["factory"] == factory)
-                and (not family or row["family"] == family)]
-        visible = pd.DataFrame(rows, columns=["edge", "stage", "raw_type", "raw_description", "canonical_name", "status", "how", "reference"])
-        if community == "BME":
-            st.info(t("BME 需要自己的 Control Plan。可先导入和标注，ZX 控制条目只适用 TU 手套试点。", "BME can import and label data now. It needs its own control plan. ZX controls are scoped to the TU glove pilot."))
-        st.dataframe(visible, hide_index=True, width="stretch", height=290)
-        st.download_button(t("下载当前映射 CSV", "Download mapping CSV"), csv_bytes(rows), "quality-defect-mapping.csv", "text/csv", disabled=not rows)
-        show_zx = community == "TU" and factory in (None, "ZX") and family in (None, GLOVES)
-        _mapping_editor(scoped, aliases, links, controls, store, actor, show_zx, stage, t)
+        _render_mapping(scoped, aliases, links, controls, store, community, factory, stage, family, t)
     elif panel == "data":
         _data_and_evaluation(scoped, labels, store, trial, t)
     else:

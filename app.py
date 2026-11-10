@@ -42,16 +42,16 @@ from tu_quality import build_zx_quality_gates
 from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
 from quality_chatbot_ui import render_quality_chatbot
 import quality_graph_seed as _quality_graph_seed
-if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 2:
+if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 3:
     importlib.reload(_quality_graph_seed)
 import quality_graph as _quality_graph
-if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 2:
+if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 3:
     importlib.reload(_quality_graph)
 import quality_workbench_ui as _quality_workbench_ui
-if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 2:
+if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 3:
     importlib.reload(_quality_workbench_ui)
 import quality_graph_ui as _quality_graph_ui
-if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 2:
+if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 3:
     importlib.reload(_quality_graph_ui)
 from quality_graph import graph_mode
 from quality_graph_ui import render_quality_graph, report_control_evidence
@@ -6200,7 +6200,7 @@ ZX_AQL_RECORD_PRIOR_COUNT = 20.0
 
 
 def zx_report_aql_review(groups: dict) -> dict:
-    """Flag a sampling review using the existing FQC signal by inspection party."""
+    """Apply the report's numeric AQL recommendation to per-party FQC evidence."""
     rates = {}
     for party, data in groups.items():
         valid, failed = data["valid_records"], data["fail_count"]
@@ -6208,9 +6208,8 @@ def zx_report_aql_review(groups: dict) -> dict:
             rates[party] = (failed + ZX_AQL_FAIL_PRIOR_COUNT) / (valid + ZX_AQL_RECORD_PRIOR_COUNT)
     flagged = [party for party, rate in rates.items() if rate >= ZX_AQL_TIGHTENED_SMOOTHED_FAIL_RATE]
     decision = "review" if flagged else "maintain" if rates else "insufficient"
-    actions = {"review": "Review tightened sampling", "maintain": "Keep approved sampling",
-               "insufficient": "Collect first-pass evidence"}
-    return {"decision": decision, "recommendation": actions[decision], "rates": rates, "flagged": flagged,
+    recommendation = "AQL 1.0" if flagged else "AQL 1.5"
+    return {"decision": decision, "recommendation": recommendation, "rates": rates, "flagged": flagged,
             "minimum": ZX_AQL_STABLE_MIN_VALID_RECORDS, "threshold": ZX_AQL_TIGHTENED_SMOOTHED_FAIL_RATE}
 
 
@@ -21138,23 +21137,30 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
         if not matches:
             return e(t("先核对疵点和工序，再匹配 CP", "Verify defect and process, then match the CP"))
         primary = matches[0]
-        status = t("已核对", "Reviewed") if primary["status"] == "linked" else t("指南候选", "Guide candidate")
-        preview = f'{primary["how"] or primary["what"]} · {status}'
+        standards = {
+            51: t(f"缝份 {primary['target'].replace('+/-', '±')}", f"Seam allowance {primary['target'].replace('+/-', '±')}"),
+            53: t("接缝牢固，无间隙或开口", "Secure seam without gaps or openings"),
+            59: t("外观检查", "Visual appearance"),
+            82: t("成品外观检查", "Finished-product appearance"),
+        }
+        standard = standards.get(primary["row"], primary["what"])
+        if primary["row"] in {59, 82} and primary["defect"] == "TU-021":
+            standard = t("外观无孔洞", "No visible holes")
+        preview = " · ".join(dict.fromkeys(filter(None, (primary["how"], standard))))
         lines = []
         for item in matches:
             applicability = (item.get("review_evidence") if item["status"] == "linked" else
                              t("核对该 CC 的批准版 CP / Techpack", "Check the approved CP / Techpack for this CC"))
-            lines.append(" · ".join(part for part in [item["stage"], item["what"], item["how"], item["reference"],
-                                                      item["action"], applicability, item["reaction"]] if part))
-        return detail("\n\n".join(lines), preview, "quality-report-cp") + f'<small class="quality-report-cell-note">{e(primary["action"])}</small>'
+            target = item["target"] if item["target"] not in {"", "NA", "N/A"} else None
+            tolerance = item["tolerance"] if item["tolerance"] not in {"", "NA", "N/A"} else None
+            source = " · ".join(part for part in (item["stage"], item["how"], item["what"], item["reference"]) if part)
+            lines.append("\n".join(part for part in [source, target, tolerance, item["action"], applicability, item["reaction"]] if part))
+        return detail("\n\n".join(lines), preview, "quality-report-cp") + f'<div class="quality-report-cell-note">{e(primary["action"])}</div>'
 
-    def report_aql_cell(aql, action):
+    def report_aql_cell(cc, aql, action):
         decision = aql.get("decision")
         if not decision:
-            return e(aql.get("recommendation") or "—")
-        choices = {"review": t("评估加严抽样", "Review tightened sampling"),
-                   "maintain": t("沿用批准抽样", "Keep approved sampling"),
-                   "insufficient": t("先补首验数据", "Collect first-pass evidence")}
+            return e(aql.get("recommendation") or "—"), ""
         lines = []
         for party, label in owner_labels.items():
             group = action.get("fqc_by_owner", {}).get(party, {})
@@ -21163,9 +21169,35 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
                      t(f"不足 {aql['minimum']} 条有效首验", f"Fewer than {aql['minimum']} valid first results"))
             lines.append(f"{label} · {group.get('fail_count', 0)}/{group.get('valid_records', 0)} · {basis}")
         threshold = f"{aql['threshold']:.0%}"
-        lines.append(t(f"{threshold} 为内部筛查阈值。抽样按已批准的严重等级 AQL、批量及检验水平执行。",
-                       f"{threshold} is an internal review threshold. Use the approved severity AQL, lot size and inspection level."))
-        return detail("\n".join(lines), choices[decision], "quality-report-aql-detail")
+        reasons = {"review": t(f"至少一方达到看板 {threshold} 阈值，建议 AQL 1.0。", f"At least one party meets the dashboard's {threshold} threshold. Suggested AQL 1.0."),
+                   "maintain": t(f"满足样本门槛的各方均低于 {threshold}，建议 AQL 1.5。", f"Each eligible party is below {threshold}. Suggested AQL 1.5."),
+                   "insufficient": t("有效首验样本不足，暂用默认建议 AQL 1.5。", "Insufficient first results. AQL 1.5 is the provisional default.")}
+        lines.extend((reasons[decision], t("执行前核对已批准的严重等级 AQL、批量和检验水平。",
+                                         "Verify the approved severity AQL, lot size and inspection level before applying.")))
+        evidence_id = e(f"tu-aql-{cc}")
+        button = f'<details class="quality-report-detail quality-report-aql-detail"><summary aria-controls="{evidence_id}">{e(aql["recommendation"])}</summary></details>'
+        explanation = "\n".join(lines)
+        evidence = f'<tr class="quality-aql-evidence" id="{evidence_id}"><td colspan="4">{e(explanation)}</td></tr>'
+        return button, evidence
+
+    def paired_fqc_cells(action):
+        parties = action.get("fqc_by_owner", {})
+        values = []
+        for key, label in owner_labels.items():
+            group = parties.get(key, {})
+            valid, rate = group.get("valid_records"), group.get("rft")
+            tone = inspection_signal(group.get("pass_count"), valid, st.session_state.lang)["tone"]
+            cells = [
+                (fmt(group.get("records")), "neutral"),
+                (f"{rate:.1%}" if rate is not None else "—", tone),
+                (f"{fmt(group.get('pass_count'))}/{fmt(valid)}" if valid else "—", "good" if valid else "neutral"),
+                (fmt(group.get("fail_count")) if valid else "—", tone),
+                (group.get("latest_date") or "—", "neutral"),
+            ]
+            values.append([f'<span data-owner="{key}" class="quality-value-{color}" title="{e(label)}">{e(value)}</span>'
+                           for value, color in cells])
+        return ''.join(f'<td class="quality-fqc-pair">{left}<span class="quality-pair-slash">/</span>{right}</td>'
+                       for left, right in zip(*values))
 
     def table(name, headings, widths, rows):
         if not rows:
@@ -21200,32 +21232,21 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
         action, aql = action_map.get(cc, {}), aql_map.get(cc, {})
         latest = e(action.get("latest_fqc_date") or "—")
         if community == "TU":
-            shade = " quality-report-owner-alt" if index % 2 == 0 else ""
-            for party, label in owner_labels.items():
-                group = action.get("fqc_by_owner", {}).get(party, {})
-                valid, rate = group.get("valid_records"), group.get("rft")
-                rft = f"{rate:.1%}" if rate is not None else "—"
-                passed = f"{fmt(group.get('pass_count'))}/{fmt(valid)}" if valid else "—"
-                failed = fmt(group.get("fail_count")) if valid else "—"
-                tone = inspection_signal(group.get("pass_count"), valid, st.session_state.lang)["tone"]
-                identifier = f'<th scope="row" rowspan="2">{cc_label(cc)}</th>' if party == "decathlon" else ""
-                evidence_rows.append(f'<tr data-cc="{e(cc)}" data-owner="{party}" class="quality-report-owner-row{shade}">{identifier}'
-                    f'<td class="quality-report-owner">{e(label)} <small>· {fmt(group.get("records"))}</small></td>'
-                    f'<td class="quality-value-{tone}"><strong>{e(rft)}</strong></td>'
-                    f'<td class="quality-value-good">{e(passed)}</td><td class="quality-value-{tone}">{e(failed)}</td>'
-                    f'<td class="quality-report-date">{e(group.get("latest_date"))}</td></tr>')
+            evidence_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>{paired_fqc_cells(action)}</tr>')
         else:
             evidence_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>'
                 f'<td>{e(fmt(action.get("fqc_records")))}</td><td>{e(fmt(action.get("fqc_sampled")))}</td>'
                 f'<td>{e(fmt(action.get("fqc_defects")))}</td><td class="quality-report-date">{latest}</td></tr>')
 
-        plan_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>'
+        aql_button, aql_evidence = report_aql_cell(cc, aql, action)
+        plan_shade = ' class="quality-plan-alt"' if index % 2 == 0 else ''
+        plan_rows.append(f'<tr data-cc="{e(cc)}"{plan_shade}><th scope="row">{cc_label(cc)}</th>'
             f'<td>{short(product.get("top_defect") or t("待补问题类型", "Defect link missing"), 8)}</td>'
-            f'<td>{report_cp_cell(cc, action)}</td><td class="quality-report-aql">{report_aql_cell(aql, action)}</td></tr>')
+            f'<td>{report_cp_cell(cc, action)}</td><td class="quality-report-aql">{aql_button}</td></tr>{aql_evidence}')
 
     risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("总分区间", "Score/range") if is_poc else t("风险分", "Risk"), "DPU", "Return Qty" if is_poc else "RPM", "IV Qty" if is_poc else "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
     if community == "TU":
-        evidence_table = table("evidence-table", ["CC", t("验货方 · 条数", "Party · Records"), "RFT", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [14, 22, 14, 17, 11, 22], evidence_rows)
+        evidence_table = table("evidence-table", ["CC", t("迪卡侬 / 工厂", "DKL / Factory"), "RFT", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [11, 16, 18, 17, 9, 29], evidence_rows)
     else:
         evidence_table = table("evidence-table", ["CC", t("FQC 记录", "FQC records"), t("检验数", "Inspections"), t("源不良数", "Source NC"), t("最近 FQC", "Latest FQC")], [20, 20, 20, 20, 20], evidence_rows)
     plan_widths = [15, 20, 41, 24] if community == "TU" else [18, 28, 32, 22]

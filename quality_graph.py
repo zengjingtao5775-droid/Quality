@@ -23,7 +23,7 @@ from quality_graph_seed import (
     TAXONOMY_VERSION, ZX_ALIASES, ZX_LINKS,
 )
 
-QUALITY_GRAPH_RELEASE = 2
+QUALITY_GRAPH_RELEASE = 3
 
 
 def clean(value):
@@ -345,10 +345,13 @@ class TextBaseline:
         return scores[0]
 
 
-def evaluate(rows, holdout_factory=None):
+EVALUATION_MINIMUMS = {"train_records": 10, "test_records": 5, "train_labels": 2, "test_descriptions": 3}
+
+
+def evaluate_with_readiness(rows, holdout_factory=None):
     """Evaluate one domain at a time. Keep repeated wording and batch out of train."""
     if len({obs.domain for obs, _ in rows}) != 1:
-        return None
+        return dict.fromkeys(EVALUATION_MINIMUMS, 0), None
     if holdout_factory:
         test = [(obs, label) for obs, label in rows if normalized(obs.factory) == normalized(holdout_factory)]
     else:
@@ -360,8 +363,9 @@ def evaluate(rows, holdout_factory=None):
     train = [(obs, label) for obs, label in rows if obs.id not in test_ids and normalized(obs.description) not in phrases
              and (normalized(obs.factory), normalized(obs.batch)) not in batches]
     train_labels = {label for _, label in train}
-    if len(train) < 10 or len(test) < 5 or len(train_labels) < 2 or len(phrases) < 3:
-        return None
+    readiness = dict(train_records=len(train), test_records=len(test), train_labels=len(train_labels), test_descriptions=len(phrases))
+    if any(readiness[key] < minimum for key, minimum in EVALUATION_MINIMUMS.items()):
+        return readiness, None
     model = TextBaseline(train)
     majority = Counter(label for _, label in train).most_common(1)[0][0]
     # Score unique wording/factory/label tuples so a frequently repeated phrase cannot dominate.
@@ -377,8 +381,14 @@ def evaluate(rows, holdout_factory=None):
         predicted = sum(n for (_, guess), n in confusion.items() if guess == label)
         per_label.append({"defect": label, "test_groups": count, "recall": tp/count, "f1": 2*tp/(predicted+count),
                           "seen_in_train": label in train_labels})
-    return dict(train_records=len(train), test_records=len(test), test_groups=len(pairs), accuracy=correct/len(pairs),
-                majority_accuracy=support[majority]/len(pairs), coverage=covered/len(pairs),
-                macro_f1=sum(item["f1"] for item in per_label)/len(per_label),
-                per_label=per_label, confusion=[{"actual": a, "predicted": p or "REVIEW", "groups": n}
-                                               for (a, p), n in sorted(confusion.items())])
+    metrics = dict(train_records=len(train), test_records=len(test), test_groups=len(pairs), accuracy=correct/len(pairs),
+                   majority_accuracy=support[majority]/len(pairs), coverage=covered/len(pairs),
+                   macro_recall=sum(item["recall"] for item in per_label)/len(per_label),
+                   macro_f1=sum(item["f1"] for item in per_label)/len(per_label),
+                   per_label=per_label, confusion=[{"actual": a, "predicted": p or "REVIEW", "groups": n}
+                                                  for (a, p), n in sorted(confusion.items())])
+    return readiness, metrics
+
+
+def evaluate(rows, holdout_factory=None):
+    return evaluate_with_readiness(rows, holdout_factory)[1]

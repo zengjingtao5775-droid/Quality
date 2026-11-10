@@ -1,6 +1,6 @@
 """Draft vocabulary and candidate links for the supplied ZX glove guide."""
 
-QUALITY_GRAPH_RELEASE = 2
+QUALITY_GRAPH_RELEASE = 3
 TAXONOMY_VERSION = "defects-v0.1"
 GUIDE_DIGEST = "9ed23bae434a1e1d70069cc12fe48814d352029d628b0ed630d6e847e791a5d0"
 GUIDE_SHEET = "2.Process Guidelines for CP "

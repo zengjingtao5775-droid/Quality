@@ -9,9 +9,9 @@ from quality_graph import TextBaseline, accepted_samples, candidate_aliases, cle
 from quality_graph_seed import STAGES, TAXONOMY
 
 
-QUALITY_GRAPH_RELEASE = 2
+QUALITY_GRAPH_RELEASE = 3
 DIST = Path(__file__).resolve().parent / "quality_workbench/dist"
-_workbench = components.declare_component("quality_single_choice_workbench", path=str(DIST))
+_workbench = components.declare_component("quality_defect_labeler", path=str(DIST))
 ANSWERED = {"confirmed", "approved"}
 ACTOR = "workbench"
 
@@ -43,17 +43,15 @@ def _sample(obs, decision, decisions, t):
         return None
     codes = TAXONOMY[obs.community]
     _, _, suggestion, _ = candidate_aliases([obs])[0]
-    source = "dictionary"
     if not suggestion:
         train = [(item, result["labels"][0]) for item, result in accepted_samples(decisions)
                  if item.domain == obs.domain and len(result["labels"]) == 1]
         if len(train) >= 10 and len({label for _, label in train}) >= 2:
             suggestion, _ = TextBaseline(train).predict(obs.description)
-            source = "model"
     return {"id": obs.id, "description": obs.description, "rawType": obs.raw_type, "factory": obs.factory,
             "family": obs.family, "stage": obs.stage, "process": obs.process, "date": obs.date,
             "source": obs.source, "record": obs.record, "revision": decision.get("revision", 0),
-            "suggestion": suggestion, "suggestionSource": source,
+            "suggestion": suggestion,
             "options": [{"id": code, "name": t(zh, en)} for code, (zh, en, _) in codes.items()]}
 
 
