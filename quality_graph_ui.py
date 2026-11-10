@@ -11,11 +11,13 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 import streamlit as st
 
-from quality_graph import (Observation, ReviewStore, approved_samples, candidate_aliases, clean,
+from quality_graph import (Observation, ReviewStore, accepted_samples, candidate_aliases, clean,
                            csv_bytes, evaluate, graph_db, graph_mode, guide_path, link_candidates, link_key, normalized,
-                           read_controls, read_csv_observations, read_zx_observations, report_control_links)
+                           read_controls, read_csv_observations, read_zx_observations, report_control_candidates)
 from quality_graph_seed import GLOVES, GUIDE_DIGEST, STAGES, TAXONOMY, TAXONOMY_VERSION
 from quality_workbench_ui import render_labeling_workbench
+
+QUALITY_GRAPH_RELEASE = 2
 
 
 def review_store(root):
@@ -238,20 +240,24 @@ def _data_and_evaluation(scoped, decisions, store, trial, t):
         else:
             st.session_state["qg_saved"] = t(f"新增 {count:,} 条，重复记录已跳过。", f"Imported {count:,} new records. Duplicates skipped.")
             st.rerun()
-    st.subheader(t("经复核数据与模型评估", "Reviewed data and model evaluation"))
+    st.subheader(t("标签与模型评估", "Labels and model evaluation"))
+    st.caption(t("分类基线在看板服务器的 Python 进程内，用当前标签即时拟合。评估会先留出测试样本，再计算准确率。",
+                 "The dashboard's Python process fits the baseline on the current labels. Evaluation holds out test records before calculating accuracy."))
     scoped_ids = {obs.id for obs in scoped}
-    approved = [(obs, item) for obs, item in approved_samples(decisions) if obs.id in scoped_ids]
-    labels = [(obs, item["labels"][0]) for obs, item in approved if len(item["labels"]) == 1]
+    accepted = [(obs, item) for obs, item in accepted_samples(decisions) if obs.id in scoped_ids]
+    labels = [(obs, item["labels"][0]) for obs, item in accepted if len(item["labels"]) == 1]
     export = [{"sample_id": obs.id, **asdict(obs), "labels": "|".join(item["labels"]), "outcome": item["outcome"],
-               "reason": item["reason"], "annotator": item.get("annotator", ""), "reviewer": item["actor"],
-               "reviewed_at": item["at"], "taxonomy": item["taxonomy"]}
-              for obs, item in approved]
-    st.caption(t(f"复核通过 {len(approved):,} 条，其中单标签 {len(labels):,} 条可用于本轮基线。", f"{len(approved):,} approved outcomes, including {len(labels):,} single-label baseline records."))
-    st.download_button(t("下载已复核标签 CSV", "Download reviewed labels CSV"), csv_bytes(export), "quality-reviewed-labels.csv", "text/csv", disabled=not export)
+               "reason": item["reason"], "annotator": item.get("annotator", item["actor"]),
+               "reviewer": item["actor"] if item["status"] == "approved" else "",
+               "reviewed_at": item["at"] if item["status"] == "approved" else "",
+               "confirmed_at": item["at"], "taxonomy": item["taxonomy"]}
+              for obs, item in accepted]
+    st.caption(t(f"已处理 {len(accepted):,} 条，其中单标签 {len(labels):,} 条可用于本轮基线。", f"{len(accepted):,} answered records, including {len(labels):,} single-label baseline records."))
+    st.download_button(t("下载标签 CSV", "Download labels CSV"), csv_bytes(export), "quality-labels.csv", "text/csv", disabled=not export)
     domains = sorted({(obs.community, obs.family, obs.stage) for obs, _ in labels})
     domain = st.selectbox(t("评估范围", "Evaluation domain"), domains, index=None, format_func=lambda item: " / ".join(item), key="qg_eval_domain")
     if not domain:
-        st.info(t("暂无可报告的准确率。先完成同一产品族和检验环节的双人复核。", "No accuracy to report yet. Review labels within a product family and inspection gate first."))
+        st.info(t("暂无可报告的准确率。先为同一产品族和检验环节标注足够样本。", "No accuracy to report yet. Label enough records within a product family and inspection gate first."))
         return
     rows = [(obs, label) for obs, label in labels if (obs.community, obs.family, obs.stage) == domain]
     factories = sorted({obs.factory for obs, _ in rows})
@@ -302,8 +308,7 @@ def render_quality_graph(root, jdy, bme, t):
     panel = st.radio(t("质量知识图谱功能", "Quality graph view"), panels, format_func=panels.get,
                      horizontal=True, label_visibility="collapsed", key="qg_panel")
     if panel == "mapping":
-        actor = st.text_input(t("映射审核人", "Mapping reviewer"), key="qg_mapping_actor", max_chars=80,
-                              value=st.session_state.get("_qg_queue", {}).get("actor", ""))
+        actor = st.text_input(t("映射审核人", "Mapping reviewer"), key="qg_mapping_actor", max_chars=80)
         if controls:
             st.caption(t(f"ZX 手套 CP V2.0 · {len(controls)} 条控制条目", f"ZX glove guide V2.0 · {len(controls)} control entries"))
         rows = [row for row in mapping_rows(scoped, aliases, links, controls) if row["community"] == community
@@ -322,43 +327,26 @@ def render_quality_graph(root, jdy, bme, t):
         render_labeling_workbench(scoped, labels, store, (community, factory, stage, family), t)
 
 
-def render_report_controls(root, finished, products, t):
+def report_control_evidence(root, finished, products):
+    """Return CP evidence for the exact displayed defect in each CC's report row."""
     controls, error = load_guide()
-    with st.expander(t("知识图谱 · Control Plan 与行动依据", "Knowledge Graph · Control Plan and action evidence"), expanded=True):
-        if graph_mode() == "trial":
-            st.caption(t("试用草案只读取当前浏览器会话的审批。", "Trial drafts use the approvals from this browser session."))
-        if error:
-            st.info(t("本机 ZX CP 文件不可用。", "The local ZX CP workbook is unavailable."))
-            return
-        if finished.empty or not products:
-            st.info(t("当前筛选暂无可核对的 CC 疵点。", "No CC defect evidence in the current selection."))
-            return
-        store = review_store(root)
-        aliases, links = store.latest("alias"), store.latest("link")
-        kinds = {"中间检验": "PQC", "成品检验": "FQC"}
-        statuses = {"alias_pending": t("待确认标准疵点", "Alias review needed"),
-                    "control_pending": t("待确认控制项及 CC 适用性", "Control or CC applicability review needed"),
-                    "linked": t("已核对控制关联", "Reviewed control link")}
-        ccs = {str(item["cc"]) for item in products[:5]}
-        selected = finished.loc[finished["product_code"].isin(ccs) & finished["defect_qty"].gt(0)].copy()
-        selected["stage"] = selected["inspection_type"].map(kinds)
-        ranked = (selected.dropna(subset=["stage"]).groupby(["product_code", "stage", "defect_type"], as_index=False).defect_qty.sum()
-                  .sort_values(["defect_qty", "defect_type"], ascending=[False, True]).drop_duplicates(["product_code", "stage"]))
-        if ranked.empty:
-            st.info(t("当前筛选暂无可核对的 CC 疵点。", "No CC defect evidence in the current selection."))
-            return
-        st.caption(t("采用当前全局筛选内高风险 CC 的 ZX 工厂检验记录，按环节显示。仅引用已确认适用该 CC 的控制项。",
-                     "Uses ZX factory inspections for priority CCs within the active report filters, shown by gate. Controls require explicit approval for the CC."))
-        for row in ranked.itertuples(index=False):
-            obs = Observation("TU", "ZX", GLOVES, row.stage, row.defect_type, source="Dashboard factory inspections", record=str(row.product_code), cc=str(row.product_code))
-            status, matches = report_control_links(obs, aliases, links, controls)
-            alias = aliases.get(obs.alias_key, {})
-            label = _name(alias.get("defect"), t) if alias.get("status") == "approved" else "—"
-            st.markdown(f"**{obs.cc} · {obs.stage}** · {obs.description} · {label} · {statuses[status]}")
-            for control in matches:
-                st.write(control["what"], control["how"], control["reference"])
-                st.write(t("建议行动", "Proposed action") + " · " + control["action"])
-                st.caption(t("CC 适用依据", "CC applicability evidence") + " · " + control["review_evidence"])
-                if control["reaction"]:
-                    st.write("How to React · " + control["reaction"])
-                st.caption(t("由质量负责人确认 Owner 和截止日，复检时记录样本、批次和结果。", "Quality lead assigns owner and due date. Record batch, sample and outcome when verifying effectiveness."))
+    if error or finished.empty or not products:
+        return {}, bool(error)
+    store = review_store(root)
+    aliases, links = store.latest("alias"), store.latest("link")
+    defects = {str(item["cc"]): clean(item.get("top_defect")) for item in products[:5]}
+    kinds = {"中间检验": "PQC", "成品检验": "FQC"}
+    source = finished.loc[finished["product_code"].isin(defects) & finished["defect_qty"].gt(0),
+                          ["product_code", "inspection_type", "defect_type"]].drop_duplicates()
+    evidence = {}
+    for row in source.itertuples(index=False):
+        cc, stage = str(row.product_code), kinds.get(row.inspection_type)
+        if not stage or not defects[cc] or normalized(row.defect_type) != normalized(defects[cc]):
+            continue
+        observation = Observation("TU", "ZX", GLOVES, stage, clean(row.defect_type),
+                                  source="Dashboard factory inspections", record=cc, cc=cc)
+        status, matches = report_control_candidates(observation, aliases, links, controls)
+        evidence.setdefault(cc, []).extend({**item, "stage": stage, "status": status} for item in matches)
+    for matches in evidence.values():
+        matches.sort(key=lambda item: (item["status"] != "linked", item["stage"] != "PQC", item["row"]))
+    return evidence, False

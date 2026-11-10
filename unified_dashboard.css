@@ -120,6 +120,13 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {padding:1
 .quality-report-risk-table tbody tr:first-child .quality-report-priority strong {color:#b42318;}
 .quality-report-risk-table th:nth-child(n+4),.quality-report-risk-table td:nth-child(n+4) {text-align:right;}
 .quality-report-evidence-table th:not(:first-child),.quality-report-evidence-table td {text-align:right;white-space:nowrap;}
+.quality-report-evidence-table td.quality-report-owner {text-align:left;}
+.quality-report-owner small,.quality-report-cell-note {color:#53627b;font-size:13px;font-weight:400;}
+.quality-report-evidence-table tbody tr.quality-report-owner-row {background:#fff;}
+.quality-report-evidence-table tbody tr.quality-report-owner-alt {background:#f7f9fd;}
+.quality-report-owner-row[data-owner="factory"] td,.quality-report-owner-row th[rowspan] {border-bottom:1px solid #dce3f2;}
+.quality-report-cell-note {display:block;line-height:1.35;margin-top:2px;}
+.quality-report-cp p,.quality-report-aql-detail p {white-space:pre-line;}
 .quality-report-product {display:flex;align-items:baseline;gap:7px;min-width:0;}
 .quality-report-product > strong {font-size:17px;white-space:nowrap;color:#172b51;}
 .quality-report-supplier {font-size:16px;white-space:nowrap;color:#475467;}

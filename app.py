@@ -41,8 +41,20 @@ from dashboard_scope import (
 from tu_quality import build_zx_quality_gates
 from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
 from quality_chatbot_ui import render_quality_chatbot
+import quality_graph_seed as _quality_graph_seed
+if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 2:
+    importlib.reload(_quality_graph_seed)
+import quality_graph as _quality_graph
+if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 2:
+    importlib.reload(_quality_graph)
+import quality_workbench_ui as _quality_workbench_ui
+if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 2:
+    importlib.reload(_quality_workbench_ui)
+import quality_graph_ui as _quality_graph_ui
+if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 2:
+    importlib.reload(_quality_graph_ui)
 from quality_graph import graph_mode
-from quality_graph_ui import render_quality_graph, render_report_controls
+from quality_graph_ui import render_quality_graph, report_control_evidence
 import quality_gate_metrics as _quality_gate_metrics
 if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-weekly-zero-exposure":
     importlib.reload(_quality_gate_metrics)
@@ -6187,6 +6199,21 @@ ZX_AQL_FAIL_PRIOR_COUNT = 1.0
 ZX_AQL_RECORD_PRIOR_COUNT = 20.0
 
 
+def zx_report_aql_review(groups: dict) -> dict:
+    """Flag a sampling review using the existing FQC signal by inspection party."""
+    rates = {}
+    for party, data in groups.items():
+        valid, failed = data["valid_records"], data["fail_count"]
+        if valid >= ZX_AQL_STABLE_MIN_VALID_RECORDS:
+            rates[party] = (failed + ZX_AQL_FAIL_PRIOR_COUNT) / (valid + ZX_AQL_RECORD_PRIOR_COUNT)
+    flagged = [party for party, rate in rates.items() if rate >= ZX_AQL_TIGHTENED_SMOOTHED_FAIL_RATE]
+    decision = "review" if flagged else "maintain" if rates else "insufficient"
+    actions = {"review": "Review tightened sampling", "maintain": "Keep approved sampling",
+               "insufficient": "Collect first-pass evidence"}
+    return {"decision": decision, "recommendation": actions[decision], "rates": rates, "flagged": flagged,
+            "minimum": ZX_AQL_STABLE_MIN_VALID_RECORDS, "threshold": ZX_AQL_TIGHTENED_SMOOTHED_FAIL_RATE}
+
+
 def recommend_zx_dynamic_aql(product: dict, fail_count: int, valid_records: int) -> dict[str, object]:
     risk_score = pd.to_numeric(product.get("risk_score"), errors="coerce")
     risk_level_value = str(product.get("risk_level") or "Medium")
@@ -6366,11 +6393,11 @@ def build_tu_community_ai_fact_pack(
         if not cc_fqc.empty:
             cc_fqc["_action_inspector"] = cc_fqc.get(
                 "inspector", pd.Series("", index=cc_fqc.index)
-            ).map(normalize_zx_inspector_name)
+            ).fillna("").map(normalize_zx_inspector_name)
             excluded_mask = cc_fqc["_action_inspector"].map(
                 lambda name: any(pattern in name for pattern in ZX_AI_ACTION_EXCLUDED_INSPECTOR_PATTERNS)
             )
-            cc_fqc = cc_fqc[~excluded_mask].copy()
+            cc_fqc = cc_fqc[~excluded_mask & ~cc_fqc["_action_inspector"].isin({"", "nan", "none", "na"})].copy()
             cc_fqc["_action_owner"] = cc_fqc["_action_inspector"].map(
                 lambda name: (
                     "PS"
@@ -6378,6 +6405,13 @@ def build_tu_community_ai_fact_pack(
                     else "ZX Factory"
                 )
             )
+        fqc_by_owner = {}
+        for party, owner in (("decathlon", "PS"), ("factory", "ZX Factory")):
+            group = cc_fqc.loc[cc_fqc["_action_owner"].eq(owner)] if not cc_fqc.empty else cc_fqc
+            owner_metrics = jdy_fqc_rft_metrics(group)
+            dates = group.get("date", pd.Series(dtype="datetime64[ns]")).dropna()
+            fqc_by_owner[party] = {**owner_metrics, "rft": finite_number(owner_metrics["rft"]),
+                                  "latest_date": dates.max().date().isoformat() if not dates.empty else None}
         cp_for_cc = pd.DataFrame()
         if cc and not cp.empty and "cc" in cp.columns:
             cp_for_cc = cp[
@@ -6453,8 +6487,9 @@ def build_tu_community_ai_fact_pack(
                 "fqc_sampled": finite_number(sampling),
                 "fqc_defects": finite_number(fqc_defects),
                 "latest_fqc_date": latest_date,
-                "ps_fqc_records": int(cc_fqc["_action_owner"].eq("PS").sum()) if not cc_fqc.empty else 0,
-                "factory_fqc_records": int(cc_fqc["_action_owner"].eq("ZX Factory").sum()) if not cc_fqc.empty else 0,
+                "ps_fqc_records": fqc_by_owner["decathlon"]["records"],
+                "factory_fqc_records": fqc_by_owner["factory"]["records"],
+                "fqc_by_owner": fqc_by_owner,
                 "cp_records": int(len(cp_for_cc)),
                 "cp_linked": bool(not cp_for_cc.empty),
                 "cp_processes": cp_processes,
@@ -21066,7 +21101,7 @@ def render_unified_plotly(fig, *args, **kwargs):
     return result
 
 
-def render_three_part_report(community, pack, narrative):
+def render_three_part_report(community, pack, narrative, control_evidence=None):
     products = pack.get("product_risks", [])[:5]
     is_poc = bool(pack.get("risk_poc"))
     action_map = {str(item.get("cc")): item for item in pack.get("ps_actions", [])}
@@ -21089,6 +21124,48 @@ def render_three_part_report(community, pack, narrative):
     def cc_label(cc):
         text = str(cc)
         return detail(text, text.split(" · ")[0]) if " · " in text else e(text)
+
+    owner_labels = {"decathlon": t("迪卡侬", "Decathlon"), "factory": t("工厂", "Factory")}
+
+    def report_cp_cell(cc, action):
+        if control_evidence is None:
+            cp = "\n".join(f"{m.get('focus', '')}: {m.get('requirement', '')}" for m in action.get("cp_matches", [])[:1])
+            return short(cp, 14)
+        controls, unavailable = control_evidence
+        matches = controls.get(cc, [])
+        if unavailable:
+            return e(t("CP 文件不可用", "CP workbook unavailable"))
+        if not matches:
+            return e(t("先核对疵点和工序，再匹配 CP", "Verify defect and process, then match the CP"))
+        primary = matches[0]
+        status = t("已核对", "Reviewed") if primary["status"] == "linked" else t("指南候选", "Guide candidate")
+        preview = f'{primary["how"] or primary["what"]} · {status}'
+        lines = []
+        for item in matches:
+            applicability = (item.get("review_evidence") if item["status"] == "linked" else
+                             t("核对该 CC 的批准版 CP / Techpack", "Check the approved CP / Techpack for this CC"))
+            lines.append(" · ".join(part for part in [item["stage"], item["what"], item["how"], item["reference"],
+                                                      item["action"], applicability, item["reaction"]] if part))
+        return detail("\n\n".join(lines), preview, "quality-report-cp") + f'<small class="quality-report-cell-note">{e(primary["action"])}</small>'
+
+    def report_aql_cell(aql, action):
+        decision = aql.get("decision")
+        if not decision:
+            return e(aql.get("recommendation") or "—")
+        choices = {"review": t("评估加严抽样", "Review tightened sampling"),
+                   "maintain": t("沿用批准抽样", "Keep approved sampling"),
+                   "insufficient": t("先补首验数据", "Collect first-pass evidence")}
+        lines = []
+        for party, label in owner_labels.items():
+            group = action.get("fqc_by_owner", {}).get(party, {})
+            rate = aql["rates"].get(party)
+            basis = (t(f"平滑未通过率 {rate:.1%}", f"Smoothed non-pass rate {rate:.1%}") if rate is not None else
+                     t(f"不足 {aql['minimum']} 条有效首验", f"Fewer than {aql['minimum']} valid first results"))
+            lines.append(f"{label} · {group.get('fail_count', 0)}/{group.get('valid_records', 0)} · {basis}")
+        threshold = f"{aql['threshold']:.0%}"
+        lines.append(t(f"{threshold} 为内部筛查阈值。抽样按已批准的严重等级 AQL、批量及检验水平执行。",
+                       f"{threshold} is an internal review threshold. Use the approved severity AQL, lot size and inspection level."))
+        return detail("\n".join(lines), choices[decision], "quality-report-aql-detail")
 
     def table(name, headings, widths, rows):
         if not rows:
@@ -21123,32 +21200,36 @@ def render_three_part_report(community, pack, narrative):
         action, aql = action_map.get(cc, {}), aql_map.get(cc, {})
         latest = e(action.get("latest_fqc_date") or "—")
         if community == "TU":
-            rft = f"{action['fqc_rft']:.1%}" if action.get("fqc_rft") is not None else "—"
-            signal = inspection_signal(action.get("fqc_first_pass"), action.get("fqc_valid_records"), st.session_state.lang)
-            passed = f"{fmt(action.get('fqc_first_pass'))}/{fmt(action.get('fqc_valid_records'))}" if action.get("fqc_rft") is not None else "—"
-            not_passed = fmt(signal["not_passed"])
-            evidence_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>'
-                f'<td>{e(fmt(action.get("ps_fqc_records")))} / {e(fmt(action.get("factory_fqc_records")))}</td>'
-                f'<td class="quality-value-{signal["tone"]}"><strong>{e(rft)}</strong></td>'
-                f'<td class="quality-value-good">{e(passed)}</td><td class="quality-value-{signal["tone"]}">{e(not_passed)}</td>'
-                f'<td class="quality-report-date">{latest}</td></tr>')
+            shade = " quality-report-owner-alt" if index % 2 == 0 else ""
+            for party, label in owner_labels.items():
+                group = action.get("fqc_by_owner", {}).get(party, {})
+                valid, rate = group.get("valid_records"), group.get("rft")
+                rft = f"{rate:.1%}" if rate is not None else "—"
+                passed = f"{fmt(group.get('pass_count'))}/{fmt(valid)}" if valid else "—"
+                failed = fmt(group.get("fail_count")) if valid else "—"
+                tone = inspection_signal(group.get("pass_count"), valid, st.session_state.lang)["tone"]
+                identifier = f'<th scope="row" rowspan="2">{cc_label(cc)}</th>' if party == "decathlon" else ""
+                evidence_rows.append(f'<tr data-cc="{e(cc)}" data-owner="{party}" class="quality-report-owner-row{shade}">{identifier}'
+                    f'<td class="quality-report-owner">{e(label)} <small>· {fmt(group.get("records"))}</small></td>'
+                    f'<td class="quality-value-{tone}"><strong>{e(rft)}</strong></td>'
+                    f'<td class="quality-value-good">{e(passed)}</td><td class="quality-value-{tone}">{e(failed)}</td>'
+                    f'<td class="quality-report-date">{e(group.get("latest_date"))}</td></tr>')
         else:
             evidence_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>'
                 f'<td>{e(fmt(action.get("fqc_records")))}</td><td>{e(fmt(action.get("fqc_sampled")))}</td>'
                 f'<td>{e(fmt(action.get("fqc_defects")))}</td><td class="quality-report-date">{latest}</td></tr>')
 
-        matches = action.get("cp_matches", [])
-        cp = "\n".join(f"{m.get('focus', '')}: {m.get('requirement', '')}" for m in matches[:1]) or "—"
         plan_rows.append(f'<tr data-cc="{e(cc)}"><th scope="row">{cc_label(cc)}</th>'
             f'<td>{short(product.get("top_defect") or t("待补问题类型", "Defect link missing"), 8)}</td>'
-            f'<td>{short(cp, 14)}</td><td class="quality-report-aql">{e(aql.get("recommendation") or "—")}</td></tr>')
+            f'<td>{report_cp_cell(cc, action)}</td><td class="quality-report-aql">{report_aql_cell(aql, action)}</td></tr>')
 
     risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("总分区间", "Score/range") if is_poc else t("风险分", "Risk"), "DPU", "Return Qty" if is_poc else "RPM", "IV Qty" if is_poc else "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
     if community == "TU":
-        evidence_table = table("evidence-table", ["CC", t("迪卡侬/工厂", "DKL/Factory"), "RFT", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [14, 22, 14, 18, 12, 20], evidence_rows)
+        evidence_table = table("evidence-table", ["CC", t("验货方 · 条数", "Party · Records"), "RFT", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [14, 22, 14, 17, 11, 22], evidence_rows)
     else:
         evidence_table = table("evidence-table", ["CC", t("FQC 记录", "FQC records"), t("检验数", "Inspections"), t("源不良数", "Source NC"), t("最近 FQC", "Latest FQC")], [20, 20, 20, 20, 20], evidence_rows)
-    plan_table = table("plan-table", ["CC", t("主要疵点", "Top defect"), t("CP / 工序标准", "CP / Process"), t("建议 AQL", "Suggested AQL")], [18, 28, 32, 22], plan_rows)
+    plan_widths = [15, 20, 41, 24] if community == "TU" else [18, 28, 32, 22]
+    plan_table = table("plan-table", ["CC", t("主要疵点", "Top defect"), t("CP / 工序标准", "CP / Process"), t("建议 AQL", "Suggested AQL")], plan_widths, plan_rows)
     ai_rows = []
     for item in narrative.get("actions", []):
         scope_text = " / ".join(item.get("priority_ccs", [])) or t("当前范围", "Current selection")
@@ -21227,9 +21308,8 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
                 # credentials, request bodies or provider responses.
                 print("Quality AI response rejected:", type(error).__name__, str(error) if isinstance(error, ValueError) else "provider request failed", flush=True)
                 st.warning(t("AI 服务暂未返回完整有效的分析，保留三段式数据报告；可稍后重试。", "The AI response was incomplete or invalid. The three-part data report is retained; try again later."))
-        render_three_part_report(community, pack, report["narrative"] if report else {"actions": []})
-        if graph_source is not None:
-            render_report_controls(ROOT, graph_source, pack.get("product_risks", []), t)
+        evidence = report_control_evidence(ROOT, graph_source, pack["product_risks"]) if graph_source is not None else None
+        render_three_part_report(community, pack, report["narrative"] if report else {"actions": []}, evidence)
 
 
 
@@ -21544,11 +21624,8 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
             return_reference_count=score.get("return_reference_count"), return_critical_qty=finite_number(score.get("return_critical_qty")),
             iv_qty_score=finite_number(score.get("iv_score")),
             known_weight=finite_number(score.get("known_weight")))
-    # A new trial score must not trigger an AQL standard derived from the old
-    # two-dimension heuristic. Sampling policy is outside this scoring POC.
-    source_pack["aql_recommendations"] = [{"cc": item["cc"], "model": item.get("model"),
-        "recommendation": t("沿用已批准标准", "Use approved sampling standard"),
-        "governance_note": "POC scoring does not change the approved sampling standard"} for item in source_pack["aql_recommendations"]]
+    source_pack["aql_recommendations"] = [{"cc": action["cc"], **zx_report_aql_review(action["fqc_by_owner"])}
+                                           for action in source_pack["ps_actions"]]
     pack = {key: source_pack[key] for key in ["product_risks", "ps_actions", "aql_recommendations", "cp_context"]}
     pilot_graph = bool(graph_mode())
     if pilot_graph:

@@ -23,6 +23,8 @@ from quality_graph_seed import (
     TAXONOMY_VERSION, ZX_ALIASES, ZX_LINKS,
 )
 
+QUALITY_GRAPH_RELEASE = 2
+
 
 def clean(value):
     text = str(value).strip() if value is not None else ""
@@ -233,7 +235,7 @@ class ReviewStore:
 
 
 def label_decision(observation, labels, outcome, reason, status):
-    if status not in {"submitted", "approved", "returned"}:
+    if status not in {"submitted", "approved", "returned", "confirmed"}:
         raise ValueError("Invalid review status")
     if outcome not in {"labeled", "insufficient", "out_of_taxonomy", "split_needed"}:
         raise ValueError("Invalid annotation outcome")
@@ -245,9 +247,9 @@ def label_decision(observation, labels, outcome, reason, status):
                 outcome=outcome, reason=clean(reason), status=status, taxonomy=TAXONOMY_VERSION)
 
 
-def approved_samples(decisions):
+def accepted_samples(decisions):
     return [(Observation(**item["observation"]), item) for item in decisions.values()
-            if item["status"] == "approved" and item["taxonomy"] == TAXONOMY_VERSION]
+            if item["status"] in {"approved", "confirmed"} and item["taxonomy"] == TAXONOMY_VERSION]
 
 
 def candidate_aliases(observations):
@@ -291,6 +293,21 @@ def report_control_links(observation, aliases, links, controls):
             result.append({**controls[row], "defect": defect, "relation": relation, "action": note,
                            "review_evidence": edge["reason"], "reviewed_at": edge["at"]})
     return ("linked" if result else "control_pending"), result
+
+
+def report_control_candidates(observation, aliases, links, controls):
+    status, matches = report_control_links(observation, aliases, links, controls)
+    if matches or status == "out_of_scope":
+        return status, matches
+    alias = aliases.get(observation.alias_key, {})
+    if alias.get("status") == "unresolved":
+        return status, []
+    defect = alias.get("defect") or ZX_ALIASES.get(observation.stage, {}).get(observation.description)
+    candidates = [{**controls[row], "defect": canonical, "relation": relation, "action": note}
+                  for key, stage, canonical, row, relation, note in link_candidates(links)
+                  if stage == observation.stage and canonical == defect and row in controls
+                  and links.get(key, {}).get("status") != "unresolved"]
+    return ("candidate" if candidates else status), candidates
 
 
 def _grams(text):
