@@ -19,7 +19,7 @@ from quality_graph import (EVALUATION_MINIMUMS, Observation, ReviewStore, accept
 from quality_graph_seed import GLOVES, GUIDE_DIGEST, LABELING_STAGES, STAGES, TAXONOMY, TAXONOMY_VERSION
 from quality_workbench_ui import render_labeling_workbench
 
-QUALITY_GRAPH_RELEASE = 6
+QUALITY_GRAPH_RELEASE = 7
 
 
 def review_store(root):
@@ -47,14 +47,14 @@ def load_guide():
 
 
 @st.cache_data(show_spinner=False)
-def _cached_zx(directory, source_versions):
+def _cached_zx(directory, source_versions, parser_release):
     return read_zx_observations(directory)
 
 
 def local_zx(root):
     directory = root / "TU database/ZX Database/Factory data"
     versions = tuple(sorted((path.name, path.stat().st_mtime_ns, path.stat().st_size) for path in directory.glob("*.xlsx")))
-    return _cached_zx(directory, versions)
+    return _cached_zx(directory, versions, QUALITY_GRAPH_RELEASE)
 
 
 def dashboard_observations(jdy, bme):
