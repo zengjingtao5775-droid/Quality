@@ -126,7 +126,9 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {padding:1
 .quality-report-evidence-table tbody tr.quality-report-owner-alt {background:#f7f9fd;}
 .quality-report-owner-row[data-owner="factory"] td,.quality-report-owner-row th[rowspan] {border-bottom:1px solid #dce3f2;}
 .quality-report-cell-note {display:block;line-height:1.35;margin-top:2px;}
-.quality-report-cp p,.quality-report-aql-detail p {white-space:pre-line;}
+.quality-report-detail.quality-report-cp p,.quality-report-detail.quality-report-aql-detail p {white-space:pre-line;}
+.quality-report-cp[open] + .quality-report-cell-note {display:none;}
+.quality-report-plan-table .quality-report-aql-detail summary {font-size:14px !important;white-space:normal;overflow:visible;}
 .quality-report-product {display:flex;align-items:baseline;gap:7px;min-width:0;}
 .quality-report-product > strong {font-size:17px;white-space:nowrap;color:#172b51;}
 .quality-report-supplier {font-size:16px;white-space:nowrap;color:#475467;}
