@@ -16,7 +16,7 @@ from quality_graph import (EVALUATION_MINIMUMS, Observation, ReviewStore, accept
                            csv_bytes, defect_types, evaluate_with_readiness, extract_decathlon_model, graph_db, graph_mode, guide_path, link_candidates,
                            link_key, normalized, read_controls, read_csv_observations, read_zx_observations,
                            report_control_candidates, save_defect_type)
-from quality_graph_seed import GLOVES, GUIDE_DIGEST, LABELING_STAGES, STAGES, TAXONOMY, TAXONOMY_VERSION
+from quality_graph_seed import GLOVES, GUIDE_DIGEST, LABELING_STAGES, STAGES, TAXONOMY, TAXONOMY_VERSION, ZX_PQC_PILOT_LABELS
 from quality_label_storage import render_browser_backup, restore_browser_backup
 from quality_workbench_ui import render_labeling_workbench
 
@@ -316,8 +316,9 @@ def _import_evaluation_data(store, trial, t):
                 st.rerun()
 
 
-def _data_and_evaluation(scoped, decisions, store, trial, t):
+def _data_and_evaluation(scoped, pilot_labels, decisions, store, trial, t):
     scoped_ids = {obs.id for obs in scoped}
+    pilot_labels = [(obs, label) for obs, label in pilot_labels if obs.id in scoped_ids]
     accepted = [(obs, item) for obs, item in accepted_samples(decisions) if obs.id in scoped_ids]
     labels = [(obs, item["labels"][0]) for obs, item in accepted if len(item["labels"]) == 1]
     export = [{"sample_id": obs.id, **asdict(obs), "labels": "|".join(item["labels"]), "outcome": item["outcome"],
@@ -333,7 +334,7 @@ def _data_and_evaluation(scoped, decisions, store, trial, t):
     download.download_button(t("下载标签 CSV", "Download labels CSV"), csv_bytes(export), "quality-labels.csv", "text/csv",
                              disabled=not export, width="stretch")
     saved_by_gate = Counter(obs.stage for obs, decision in accepted if decision["labels"])
-    st.markdown(t(f"**已保存标注 {sum(saved_by_gate.values()):,} 条**", f"**{sum(saved_by_gate.values()):,} saved labels**")
+    st.markdown(t(f"**我的标注 {sum(saved_by_gate.values()):,} 条**", f"**My labels: {sum(saved_by_gate.values()):,} saved**")
                 + f' · PQC {saved_by_gate["PQC"]:,} · FQC {saved_by_gate["FQC"]:,}')
 
     def domain_of(obs):
@@ -343,17 +344,30 @@ def _data_and_evaluation(scoped, decisions, store, trial, t):
     labels_by_domain = Counter(domain_of(obs) for obs, _ in labels)
     domains = sorted(observations_by_domain, key=lambda item: (-labels_by_domain[item], -observations_by_domain[item], item))
     minimum_total = EVALUATION_MINIMUMS["train_records"] + EVALUATION_MINIMUMS["test_records"]
+    show_pilot = False
+    if pilot_labels:
+        sources = {"pilot": t("ZX PQC 共享试标", "ZX PQC shared pilot"), "mine": t("我的标注", "My labels")}
+        show_pilot = st.radio(t("评估样本", "Evaluation samples"), sources, format_func=sources.get,
+                             horizontal=True, key="qg_eval_source") == "pilot"
     with st.container(border=True, key="qg_model_panel"):
         model, selection, count = st.columns([1, 1.2, .65], vertical_alignment="center")
         model.markdown(t("**当前模型**\n\n### 字符 TF-IDF + 最近质心", "**Current model**\n\n### Character TF-IDF + nearest centroid"))
-        domain = selection.selectbox(t("评估范围", "Evaluation domain"), domains, index=0 if domains else None,
-                                     format_func=lambda item: " / ".join(item), key="qg_eval_domain")
-        rows = [(obs, label) for obs, label in labels if domain_of(obs) == domain]
-        count.markdown(t(f"**有效单标签**\n\n### {len(rows):,} / 至少 {minimum_total}",
-                         f"**Single-label records**\n\n### {len(rows):,} / minimum {minimum_total}"))
-        factories = sorted({obs.factory for obs, _ in rows})
-        holdout = selection.selectbox(t("留出工厂", "Hold out factory"), factories, index=None,
-                                      placeholder=t("按描述分组", "Group by wording"), key="qg_eval_factory") if len(factories) > 1 else None
+        holdout = None
+        if show_pilot:
+            domain = ("TU", GLOVES, "PQC")
+            rows = pilot_labels
+            selection.markdown(t("**评估范围**", "**Evaluation domain**") + "\n\nZX / " + " / ".join(domain))
+            count.markdown(t(f"**共享试标样本**\n\n### {len(rows):,}", f"**Shared pilot records**\n\n### {len(rows):,}"))
+        else:
+            domain = selection.selectbox(t("评估范围", "Evaluation domain"), domains, index=0 if domains else None,
+                                         format_func=lambda item: " / ".join(item), key="qg_eval_domain")
+            rows = [(obs, label) for obs, label in labels if domain_of(obs) == domain]
+            count.markdown(t(f"**有效单标签**\n\n### {len(rows):,} / 至少 {minimum_total}",
+                             f"**Single-label records**\n\n### {len(rows):,} / minimum {minimum_total}"))
+            factories = sorted({obs.factory for obs, _ in rows})
+            if len(factories) > 1:
+                holdout = selection.selectbox(t("留出工厂", "Hold out factory"), factories, index=None,
+                                              placeholder=t("按描述分组", "Group by wording"), key="qg_eval_factory")
     readiness, metrics = evaluate_with_readiness(rows, holdout)
     with st.container(key="qg_eval_metrics"):
         for column, label, metric in zip(st.columns(3), ["Accuracy", "Recall (Macro)", "F1 Score (Macro)"],
@@ -390,7 +404,8 @@ def render_quality_graph(root, jdy, bme, t):
     if error:
         st.warning(t("ZX CP 来源不可用，报告中的 CP 关联暂停。", "ZX CP source unavailable. Report control links are suspended."))
     connected = [] if trial else dashboard_observations(jdy, bme)
-    by_id = {obs.id: obs for obs in [*local_zx(root), *connected, *store.observations()]}
+    zx = local_zx(root)
+    by_id = {obs.id: obs for obs in [*zx, *connected, *store.observations()]}
     browser_ids = set(by_id) if trial else None
     observations = list(by_id.values())
     if message := st.session_state.pop("qg_saved", ""):
@@ -418,7 +433,8 @@ def render_quality_graph(root, jdy, bme, t):
     if panel == "mapping":
         _render_mapping(scoped, store.latest("alias"), store.latest("link"), controls, store, community, factory, stage, family, t)
     elif panel == "data":
-        _data_and_evaluation(scoped, store.latest("label"), store, trial, t)
+        pilot = [(obs, ZX_PQC_PILOT_LABELS[obs.record]) for obs in zx if obs.stage == "PQC" and obs.record in ZX_PQC_PILOT_LABELS]
+        _data_and_evaluation(scoped, pilot, store.latest("label"), store, trial, t)
     else:
         render_labeling_workbench(scoped, store, (community, factory, stage, family), t, browser_ids=browser_ids)
 

@@ -9,6 +9,19 @@ GLOVES = "Gloves - Cut and sew"
 STAGES = ("IQC", "PQC", "FQC")
 LABELING_STAGES = ("PQC", "FQC")
 
+# Hand-labeled pilot records from the bundled ZX inspection workbook.
+ZX_PQC_PILOT_LABELS = {
+    "CH202606300059": "TU-001", "CH202507010018": "TU-001",
+    "CH202606260027": "TU-002", "CH202507100079": "TU-002",
+    "CH202606150071": "TU-003", "CH202508250030": "TU-003",
+    "CH202605130032": "TU-004", "CH202508210026": "TU-004",
+    "CH202605290083": "TU-005", "CH202508230087": "TU-005",
+    "CH202605110083": "TU-007", "CH202507050059": "TU-007",
+    "CH202606170021": "TU-008", "CH202508130008": "TU-008",
+    "CH202606010117": "TU-009", "CH202510150014": "TU-009", "CH202603270043": "TU-009",
+    "CH202606220050": "TU-010", "CH202507140071": "TU-010",
+}
+
 # IDs are independent of display names. The definition describes observable
 # evidence and sets a boundary for annotators, not a manufacturing cause.
 TAXONOMY = {
