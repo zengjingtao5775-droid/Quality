@@ -4,7 +4,8 @@ import unittest
 
 from openpyxl import Workbook
 
-from quality_graph import GLOVES, Observation, ReviewStore, accepted_samples, defect_types, read_zx_observations, save_defect_type
+from quality_graph import GLOVES, Observation, ReviewStore, accepted_samples, defect_types, label_decision, read_zx_observations, save_defect_type
+from quality_label_storage import _restore
 from quality_workbench_ui import _apply, _sample, progress_by_gate, work_queue
 
 
@@ -42,6 +43,21 @@ class WorkbenchTests(unittest.TestCase):
         self.assertEqual((context["description"], context["cc"], context["model"], context["suggestion"]),
                          ("明线不匀", "347696", "8988588", "TU-008"))
         self.assertEqual(work_queue([sample], {}, "8988588"), [sample])
+
+    def test_browser_backup_restores_labels_and_preserves_newer_undo(self):
+        _, sample, _ = self.rows
+        with TemporaryDirectory() as folder:
+            store = ReviewStore(Path(folder) / "new-session.sqlite3")
+            key = f"label:{sample.id}"
+            saved = dict(key=key, at="2026-01-01T00:00:00+00:00",
+                         payload=label_decision(sample, ["TU-001"], "labeled", "", "confirmed"))
+            withdrawn = dict(key=key, at="2026-01-02T00:00:00+00:00", payload={"status": "withdrawn"})
+            _restore(store, [saved], {sample.id})
+            self.assertEqual(progress_by_gate(self.rows, store.latest("label"))[0]["labeled"], 1)
+            _restore(store, [withdrawn], {sample.id})
+            _restore(store, [saved], {sample.id})
+            self.assertEqual(accepted_samples(store.latest("label")), [])
+            self.assertIn(sample, work_queue(self.rows, store.latest("label"), ""))
 
     def test_save_accepts_a_label_and_undo_restores_its_queue_position(self):
         a, b, _ = self.rows

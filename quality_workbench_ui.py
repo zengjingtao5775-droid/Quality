@@ -8,9 +8,10 @@ import streamlit.components.v1 as components
 
 from quality_graph import TextBaseline, accepted_samples, candidate_aliases, clean, defect_types, key_for, label_decision, normalized
 from quality_graph_seed import LABELING_STAGES
+from quality_label_storage import render_browser_backup, restore_browser_backup
 
 
-QUALITY_GRAPH_RELEASE = 8
+QUALITY_GRAPH_RELEASE = 9
 DIST = Path(__file__).resolve().parent / "quality_workbench/dist"
 WIDGET_KEY = "quality_labeling_react"
 NATIVE_EVENT_KEY = "_qg_native_labeling_event"
@@ -180,7 +181,9 @@ def _native_workbench(view, t):
 
 
 @st.fragment
-def render_labeling_workbench(scoped, store, scope, t):
+def render_labeling_workbench(scoped, store, scope, t, browser_ids=None):
+    if browser_ids is not None:
+        restore_browser_backup(store, browser_ids, t)
     built = (DIST / "index.html").is_file()
     native = st.toggle(t("兼容模式", "Compatibility mode"), value=not built, disabled=not built,
                        help=t("自定义组件加载异常时，可以用兼容模式继续标注。",
@@ -204,6 +207,8 @@ def render_labeling_workbench(scoped, store, scope, t):
             settings["error"] = str(error)
         decisions = store.latest("label")
         queue, sample, decision = _queue_state(scoped, decisions, settings)
+    if browser_ids is not None:
+        render_browser_backup(store)
     view = dict(language=t("zh", "en"), gates=progress_by_gate(scoped, decisions), query=settings["query"],
                 scope=[value for value in scope if value], scopeKey=scope_key, queueCount=len(queue),
                 queuePosition=settings["cursor"] + 1 if sample else 0, canUndo="undo" in settings,

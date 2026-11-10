@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"></head><body><script>
+const send = (type, data) => parent.postMessage({isStreamlitMessage: true, type: `streamlit:${type}`, ...data}, location.origin);
+const ready = () => send('componentReady', {apiVersion: 1});
+const retry = setInterval(ready, 1500);
+setTimeout(() => clearInterval(retry), 7500);
+let reported = false;
+let lastRestore = '';
+let pending = Promise.resolve();
+
+function database() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('nea-quality-label-backup', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('decisions', {keyPath: 'key'});
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function sync(entries) {
+  const db = await database();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = db.transaction('decisions', 'readwrite');
+      const store = transaction.objectStore('decisions');
+      const restore = [];
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const remote = new Map(entries.map(entry => [entry.key, entry]));
+        for (const entry of request.result) {
+          const current = remote.get(entry.key);
+          if (!current || entry.at > current.at) restore.push(entry);
+          if (current && entry.at >= current.at) remote.delete(entry.key);
+        }
+        for (const entry of remote.values()) store.put(entry);
+      };
+      transaction.oncomplete = () => resolve(restore);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function report(entries, error = false) {
+  reported = !error;
+  send('setComponentValue', {dataType: 'json', value: {entries, error, nonce: crypto.randomUUID()}});
+}
+
+addEventListener('message', event => {
+  if (event.source !== parent || event.origin !== location.origin || event.data?.type !== 'streamlit:render') return;
+  clearInterval(retry);
+  send('setFrameHeight', {height: 0});
+  pending = pending.then(() => sync(event.data.args.entries)).then(entries => {
+    const fingerprint = entries.map(entry => `${entry.key}@${entry.at}`).join('|');
+    if (reported !== true || (entries.length && fingerprint !== lastRestore)) report(entries);
+    lastRestore = fingerprint;
+  }).catch(() => {
+    if (reported !== 'error') report([], true);
+    reported = 'error';
+  });
+});
+ready();
+</script></body></html>

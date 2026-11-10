@@ -24,7 +24,7 @@ from quality_graph_seed import (
     TAXONOMY_VERSION, ZX_ALIASES, ZX_LINKS,
 )
 
-QUALITY_GRAPH_RELEASE = 6
+QUALITY_GRAPH_RELEASE = 9
 
 
 def clean(value):
@@ -236,6 +236,18 @@ class ReviewStore:
             db.executemany("INSERT OR IGNORE INTO observations VALUES (?, ?)",
                            ((row.id, json.dumps(asdict(row), ensure_ascii=False)) for row in observations))
             return db.total_changes - count
+
+    def restore_browser_decisions(self, entries):
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            for kind, item, actor, at, payload in entries:
+                previous = db.execute("SELECT revision, at FROM decisions WHERE kind=? AND item=? ORDER BY revision DESC LIMIT 1",
+                                      (kind, item)).fetchone()
+                if previous and previous[1] >= at:
+                    continue
+                revision = previous[0] + 1 if previous else 1
+                db.execute("INSERT INTO decisions VALUES (?, ?, ?, ?, ?, ?)",
+                           (kind, item, revision, actor, at, json.dumps(payload, ensure_ascii=False)))
 
     def observations(self):
         with closing(self.connect()) as db:

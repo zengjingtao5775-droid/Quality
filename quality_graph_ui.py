@@ -17,9 +17,10 @@ from quality_graph import (EVALUATION_MINIMUMS, Observation, ReviewStore, accept
                            link_key, normalized, read_controls, read_csv_observations, read_zx_observations,
                            report_control_candidates, save_defect_type)
 from quality_graph_seed import GLOVES, GUIDE_DIGEST, LABELING_STAGES, STAGES, TAXONOMY, TAXONOMY_VERSION
+from quality_label_storage import render_browser_backup, restore_browser_backup
 from quality_workbench_ui import render_labeling_workbench
 
-QUALITY_GRAPH_RELEASE = 8
+QUALITY_GRAPH_RELEASE = 9
 
 
 def review_store(root):
@@ -331,6 +332,9 @@ def _data_and_evaluation(scoped, decisions, store, trial, t):
         _import_evaluation_data(store, trial, t)
     download.download_button(t("下载标签 CSV", "Download labels CSV"), csv_bytes(export), "quality-labels.csv", "text/csv",
                              disabled=not export, width="stretch")
+    saved_by_gate = Counter(obs.stage for obs, decision in accepted if decision["labels"])
+    st.markdown(t(f"**已保存标注 {sum(saved_by_gate.values()):,} 条**", f"**{sum(saved_by_gate.values()):,} saved labels**")
+                + f' · PQC {saved_by_gate["PQC"]:,} · FQC {saved_by_gate["FQC"]:,}')
 
     def domain_of(obs):
         return (obs.community, obs.family, obs.stage)
@@ -368,8 +372,9 @@ def _data_and_evaluation(scoped, decisions, store, trial, t):
             column.progress(min(readiness[key] / minimum, 1))
     if metrics:
         st.subheader(t("按疵点类别", "Performance by defect"))
+        types = defect_types(domain[0], store.latest("taxonomy").get(domain[0]))
         per_label = pd.DataFrame([{
-            t("标准疵点", "Canonical defect"): _name(row["defect"], t), t("测试组", "Test groups"): row["test_groups"],
+            t("标准疵点", "Canonical defect"): _name(row["defect"], types, t), t("测试组", "Test groups"): row["test_groups"],
             "Recall": f'{row["recall"]:.1%}', "F1 Score": f'{row["f1"]:.1%}',
         } for row in metrics["per_label"]])
         st.dataframe(per_label, hide_index=True, width="stretch")
@@ -385,7 +390,9 @@ def render_quality_graph(root, jdy, bme, t):
     if error:
         st.warning(t("ZX CP 来源不可用，报告中的 CP 关联暂停。", "ZX CP source unavailable. Report control links are suspended."))
     connected = [] if trial else dashboard_observations(jdy, bme)
-    observations = list({obs.id: obs for obs in [*local_zx(root), *connected, *store.observations()]}.values())
+    by_id = {obs.id: obs for obs in [*local_zx(root), *connected, *store.observations()]}
+    browser_ids = set(by_id) if trial else None
+    observations = list(by_id.values())
     if message := st.session_state.pop("qg_saved", ""):
         st.success(message)
     mapping = st.session_state.get("qg_panel") == "mapping"
@@ -405,12 +412,15 @@ def render_quality_graph(root, jdy, bme, t):
     panels = {"label": t("标注工作台", "Labeling workbench"), "mapping": "Defect Mapping", "data": t("数据与评估", "Data and evaluation")}
     panel = st.radio(t("质量知识图谱功能", "Quality graph view"), panels, format_func=panels.get,
                      horizontal=True, label_visibility="collapsed", key="qg_panel")
+    if trial and panel != "label":
+        restore_browser_backup(store, browser_ids, t)
+        render_browser_backup(store)
     if panel == "mapping":
         _render_mapping(scoped, store.latest("alias"), store.latest("link"), controls, store, community, factory, stage, family, t)
     elif panel == "data":
         _data_and_evaluation(scoped, store.latest("label"), store, trial, t)
     else:
-        render_labeling_workbench(scoped, store, (community, factory, stage, family), t)
+        render_labeling_workbench(scoped, store, (community, factory, stage, family), t, browser_ids=browser_ids)
 
 
 def report_control_evidence(root, finished, products):
