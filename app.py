@@ -21099,8 +21099,10 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
     is_poc = bool(pack.get("risk_poc"))
     action_map = {str(item.get("cc")): item for item in pack.get("ps_actions", [])}
     aql_map = {str(item.get("cc")): item for item in pack.get("aql_recommendations", [])}
-    dcs_dir = os.environ.get("QUALITY_DCS_IMAGES_DIR")
-    local_dcs = Path(dcs_dir) if dcs_dir and st.get_option("server.address") == "127.0.0.1" else None
+    local_dcs = os.environ.get("QUALITY_DCS_IMAGES_DIR")
+    dcs_dir = ROOT / "assets/quality-graph/dcs"
+    if local_dcs and st.get_option("server.address") == "127.0.0.1":
+        dcs_dir = Path(local_dcs)
 
     def fmt(value, decimals=0):
         number = finite_number(value)
@@ -21148,8 +21150,8 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
         capture = ROOT / "assets/quality-graph" / f"cp-row-{source_row}.png"
         dcs_number = primary["how"].removeprefix("DCS ")
         pages = []
-        if local_dcs and dcs_number in {"100", "109", "111"}:
-            pages = sorted((local_dcs / f"DCS-{dcs_number}").glob("page-*.png"))
+        if dcs_number in {"100", "109", "111"}:
+            pages = sorted((dcs_dir / f"DCS-{dcs_number}").glob("page-*.png"))
         images = [(page, t(f"DCS {dcs_number} 原件第 {index} 页", f"DCS {dcs_number} original, page {index}"))
                   for index, page in enumerate(pages, 1)]
         if not images and capture.is_file():
