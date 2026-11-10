@@ -1,4 +1,4 @@
-"""Server-owned single-click annotation queue and progress."""
+"""Server-owned annotation queue and progress."""
 from pathlib import Path
 import sqlite3
 
@@ -6,19 +6,22 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from quality_graph import TextBaseline, accepted_samples, candidate_aliases, clean, key_for, label_decision, normalized
-from quality_graph_seed import STAGES, TAXONOMY
+from quality_graph_seed import LABELING_STAGES, TAXONOMY
 
 
-QUALITY_GRAPH_RELEASE = 3
+QUALITY_GRAPH_RELEASE = 4
 DIST = Path(__file__).resolve().parent / "quality_workbench/dist"
-_workbench = components.declare_component("quality_defect_labeler", path=str(DIST))
+_workbench = components.declare_component("quality_defect_labeler_v4", path=str(DIST))
+WIDGET_KEY = "quality_labeling_react"
 ANSWERED = {"confirmed", "approved"}
 ACTOR = "workbench"
 
 
 def progress_by_gate(observations, decisions):
-    stages = {stage: dict(stage=stage, total=0, remaining=0, labeled=0, uncertain=0, trainable=0) for stage in STAGES}
+    stages = {stage: dict(stage=stage, total=0, remaining=0, labeled=0, uncertain=0, trainable=0) for stage in LABELING_STAGES}
     for obs in observations:
+        if obs.stage not in stages:
+            continue
         row = stages[obs.stage]
         decision = decisions.get(obs.id, {})
         row["total"] += 1
@@ -34,7 +37,8 @@ def progress_by_gate(observations, decisions):
 
 def work_queue(observations, decisions, query):
     phrase = normalized(query)
-    return [obs for obs in observations if decisions.get(obs.id, {}).get("status") not in ANSWERED
+    return [obs for obs in observations if obs.stage in LABELING_STAGES
+            and decisions.get(obs.id, {}).get("status") not in ANSWERED
             and (not phrase or phrase in normalized(f"{obs.description} {obs.record} {obs.process} {obs.raw_type}"))]
 
 
@@ -45,7 +49,7 @@ def _sample(obs, decision, decisions, t):
     _, _, suggestion, _ = candidate_aliases([obs])[0]
     if not suggestion:
         train = [(item, result["labels"][0]) for item, result in accepted_samples(decisions)
-                 if item.domain == obs.domain and len(result["labels"]) == 1]
+                 if item.stage in LABELING_STAGES and item.domain == obs.domain and len(result["labels"]) == 1]
         if len(train) >= 10 and len({label for _, label in train}) >= 2:
             suggestion, _ = TextBaseline(train).predict(obs.description)
     return {"id": obs.id, "description": obs.description, "rawType": obs.raw_type, "factory": obs.factory,
@@ -92,29 +96,37 @@ def _apply(event, scoped, decisions, queue, sample, decision, settings, store, t
     return t("已记录：暂无法判断。", "Recorded as unable to determine.") if unsure else t("标签已保存。", "Label saved.")
 
 
-def render_labeling_workbench(scoped, decisions, store, scope, t):
+def _queue_state(scoped, decisions, settings):
+    queue = work_queue(scoped, decisions, settings["query"])
+    if queue:
+        settings["cursor"] %= len(queue)
+    sample = queue[settings["cursor"]] if queue else None
+    return queue, sample, decisions.get(sample.id, {}) if sample else {}
+
+
+@st.fragment
+def render_labeling_workbench(scoped, store, scope, t):
     if not (DIST / "index.html").is_file():
         st.error(t("标注工作台前端尚未构建。", "The labeling workbench frontend has not been built."))
         return
     settings = st.session_state.setdefault("_qg_answer_queue", dict(query="", cursor=0))
     scope_key = key_for(*scope)
     if settings.get("scope") != scope_key:
-        settings.update(scope=scope_key, query="", cursor=0)
+        settings.update(scope=scope_key, query="", cursor=0, message="", error="")
         settings.pop("undo", None)
-    queue = work_queue(scoped, decisions, settings["query"])
-    if queue:
-        settings["cursor"] %= len(queue)
-    sample = queue[settings["cursor"]] if queue else None
-    decision = decisions.get(sample.id, {}) if sample else {}
-    event = _workbench(language=t("zh", "en"), gates=progress_by_gate(scoped, decisions), query=settings["query"],
-                       scope=[value for value in scope if value], scopeKey=scope_key, queueCount=len(queue),
-                       queuePosition=settings["cursor"] + 1 if sample else 0, canUndo="undo" in settings,
-                       sample=_sample(sample, decision, decisions, t), message=settings.get("message", ""),
-                       error=settings.get("error", ""), key="quality_labeling_react", default=None)
+    decisions = store.latest("label")
+    queue, sample, decision = _queue_state(scoped, decisions, settings)
+    event = st.session_state.get(WIDGET_KEY)
     if isinstance(event, dict) and event.get("nonce") and event["nonce"] != settings.get("event"):
         settings.update(event=event["nonce"], message="", error="")
         try:
             settings["message"] = _apply(event, scoped, decisions, queue, sample, decision, settings, store, t)
         except (ValueError, TypeError, sqlite3.Error) as error:
             settings["error"] = str(error)
-        st.rerun()
+        decisions = store.latest("label")
+        queue, sample, decision = _queue_state(scoped, decisions, settings)
+    _workbench(language=t("zh", "en"), gates=progress_by_gate(scoped, decisions), query=settings["query"],
+               scope=[value for value in scope if value], scopeKey=scope_key, queueCount=len(queue),
+               queuePosition=settings["cursor"] + 1 if sample else 0, canUndo="undo" in settings,
+               sample=_sample(sample, decision, decisions, t), message=settings.get("message", ""),
+               error=settings.get("error", ""), acknowledgedEvent=settings.get("event"), key=WIDGET_KEY, default=None)

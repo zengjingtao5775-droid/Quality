@@ -1,12 +1,13 @@
 """Draft vocabulary and candidate links for the supplied ZX glove guide."""
 
-QUALITY_GRAPH_RELEASE = 3
+QUALITY_GRAPH_RELEASE = 4
 TAXONOMY_VERSION = "defects-v0.1"
 GUIDE_DIGEST = "9ed23bae434a1e1d70069cc12fe48814d352029d628b0ed630d6e847e791a5d0"
 GUIDE_SHEET = "2.Process Guidelines for CP "
 GUIDE_FILENAME = "[Q] R3_TEMP_160_WW_EN_Process Guidelines for Control Plan_V1_HTC_Gloves - Cut  and sew_v2_ .xlsx"
 GLOVES = "Gloves - Cut and sew"
 STAGES = ("IQC", "PQC", "FQC")
+LABELING_STAGES = ("PQC", "FQC")
 
 # IDs are independent of display names. The definition describes observable
 # evidence and sets a boundary for annotators, not a manufacturing cause.

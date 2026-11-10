@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import hashlib
 import html
@@ -42,16 +43,16 @@ from tu_quality import build_zx_quality_gates
 from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
 from quality_chatbot_ui import render_quality_chatbot
 import quality_graph_seed as _quality_graph_seed
-if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 3:
+if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 4:
     importlib.reload(_quality_graph_seed)
 import quality_graph as _quality_graph
-if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 3:
+if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 4:
     importlib.reload(_quality_graph)
 import quality_workbench_ui as _quality_workbench_ui
-if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 3:
+if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 4:
     importlib.reload(_quality_workbench_ui)
 import quality_graph_ui as _quality_graph_ui
-if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 3:
+if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 4:
     importlib.reload(_quality_graph_ui)
 from quality_graph import graph_mode
 from quality_graph_ui import render_quality_graph, report_control_evidence
@@ -60,7 +61,7 @@ if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-
     importlib.reload(_quality_gate_metrics)
 from quality_gate_metrics import gate_metrics
 import tu_risk_poc as _tu_risk_poc
-if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-17-v4-40-10-50-return-qty":
+if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-19-v6-configurable-anchors":
     importlib.reload(_tu_risk_poc)
 import cluster_weights as _cluster_weights
 if getattr(_cluster_weights, "CLUSTER_WEIGHTS_VERSION", "") != "2026-10-17-v2-40-10-50":
@@ -71,7 +72,7 @@ if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-21-v9-cc-gate
 from tu_risk_poc_ui import render_tu_risk_poc
 from cluster_weights import current_weights, fsd_cluster_view, cmw_cluster_view
 import cluster_settings_ui as _cluster_settings_ui
-if getattr(_cluster_settings_ui, "CLUSTER_SETTINGS_UI_VERSION", "") != "2026-10-17-v4-new-defaults":
+if getattr(_cluster_settings_ui, "CLUSTER_SETTINGS_UI_VERSION", "") != "2026-10-19-v6-configurable-anchors":
     importlib.reload(_cluster_settings_ui)
 from cluster_settings_ui import render_quality_navigation, render_cluster_settings
 import quality_chart_ui as _quality_chart_ui
@@ -21147,6 +21148,21 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
         if primary["row"] in {59, 82} and primary["defect"] == "TU-021":
             standard = t("外观无孔洞", "No visible holes")
         preview = " · ".join(dict.fromkeys(filter(None, (primary["how"], standard))))
+        visual = {
+            51: ("dcs-111", t("从面料裁边量到缝线，目标 3 mm ± 1 mm", "Measure from the fabric edge to the stitch line. Target 3 mm ± 1 mm.")),
+            53: ("dcs-109", t("合格接缝闭合，不合格接缝出现开口", "Accept a closed seam. Reject an open seam.")),
+        }.get(primary["row"])
+        if primary["row"] in {59, 82} and primary["defect"] == "TU-021":
+            visual = ("dcs-100", t("合格面料没有孔洞，不合格面料有针孔", "Accept fabric without holes. Reject fabric with pinholes."))
+        note = f'<div class="quality-report-cell-note">{e(primary["action"])}</div>'
+        if visual:
+            name, alt = visual
+            illustration = (ROOT / "assets/quality-graph" / f"{name}.svg").read_bytes()
+            uri = base64.b64encode(illustration).decode("ascii")
+            caption = t(f"检查示意 · ZX 手套 CP 第 {primary['row']} 行", f"Inspection illustration · ZX Glove CP row {primary['row']}")
+            return (f'<details class="quality-report-detail quality-report-cp quality-report-cp-visual"><summary>{e(preview)}</summary>'
+                    f'<figure><img src="data:image/svg+xml;base64,{uri}" alt="{e(alt)}"><figcaption>{e(caption)}</figcaption>'
+                    f'</figure></details>{note}')
         lines = []
         for item in matches:
             applicability = (item.get("review_evidence") if item["status"] == "linked" else
@@ -21155,28 +21171,26 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
             tolerance = item["tolerance"] if item["tolerance"] not in {"", "NA", "N/A"} else None
             source = " · ".join(part for part in (item["stage"], item["how"], item["what"], item["reference"]) if part)
             lines.append("\n".join(part for part in [source, target, tolerance, item["action"], applicability, item["reaction"]] if part))
-        return detail("\n\n".join(lines), preview, "quality-report-cp") + f'<div class="quality-report-cell-note">{e(primary["action"])}</div>'
+        return detail("\n\n".join(lines), preview, "quality-report-cp") + note
 
     def report_aql_cell(cc, aql, action):
         decision = aql.get("decision")
         if not decision:
             return e(aql.get("recommendation") or "—"), ""
-        lines = []
-        for party, label in owner_labels.items():
-            group = action.get("fqc_by_owner", {}).get(party, {})
-            rate = aql["rates"].get(party)
-            basis = (t(f"平滑未通过率 {rate:.1%}", f"Smoothed non-pass rate {rate:.1%}") if rate is not None else
-                     t(f"不足 {aql['minimum']} 条有效首验", f"Fewer than {aql['minimum']} valid first results"))
-            lines.append(f"{label} · {group.get('fail_count', 0)}/{group.get('valid_records', 0)} · {basis}")
         threshold = f"{aql['threshold']:.0%}"
-        reasons = {"review": t(f"至少一方达到看板 {threshold} 阈值，建议 AQL 1.0。", f"At least one party meets the dashboard's {threshold} threshold. Suggested AQL 1.0."),
-                   "maintain": t(f"满足样本门槛的各方均低于 {threshold}，建议 AQL 1.5。", f"Each eligible party is below {threshold}. Suggested AQL 1.5."),
-                   "insufficient": t("有效首验样本不足，暂用默认建议 AQL 1.5。", "Insufficient first results. AQL 1.5 is the provisional default.")}
-        lines.extend((reasons[decision], t("执行前核对已批准的严重等级 AQL、批量和检验水平。",
-                                         "Verify the approved severity AQL, lot size and inspection level before applying.")))
+        if decision == "insufficient":
+            minimum = aql["minimum"]
+            explanation = t(f"双方均不足 {minimum} 条有效首验，暂建议 AQL 1.5。", f"Both parties have fewer than {minimum} valid first inspections, so AQL 1.5 is provisional.")
+        else:
+            party = max(aql["rates"], key=aql["rates"].get)
+            label, rate = owner_labels[party], aql["rates"][party]
+            group = action["fqc_by_owner"][party]
+            counts = f"{fmt(group['fail_count'])}/{fmt(group['valid_records'])}"
+            comparison = t("达到", "meets") if decision == "review" else t("低于", "is below")
+            explanation = t(f"{label}首验 {counts} 未通过，平滑未通过率 {rate:.1%} {comparison} {threshold} 阈值。",
+                            f"{label} had {counts} non-passes and its smoothed rate of {rate:.1%} {comparison} the {threshold} threshold.")
         evidence_id = e(f"tu-aql-{cc}")
         button = f'<details class="quality-report-detail quality-report-aql-detail"><summary aria-controls="{evidence_id}">{e(aql["recommendation"])}</summary></details>'
-        explanation = "\n".join(lines)
         evidence = f'<tr class="quality-aql-evidence" id="{evidence_id}"><td colspan="4">{e(explanation)}</td></tr>'
         return button, evidence
 
@@ -21187,24 +21201,30 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
             group = parties.get(key, {})
             valid, rate = group.get("valid_records"), group.get("rft")
             tone = inspection_signal(group.get("pass_count"), valid, st.session_state.lang)["tone"]
+            passed = fmt(group.get("pass_count"))
+            basis = t(f"{label} · {passed} 条通过 / {fmt(valid)} 条有效首验", f"{label} · {passed} passes / {fmt(valid)} valid first inspections") if valid else label
             cells = [
-                (fmt(group.get("records")), "neutral"),
-                (f"{rate:.1%}" if rate is not None else "—", tone),
-                (f"{fmt(group.get('pass_count'))}/{fmt(valid)}" if valid else "—", "good" if valid else "neutral"),
-                (fmt(group.get("fail_count")) if valid else "—", tone),
-                (group.get("latest_date") or "—", "neutral"),
+                (fmt(group.get("records")), "neutral", label),
+                (f"{rate:.1%}" if rate is not None else "—", tone, basis),
+                (passed if valid else "—", "good" if valid else "neutral", basis),
+                (fmt(group.get("fail_count")) if valid else "—", tone, label),
+                (group.get("latest_date") or "—", "neutral", label),
             ]
-            values.append([f'<span data-owner="{key}" class="quality-value-{color}" title="{e(label)}">{e(value)}</span>'
-                           for value, color in cells])
+            values.append([f'<span data-owner="{key}" class="quality-value-{color}" title="{e(tooltip)}">{e(value)}</span>'
+                           for value, color, tooltip in cells])
         return ''.join(f'<td class="quality-fqc-pair">{left}<span class="quality-pair-slash">/</span>{right}</td>'
                        for left, right in zip(*values))
 
-    def table(name, headings, widths, rows):
+    def table(name, headings, widths, rows, paired=False):
         if not rows:
             return f'<p class="quality-report-empty">{e(t("当前范围暂无对应数据", "No matching data in this selection"))}</p>'
+        owner_order = e(t("（迪卡侬/工厂）", " (DKL/Factory)"))
+        header = ''.join(f'<th scope="col">{e(label)}'
+                         + (f'<span class="quality-fqc-owner-heading">{owner_order}</span>' if paired and index else '') + '</th>'
+                         for index, label in enumerate(headings))
         return (f'<div class="quality-report-table-wrap"><table class="quality-report-table quality-report-{name}" aria-label="{e(name)}">'
                 + '<colgroup>' + ''.join(f'<col style="width:{width}%">' for width in widths) + '</colgroup>'
-                + '<thead><tr>' + ''.join(f'<th scope="col">{e(label)}</th>' for label in headings) + '</tr></thead>'
+                + '<thead><tr>' + header + '</tr></thead>'
                 + '<tbody>' + ''.join(rows) + '</tbody></table></div>')
 
     risk_rows, evidence_rows, plan_rows = [], [], []
@@ -21246,7 +21266,7 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
 
     risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("总分区间", "Score/range") if is_poc else t("风险分", "Risk"), "DPU", "Return Qty" if is_poc else "RPM", "IV Qty" if is_poc else "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
     if community == "TU":
-        evidence_table = table("evidence-table", ["CC", t("迪卡侬 / 工厂", "DKL / Factory"), "RFT", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [11, 16, 18, 17, 9, 29], evidence_rows)
+        evidence_table = table("evidence-table", ["CC", t("FQC 条数", "FQC records"), "Passing rate", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [9, 14, 19, 13, 13, 32], evidence_rows, paired=True)
     else:
         evidence_table = table("evidence-table", ["CC", t("FQC 记录", "FQC records"), t("检验数", "Inspections"), t("源不良数", "Source NC"), t("最近 FQC", "Latest FQC")], [20, 20, 20, 20, 20], evidence_rows)
     plan_widths = [15, 20, 41, 24] if community == "TU" else [18, 28, 32, 22]
@@ -21259,7 +21279,7 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
     notes = [
         t("TU POC 客户端采用 Return Qty 与 IV PRODUCT QUANTITY，产品采用 Strategy，供应商采用 PQC/AQL；各部门及粒度独立。退货平均值对应 50 分，平均值的 2 倍对应 100 分（可调整 POC 默认值）；IV 5 件/10 件对应 50 分/100 分。缺失输入保留总分区间。", "TU POC client uses Return Qty and IV PRODUCT QUANTITY, product uses Strategy, supplier uses PQC/AQL, independently per department/grain. Mean returns = 50 points; twice the mean = 100 (configurable POC default); IV 5/10 units = 50/100. Missing inputs preserve score bounds.") if is_poc else t("风险排序与当前聚类/CC 帕累托一致。风险分是复核优先级，不是不良概率；BME 不同供应商/环节的分数用于各自的相对排序。", "Risk ranking matches the current cluster/CC Pareto. Scores are review priorities, not defect probabilities; BME supplier/gate scores are relative rankings."),
         t("DPU = 疵点数 ÷ 检验数，点击百分比查看分子/分母。点击 Model、长疵点或 CP 可查看全文。", "DPU = defect points / inspections. Expand a percentage for its numerator/denominator; expand Models, long defects and CP text for full details."),
-        t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。迪卡侬/工厂分别为两方 FQC 记录条数；PASS 为首次 PASS 数 / 有效首验记录数。缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspections, not completed/effective corrective actions. DKL/Factory are their respective FQC record counts; PASS is first-PASS / valid first-result records. Missing ownership or closure evidence is not inferred.") if community == "TU" else t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。检验数和源不良数保留 BME 源字段口径；缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspection activity, not completed/effective corrective actions. Inspections and source NC retain the BME source definitions; missing ownership or closure evidence is not inferred."),
+        t("PASS 为首验通过条数，Passing rate 为通过条数除以有效首验条数。悬停可查看每方分母。", "PASS counts first inspections that passed. Passing rate divides that count by valid first inspections. Hover over a value to see its denominator.") if community == "TU" else t("已做行动展示已记录的 FQC 检验活动，不代表整改完成或有效关闭。检验数和源不良数保留 BME 源字段口径；缺少责任方或关闭证据时不作推断。", "Actions show recorded FQC inspection activity, not completed/effective corrective actions. Inspections and source NC retain the BME source definitions; missing ownership or closure evidence is not inferred."),
         t("建议按 CC/批次追溯主要疵点与检验记录，由质量负责人确认 CP 控制点，再用同口径复检和客户反馈验证措施。", "Trace leading defects and inspections by CC/batch; have the quality lead confirm CP controls, then verify effectiveness using comparable repeat inspections and customer feedback."),
         t("新 POC 评分未用于改变抽样标准；继续使用已批准的抽样政策。", "The new POC score does not change sampling standards; retain the approved sampling policy.") if is_poc else t("动态 AQL 沿用原版风险规则，仅为建议；最终抽样需核对批量、检验水平、样本代码与批准的 Ac/Re 表。", "Dynamic AQL retains the original risk rules as recommendations; final sampling requires lot size, inspection level, sample code and approved Ac/Re tables.") if community == "TU" else t("BME 尚未接入可核对的 CC → CP 链路及动态 AQL 规则，保留空值，不套用 TU 标准。", "BME lacks an auditable CC → CP link and dynamic AQL rule. Missing fields remain unavailable.")
     ]
@@ -21820,8 +21840,7 @@ def render_unified_dashboard():
         render_cluster_settings(t)
         return
     if page == "quality-graph":
-        with st.container(key="quality_graph_banner"):
-            render_unified_header(include_data_map=False)
+        render_unified_header(include_data_map=False)
         if mode == "local":
             jdy, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
             events = load_bme_quality_events_cached(bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION)

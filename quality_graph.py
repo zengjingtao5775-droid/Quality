@@ -23,7 +23,7 @@ from quality_graph_seed import (
     TAXONOMY_VERSION, ZX_ALIASES, ZX_LINKS,
 )
 
-QUALITY_GRAPH_RELEASE = 3
+QUALITY_GRAPH_RELEASE = 4
 
 
 def clean(value):

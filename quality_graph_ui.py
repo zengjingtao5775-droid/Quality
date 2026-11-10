@@ -15,10 +15,10 @@ import streamlit as st
 from quality_graph import (EVALUATION_MINIMUMS, Observation, ReviewStore, accepted_samples, candidate_aliases, clean,
                            csv_bytes, evaluate_with_readiness, graph_db, graph_mode, guide_path, link_candidates, link_key, normalized,
                            read_controls, read_csv_observations, read_zx_observations, report_control_candidates)
-from quality_graph_seed import GLOVES, GUIDE_DIGEST, STAGES, TAXONOMY, TAXONOMY_VERSION
+from quality_graph_seed import GLOVES, GUIDE_DIGEST, LABELING_STAGES, STAGES, TAXONOMY, TAXONOMY_VERSION
 from quality_workbench_ui import render_labeling_workbench
 
-QUALITY_GRAPH_RELEASE = 3
+QUALITY_GRAPH_RELEASE = 4
 
 
 def review_store(root):
@@ -351,15 +351,18 @@ def render_quality_graph(root, jdy, bme, t):
         st.warning(t("ZX CP 来源不可用，报告中的 CP 关联暂停。", "ZX CP source unavailable. Report control links are suspended."))
     connected = [] if trial else dashboard_observations(jdy, bme)
     observations = list({obs.id: obs for obs in [*local_zx(root), *connected, *store.observations()]}.values())
-    labels, aliases, links = (store.latest(kind) for kind in ("label", "alias", "link"))
     if message := st.session_state.pop("qg_saved", ""):
         st.success(message)
+    mapping = st.session_state.get("qg_panel") == "mapping"
+    stages = STAGES if mapping else LABELING_STAGES
+    observations = [obs for obs in observations if obs.stage in stages]
     with st.expander(t("按社区、工厂或检验环节筛选", "Filter by community, factory or inspection gate")):
         filters = st.columns(4)
         community = filters[0].selectbox("Community", list(TAXONOMY), key="qg_community")
         factories = sorted({obs.factory for obs in observations if obs.community == community})
         factory = filters[1].selectbox(t("工厂", "Factory"), factories, index=None, placeholder=t("全部工厂", "All factories"), key="qg_factory")
-        stage = filters[2].selectbox(t("检验环节", "Inspection gate"), STAGES, index=None, placeholder=t("全部环节", "All gates"), key="qg_stage")
+        stage = filters[2].selectbox(t("检验环节", "Inspection gate"), stages, index=None, placeholder=t("全部环节", "All gates"),
+                                     key="qg_mapping_stage" if mapping else "qg_labeling_stage")
         families = sorted({obs.family for obs in observations if obs.community == community and (not factory or obs.factory == factory)})
         family = filters[3].selectbox(t("产品族", "Product family"), families, index=None, placeholder=t("全部产品族", "All families"), key="qg_family")
     scoped = [obs for obs in observations if obs.community == community and (not factory or factory == obs.factory)
@@ -368,11 +371,11 @@ def render_quality_graph(root, jdy, bme, t):
     panel = st.radio(t("质量知识图谱功能", "Quality graph view"), panels, format_func=panels.get,
                      horizontal=True, label_visibility="collapsed", key="qg_panel")
     if panel == "mapping":
-        _render_mapping(scoped, aliases, links, controls, store, community, factory, stage, family, t)
+        _render_mapping(scoped, store.latest("alias"), store.latest("link"), controls, store, community, factory, stage, family, t)
     elif panel == "data":
-        _data_and_evaluation(scoped, labels, store, trial, t)
+        _data_and_evaluation(scoped, store.latest("label"), store, trial, t)
     else:
-        render_labeling_workbench(scoped, labels, store, (community, factory, stage, family), t)
+        render_labeling_workbench(scoped, store, (community, factory, stage, family), t)
 
 
 def report_control_evidence(root, finished, products):
