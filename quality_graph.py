@@ -213,9 +213,9 @@ class ReviewStore:
                                   (kind, item)).fetchone()
             if (previous[0] if previous else 0) != expected:
                 raise ValueError("A decision has changed. Refresh and review the latest version.")
-            if kind == "label" and payload["status"] == "approved":
+            if kind == "label" and payload["status"] in {"approved", "returned"}:
                 if not previous or json.loads(previous[2])["status"] != "submitted" or normalized(previous[1]) == normalized(actor):
-                    raise ValueError("A second reviewer must approve the submitted annotation")
+                    raise ValueError("A second reviewer must check the submitted annotation")
                 payload = {**payload, "annotator": previous[1]}
             db.execute("INSERT INTO decisions VALUES (?, ?, ?, ?, ?, ?)",
                        (kind, item, expected + 1, actor, datetime.now(timezone.utc).isoformat(), json.dumps(payload, ensure_ascii=False)))

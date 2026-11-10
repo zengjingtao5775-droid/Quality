@@ -21722,7 +21722,8 @@ def render_unified_dashboard():
         render_cluster_settings(t)
         return
     if page == "quality-graph":
-        render_unified_header(include_data_map=False)
+        with st.container(key="quality_graph_banner"):
+            render_unified_header(include_data_map=False)
         if mode == "local":
             jdy, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
             events = load_bme_quality_events_cached(bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION)

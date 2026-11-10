@@ -11,10 +11,11 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 import streamlit as st
 
-from quality_graph import (Observation, ReviewStore, TextBaseline, approved_samples, candidate_aliases, clean,
-                           csv_bytes, evaluate, graph_db, graph_mode, guide_path, label_decision, link_candidates, link_key, normalized,
+from quality_graph import (Observation, ReviewStore, approved_samples, candidate_aliases, clean,
+                           csv_bytes, evaluate, graph_db, graph_mode, guide_path, link_candidates, link_key, normalized,
                            read_controls, read_csv_observations, read_zx_observations, report_control_links)
 from quality_graph_seed import GLOVES, GUIDE_DIGEST, STAGES, TAXONOMY, TAXONOMY_VERSION
+from quality_workbench_ui import render_labeling_workbench
 
 
 def review_store(root):
@@ -219,64 +220,6 @@ def _mapping_editor(scoped, aliases, links, controls, store, actor, show_zx, sta
                 _save(store, "link", key, {}, actor, dict(ccs=[], reason="", edge=[stage, defect, row, relation, note], status="draft"), t)
 
 
-def _annotation(scoped, decisions, store, actor, t):
-    options = {"unreviewed": t("未标注", "Unlabeled"), "submitted": t("待复核", "Awaiting review"),
-               "returned": t("已退回", "Returned"), "approved": t("已确认", "Approved"), "all": t("全部", "All")}
-    status = st.selectbox(t("队列状态", "Queue status"), options, format_func=options.get, key="qg_label_status")
-    phrase = st.text_input(t("搜索原文、记录号或工序", "Search description, record or process"), key="qg_label_search")
-    terms = normalized(phrase)
-    candidates = [obs for obs in scoped if (status == "all" or decisions.get(obs.id, {}).get("status", "unreviewed") == status)
-                  and terms in normalized(f"{obs.description} {obs.record} {obs.process}")]
-    st.caption(t(f"符合条件 {len(candidates):,} 条。提交后由第二位质量人员复核。", f"{len(candidates):,} matching records. A second reviewer checks submitted labels."))
-    if not candidates:
-        return
-    page = int(st.number_input(t("页码（每页 50 条）", "Page (50 records per page)"), min_value=1,
-                              max_value=(len(candidates)+49)//50, step=1, key=f"qg_label_page_{status}_{len(candidates)}"))
-    sample = st.selectbox(t("样本", "Sample"), candidates[(page-1)*50:page*50], index=None,
-        format_func=lambda row: f"{row.description} · {row.stage} / {row.process or '—'} · {row.date or '—'} · {row.record}", key="qg_sample")
-    if not sample:
-        return
-    st.text(sample.description)
-    if sample.raw_type:
-        st.caption(t("工厂原始分类", "Source defect category") + " · " + sample.raw_type)
-    st.caption(f"{sample.community} / {sample.factory} / {sample.family} / {sample.stage} · {sample.source} · {sample.record}")
-    previous = decisions.get(sample.id, {})
-    if previous:
-        st.caption(f"{options[previous['status']]} · {previous['actor']} · {previous['at'][:10]}")
-    outcomes = {"labeled": t("可标注", "Labelable"), "insufficient": t("信息不足", "Insufficient evidence"),
-                "out_of_taxonomy": t("字典缺项", "Taxonomy gap"), "split_needed": t("复合描述待拆分", "Compound wording to split")}
-    codes = TAXONOMY[sample.community]
-    draft = dict((key, code) for key, _, code, _ in candidate_aliases([sample])).get(sample.alias_key)
-    if draft:
-        st.caption(t("字典候选（待人工判断）", "Dictionary suggestion (review required)") + " · " + _name(draft, t))
-    train = [(obs, item["labels"][0]) for obs, item in approved_samples(decisions)
-             if obs.id != sample.id and obs.domain == sample.domain and len(item["labels"]) == 1]
-    if len(train) >= 10 and len({label for _, label in train}) >= 2:
-        prediction, similarity = TextBaseline(train).predict(sample.description)
-        st.caption(t("模型候选", "Model suggestion") + f" · {_name(prediction, t)} · " +
-                   t(f"文本相似度 {similarity:.2f}", f"Text similarity {similarity:.2f}"))
-    with st.expander(t("标注口径", "Label definitions")):
-        st.dataframe([{"ID": code, t("标准名称", "Name"): t(zh, en), t("判定说明", "Definition (ZH)"): definition}
-                      for code, (zh, en, definition) in codes.items()], hide_index=True, width="stretch")
-    review = previous.get("status") == "submitted" and normalized(previous.get("actor")) != normalized(actor)
-    with st.form(f"qg_label_{sample.id}_{previous.get('revision', 0)}"):
-        outcome = st.selectbox(t("标注结果", "Annotation outcome"), outcomes, format_func=outcomes.get,
-                               index=list(outcomes).index(previous.get("outcome", "labeled")))
-        labels = st.multiselect(t("标准疵点，可多选", "Canonical defects, multiple allowed"), codes,
-                                default=previous.get("labels", []), format_func=lambda code: _name(code, t))
-        reason = st.text_area(t("依据或退回说明", "Evidence or return reason"), value=previous.get("reason", ""))
-        submit = st.form_submit_button(t("提交标注", "Submit annotation"), disabled=not bool(clean(actor)) or review)
-        approve = st.form_submit_button(t("复核通过", "Approve label"), disabled=not bool(clean(actor)) or not review)
-        reject = st.form_submit_button(t("退回补充", "Return for clarification"), disabled=not bool(clean(actor)) or not review)
-    if submit or approve or reject:
-        try:
-            payload = label_decision(sample, labels, outcome, reason, "approved" if approve else "returned" if reject else "submitted")
-        except ValueError as error:
-            st.error(str(error))
-        else:
-            _save(store, "label", sample.id, previous, actor, payload, t)
-
-
 def _data_and_evaluation(scoped, decisions, store, trial, t):
     st.subheader(t("导入检验样本", "Import inspection observations"))
     st.caption(t("CSV 用 UTF-8。必填字段为 community、factory、family、stage、description、source、record。可带 raw_type、process、batch、date、cc。",
@@ -334,9 +277,8 @@ def render_quality_graph(root, jdy, bme, t):
     st.header(t("质量知识图谱 · 疵点标注", "Quality Knowledge Graph · Defect Labeling"))
     trial = graph_mode() == "trial"
     if trial:
-        st.info(t("线上试用。标注、导入和审批只保存在当前浏览器会话。可用两个测试名称体验标注与复核，离开前请下载所需结果。",
-                  "Online trial. Labels, imports and approvals stay in this browser session. Use two test names to try review, and download any results before leaving."))
-    st.caption(t("ZX 手套 CP V2.0 · 候选映射、人工复核与报告证据", "ZX glove guide V2.0 · Candidate mappings, expert review and report evidence"))
+        st.caption(t("线上试用 · 标注、导入和审批保存在当前浏览器会话。离开前可从「数据与评估」导出标签。",
+                     "Online trial · Labels, imports and approvals stay in this session. Export labels from Data and evaluation before leaving."))
     store = review_store(root)
     controls, error = load_guide()
     if error:
@@ -346,22 +288,24 @@ def render_quality_graph(root, jdy, bme, t):
     labels, aliases, links = (store.latest(kind) for kind in ("label", "alias", "link"))
     if message := st.session_state.pop("qg_saved", ""):
         st.success(message)
-    filters = st.columns(5)
-    community = filters[0].selectbox("Community", list(TAXONOMY), key="qg_community")
-    factories = sorted({obs.factory for obs in observations if obs.community == community})
-    factory = filters[1].selectbox(t("工厂", "Factory"), factories, index=None, placeholder=t("全部工厂", "All factories"), key="qg_factory")
-    stage = filters[2].selectbox(t("检验环节", "Inspection gate"), STAGES, index=None, placeholder=t("全部环节", "All gates"), key="qg_stage")
-    families = sorted({obs.family for obs in observations if obs.community == community and (not factory or obs.factory == factory)})
-    family = filters[3].selectbox(t("产品族", "Product family"), families, index=None, placeholder=t("全部产品族", "All families"), key="qg_family")
-    actor = filters[4].text_input(t("标注人 / 复核人", "Annotator / reviewer"), key="qg_actor")
+    with st.expander(t("按社区、工厂或检验环节筛选", "Filter by community, factory or inspection gate")):
+        filters = st.columns(4)
+        community = filters[0].selectbox("Community", list(TAXONOMY), key="qg_community")
+        factories = sorted({obs.factory for obs in observations if obs.community == community})
+        factory = filters[1].selectbox(t("工厂", "Factory"), factories, index=None, placeholder=t("全部工厂", "All factories"), key="qg_factory")
+        stage = filters[2].selectbox(t("检验环节", "Inspection gate"), STAGES, index=None, placeholder=t("全部环节", "All gates"), key="qg_stage")
+        families = sorted({obs.family for obs in observations if obs.community == community and (not factory or obs.factory == factory)})
+        family = filters[3].selectbox(t("产品族", "Product family"), families, index=None, placeholder=t("全部产品族", "All families"), key="qg_family")
     scoped = [obs for obs in observations if obs.community == community and (not factory or factory == obs.factory)
               and (not stage or stage == obs.stage) and (not family or family == obs.family)]
-    a, b, c = st.columns(3)
-    a.metric(t("范围内样本", "Observations in scope"), f"{len(scoped):,}")
-    b.metric(t("待复核样本", "Awaiting review"), sum(labels.get(obs.id, {}).get("status") == "submitted" for obs in scoped))
-    c.metric(t("ZX CP 控制条目", "ZX CP control entries"), len(controls))
-    map_tab, label_tab, data_tab = st.tabs([t("Defect Mapping", "Defect Mapping"), t("标注与复核", "Label and review"), t("数据与评估", "Data and evaluation")])
-    with map_tab:
+    panels = {"label": t("标注工作台", "Labeling workbench"), "mapping": "Defect Mapping", "data": t("数据与评估", "Data and evaluation")}
+    panel = st.radio(t("质量知识图谱功能", "Quality graph view"), panels, format_func=panels.get,
+                     horizontal=True, label_visibility="collapsed", key="qg_panel")
+    if panel == "mapping":
+        actor = st.text_input(t("映射审核人", "Mapping reviewer"), key="qg_mapping_actor", max_chars=80,
+                              value=st.session_state.get("_qg_queue", {}).get("actor", ""))
+        if controls:
+            st.caption(t(f"ZX 手套 CP V2.0 · {len(controls)} 条控制条目", f"ZX glove guide V2.0 · {len(controls)} control entries"))
         rows = [row for row in mapping_rows(scoped, aliases, links, controls) if row["community"] == community
                 and (not stage or row["stage"] == stage) and (not factory or row["factory"] == factory)
                 and (not family or row["family"] == family)]
@@ -372,10 +316,10 @@ def render_quality_graph(root, jdy, bme, t):
         st.download_button(t("下载当前映射 CSV", "Download mapping CSV"), csv_bytes(rows), "quality-defect-mapping.csv", "text/csv", disabled=not rows)
         show_zx = community == "TU" and factory in (None, "ZX") and family in (None, GLOVES)
         _mapping_editor(scoped, aliases, links, controls, store, actor, show_zx, stage, t)
-    with label_tab:
-        _annotation(scoped, labels, store, actor, t)
-    with data_tab:
+    elif panel == "data":
         _data_and_evaluation(scoped, labels, store, trial, t)
+    else:
+        render_labeling_workbench(scoped, labels, store, (community, factory, stage, family), t)
 
 
 def render_report_controls(root, finished, products, t):
