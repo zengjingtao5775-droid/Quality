@@ -43,16 +43,16 @@ from tu_quality import build_zx_quality_gates
 from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
 from quality_chatbot_ui import render_quality_chatbot
 import quality_graph_seed as _quality_graph_seed
-if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 4:
+if getattr(_quality_graph_seed, "QUALITY_GRAPH_RELEASE", None) != 5:
     importlib.reload(_quality_graph_seed)
 import quality_graph as _quality_graph
-if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 4:
+if getattr(_quality_graph, "QUALITY_GRAPH_RELEASE", None) != 5:
     importlib.reload(_quality_graph)
 import quality_workbench_ui as _quality_workbench_ui
-if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 4:
+if getattr(_quality_workbench_ui, "QUALITY_GRAPH_RELEASE", None) != 5:
     importlib.reload(_quality_workbench_ui)
 import quality_graph_ui as _quality_graph_ui
-if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 4:
+if getattr(_quality_graph_ui, "QUALITY_GRAPH_RELEASE", None) != 5:
     importlib.reload(_quality_graph_ui)
 from quality_graph import graph_mode
 from quality_graph_ui import render_quality_graph, report_control_evidence
@@ -21148,20 +21148,17 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
         if primary["row"] in {59, 82} and primary["defect"] == "TU-021":
             standard = t("外观无孔洞", "No visible holes")
         preview = " · ".join(dict.fromkeys(filter(None, (primary["how"], standard))))
-        visual = {
-            51: ("dcs-111", t("从面料裁边量到缝线，目标 3 mm ± 1 mm", "Measure from the fabric edge to the stitch line. Target 3 mm ± 1 mm.")),
-            53: ("dcs-109", t("合格接缝闭合，不合格接缝出现开口", "Accept a closed seam. Reject an open seam.")),
-        }.get(primary["row"])
-        if primary["row"] in {59, 82} and primary["defect"] == "TU-021":
-            visual = ("dcs-100", t("合格面料没有孔洞，不合格面料有针孔", "Accept fabric without holes. Reject fabric with pinholes."))
         note = f'<div class="quality-report-cell-note">{e(primary["action"])}</div>'
-        if visual:
-            name, alt = visual
-            illustration = (ROOT / "assets/quality-graph" / f"{name}.svg").read_bytes()
-            uri = base64.b64encode(illustration).decode("ascii")
-            caption = t(f"检查示意 · ZX 手套 CP 第 {primary['row']} 行", f"Inspection illustration · ZX Glove CP row {primary['row']}")
+        source_row = primary["row"]
+        capture = ROOT / "assets/quality-graph" / f"cp-row-{source_row}.png"
+        if capture.is_file():
+            uri = base64.b64encode(capture.read_bytes()).decode("ascii")
+            caption = t(f"ZX 手套 CP 原表 · C{source_row}:E{source_row}", f"ZX Glove CP source · C{source_row}:E{source_row}")
+            alt = " · ".join(part for part in (primary["how"], primary["what"], primary["target"]) if part)
+            plm_link = t("在 PLM 中查找 DCS", "Find DCS in PLM")
             return (f'<details class="quality-report-detail quality-report-cp quality-report-cp-visual"><summary>{e(preview)}</summary>'
-                    f'<figure><img src="data:image/svg+xml;base64,{uri}" alt="{e(alt)}"><figcaption>{e(caption)}</figcaption>'
+                    f'<figure><img src="data:image/png;base64,{uri}" alt="{e(alt)}"><figcaption>{e(caption)}'
+                    f' <a href="https://plm.decathlon.net/shapes-client-web/" target="_blank" rel="noopener noreferrer">{e(plm_link)}</a></figcaption>'
                     f'</figure></details>{note}')
         lines = []
         for item in matches:
@@ -21269,7 +21266,7 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
         evidence_table = table("evidence-table", ["CC", t("FQC 条数", "FQC records"), "Passing rate", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [9, 14, 19, 13, 13, 32], evidence_rows, paired=True)
     else:
         evidence_table = table("evidence-table", ["CC", t("FQC 记录", "FQC records"), t("检验数", "Inspections"), t("源不良数", "Source NC"), t("最近 FQC", "Latest FQC")], [20, 20, 20, 20, 20], evidence_rows)
-    plan_widths = [15, 20, 41, 24] if community == "TU" else [18, 28, 32, 22]
+    plan_widths = [13, 17, 54, 16] if community == "TU" else [18, 28, 32, 22]
     plan_table = table("plan-table", ["CC", t("主要疵点", "Top defect"), t("CP / 工序标准", "CP / Process"), t("建议 AQL", "Suggested AQL")], plan_widths, plan_rows)
     ai_rows = []
     for item in narrative.get("actions", []):

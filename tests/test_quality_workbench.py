@@ -2,7 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from quality_graph import GLOVES, Observation, ReviewStore, accepted_samples
+from quality_graph import GLOVES, Observation, ReviewStore, accepted_samples, defect_types, save_defect_type
 from quality_workbench_ui import _apply, progress_by_gate, work_queue
 
 
@@ -49,3 +49,20 @@ class WorkbenchTests(unittest.TestCase):
             _apply(event, self.rows, {}, self.rows, a, {}, settings, store, self.t)
             gate = progress_by_gate(self.rows, store.latest("label"))[0]
             self.assertEqual((gate["uncertain"], gate["trainable"]), (1, 0))
+
+    def test_custom_type_is_valid_for_labeling_and_rename_preserves_label_id(self):
+        sample = self.rows[1]
+        with TemporaryDirectory() as folder:
+            store = ReviewStore(Path(folder) / "reviews.sqlite3")
+            code = save_defect_type(store, "TU", {}, "", "试验疵点", "Trial defect", "判定定义")
+            saved = store.latest("taxonomy")["TU"]
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                save_defect_type(store, "TU", saved, "", "试验疵点", "Other defect", "")
+            with self.assertRaisesRegex(ValueError, "changed"):
+                save_defect_type(store, "TU", {}, "", "并发疵点", "Concurrent defect", "")
+            event = {"action": "answer", "id": sample.id, "revision": 0, "choice": code}
+            _apply(event, self.rows, {}, [sample], sample, {}, {}, store, self.t)
+            save_defect_type(store, "TU", saved, code, "新名称", "Renamed defect", "")
+            self.assertEqual(defect_types("TU", store.latest("taxonomy")["TU"])[code][0], "新名称")
+            self.assertNotIn(code, defect_types("BME"))
+            self.assertEqual(accepted_samples(store.latest("label"))[0][1]["labels"], [code])

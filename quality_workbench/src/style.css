@@ -69,13 +69,10 @@ textarea { min-height: 62px; resize: vertical; }
 .record summary { width: fit-content; cursor: pointer; color: var(--blue); }
 .details { padding: 6px 0 0 12px; overflow-wrap: anywhere; }
 .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.actions .save { margin-inline-start: auto; min-width: 100px; background: #2457d6; border-color: #2457d6; color: #fff; }
-.actions .save:not(:disabled):hover { background: #1947bd; }
-.actions [aria-pressed="true"] { background: #e5eeff; border-color: var(--blue); color: #2149ac; }
+.actions .next { margin-inline-start: auto; }
 .choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
 .choice { display: flex; align-items: center; gap: 10px; text-align: left; height: 62px; overflow-wrap: anywhere; }
-.choice.suggested { background: #f6f8fc; color: #2149ac; }
-.choice[aria-pressed="true"], .choice.selected { background: #e5eeff; border-color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
+.choice.suggested { background: #edf3ff; border-color: #a9bcf1; color: #2149ac; }
 .alternative { border: 1px solid #c7d4e7; border-radius: 8px; padding: 0 12px; }
 .alternative:only-child { grid-column: 1 / -1; }
 .alternative select { border: 0; border-radius: 0; padding: 8px 0; background: transparent; font-weight: 650; cursor: pointer; }
@@ -98,6 +95,5 @@ textarea { min-height: 62px; resize: vertical; }
   .choice { gap: 6px; padding-inline: 7px; font-size: 13px; }
   .alternative select { padding-inline: 0; }
   .actions button { padding-inline: 8px; }
-  .actions .save { min-width: 72px; }
 }
 @media (prefers-reduced-motion: reduce) { .meter span { transition: none; } }

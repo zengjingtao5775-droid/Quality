@@ -15,6 +15,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from openpyxl import load_workbook
 
@@ -23,7 +24,7 @@ from quality_graph_seed import (
     TAXONOMY_VERSION, ZX_ALIASES, ZX_LINKS,
 )
 
-QUALITY_GRAPH_RELEASE = 4
+QUALITY_GRAPH_RELEASE = 5
 
 
 def clean(value):
@@ -234,12 +235,33 @@ class ReviewStore:
             return [Observation(**json.loads(payload)) for (payload,) in db.execute("SELECT payload FROM observations")]
 
 
-def label_decision(observation, labels, outcome, reason, status):
+def defect_types(community, saved=None):
+    return {**TAXONOMY[community], **(saved or {}).get("types", {})}
+
+
+def save_defect_type(store, community, saved, code, zh, en, definition):
+    types = defect_types(community, saved)
+    zh, en, definition = map(clean, (zh, en, definition))
+    if not zh or not en:
+        raise ValueError("Enter both the Chinese and English defect names.")
+    if code and code not in types:
+        raise ValueError("Select a valid defect type.")
+    if any(item != code and (normalized(names[0]) == normalized(zh) or normalized(names[1]) == normalized(en))
+           for item, names in types.items()):
+        raise ValueError("A defect with this name already exists in this community.")
+    code = code or f"{community}-C-{uuid4().hex[:12].upper()}"
+    changes = {**saved.get("types", {}), code: (zh, en, definition)}
+    store.write("taxonomy", community, saved.get("revision", 0), "defect-dictionary", {"types": changes})
+    return code
+
+
+def label_decision(observation, labels, outcome, reason, status, types=None):
     if status not in {"submitted", "approved", "returned", "confirmed"}:
         raise ValueError("Invalid review status")
     if outcome not in {"labeled", "insufficient", "out_of_taxonomy", "split_needed"}:
         raise ValueError("Invalid annotation outcome")
-    if outcome == "labeled" and (not labels or not set(labels) <= TAXONOMY[observation.community].keys()):
+    valid = TAXONOMY[observation.community] if types is None else types
+    if outcome == "labeled" and (not labels or not set(labels) <= valid.keys()):
         raise ValueError("Select valid labels for the observation's community")
     if (outcome != "labeled" or status == "returned") and not clean(reason):
         raise ValueError("Add a reason for unresolved or returned observations")

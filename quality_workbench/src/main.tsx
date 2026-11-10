@@ -28,7 +28,7 @@ const content = {
     empty: '当前范围没有待作答记录。可以清空搜索或调整上方范围。',
     noRecords: '当前范围没有记录。可以调整范围，或从「数据与评估」导入。',
     other: '选其他类型', unsure: '暂无法判断', options: '选择一个标准类型',
-    detail: '查看原始来源', process: '工序', type: '原始分类', next: '跳过', undo: '撤销上一条', save: '保存', saving: '保存中…',
+    detail: '查看原始来源', process: '工序', type: '原始分类', next: '跳过', undo: '撤销上一条', saving: '保存中…',
   },
   en: {
     progress: 'Labeling progress', scope: 'Current scope', labeled: 'Labeled', uncertain: 'Undetermined', remaining: 'Unanswered',
@@ -38,7 +38,7 @@ const content = {
     empty: 'No unanswered records in this selection. Clear the search or adjust the filters.',
     noRecords: 'No records in this scope. Adjust the filters or import in Data and evaluation.',
     other: 'Choose another type', unsure: 'Unable to determine', options: 'Choose one canonical type',
-    detail: 'View source record', process: 'Process', type: 'Original category', next: 'Skip', undo: 'Undo last answer', save: 'Save', saving: 'Saving…',
+    detail: 'View source record', process: 'Process', type: 'Original category', next: 'Skip', undo: 'Undo last answer', saving: 'Saving…',
   },
 };
 type Copy = typeof content.zh;
@@ -77,35 +77,35 @@ function RecordCard({ sample, copy, busy, send }: {
   sample: Sample; copy: Copy; busy: boolean; send: (event: Command) => void;
 }) {
   const suggestion = sample.options.find(option => option.id === sample.suggestion);
-  const [choice, setChoice] = useState('');
-  const alternative = choice !== 'unsure' && choice !== suggestion?.id ? choice : '';
+  const answer = (choice: string) => send({ action: 'answer', id: sample.id, revision: sample.revision, choice });
   return <div className="record">
     <div className="record-context"><span>{sample.stage}</span><b>{sample.factory}</b><span>{sample.family}</span>{sample.date && <time>{sample.date}</time>}</div>
     <p className="description">{sample.description}</p>
     <div className="choices">
-      {suggestion && <button className="choice suggested" type="button" disabled={busy} aria-pressed={choice === suggestion.id} onClick={() => setChoice(suggestion.id)}>
+      {suggestion && <button className="choice suggested" type="button" disabled={busy} onClick={() => answer(suggestion.id)}>
         <span className="letter">A</span>{suggestion.name}
       </button>}
-      <label className={`choice alternative${alternative ? ' selected' : ''}`}>
+      <label className="choice alternative">
         <span className="letter" aria-hidden="true">B</span>
-        <select aria-label={copy.options} value={alternative} disabled={busy} onChange={event => setChoice(event.currentTarget.value)}>
+        <select aria-label={copy.options} value="" disabled={busy} onChange={event => {
+          if (event.currentTarget.value) answer(event.currentTarget.value);
+        }}>
           <option value="">{copy.other}</option>
           {sample.options.filter(option => option.id !== suggestion?.id).map(option => <option key={option.id} value={option.id}>{option.name}</option>)}
         </select>
       </label>
     </div>
     <div className="actions">
-      <button type="button" disabled={busy} aria-pressed={choice === 'unsure'} onClick={() => setChoice('unsure')}>{copy.unsure}</button>
+      <button type="button" disabled={busy} onClick={() => answer('unsure')}>{copy.unsure}</button>
       <button className="next" type="button" disabled={busy} onClick={() => send({ action: 'next', id: sample.id, revision: sample.revision })}>{copy.next} <span aria-hidden="true">→</span></button>
-      <button className="save" type="button" disabled={busy || !choice}
-        onClick={() => send({ action: 'answer', id: sample.id, revision: sample.revision, choice })}>{busy ? copy.saving : copy.save}</button>
     </div>
     <details><summary>{copy.detail}</summary><div className="details">{sample.source} · {sample.record}{sample.process && <p>{copy.process} · {sample.process}</p>}{sample.rawType && <p>{copy.type} · {sample.rawType}</p>}</div></details>
   </div>;
 }
 
-function Workbench({ view, busy, send }: { view: View; busy: boolean; send: (event: Command) => void }) {
+function Workbench({ view, action, send }: { view: View; action: Command['action'] | null; send: (event: Command) => void }) {
   const copy = content[view.language];
+  const busy = action !== null;
   const [query, setQuery] = useState(view.query);
   return <main>
     <section className="work" aria-labelledby="task-title">
@@ -115,7 +115,8 @@ function Workbench({ view, busy, send }: { view: View; busy: boolean; send: (eve
       {view.sample ? <RecordCard key={`${view.sample.id}/${view.sample.revision}`} sample={view.sample} copy={copy} busy={busy} send={send} />
         : <p className="empty">{view.gates.every(gate => gate.total === 0) ? copy.noRecords : copy.empty}</p>}
       <div className="feedback" aria-live="polite">
-        {view.error ? <span className="error" role="alert">{view.error}</span> : <span>{view.message}</span>}
+        {action === 'answer' ? <span>{copy.saving}</span>
+          : view.error ? <span className="error" role="alert">{view.error}</span> : <span>{view.message}</span>}
         {view.canUndo && <button type="button" disabled={busy} onClick={() => send({ action: 'undo' })}>{copy.undo}</button>}
       </div>
       <details className="lookup">
@@ -133,7 +134,7 @@ function Workbench({ view, busy, send }: { view: View; busy: boolean; send: (eve
 
 function Frame() {
   const [view, setView] = useState<View | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [action, setAction] = useState<Command['action'] | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const pending = useRef<string | null>(null);
   useEffect(() => {
@@ -143,7 +144,7 @@ function Frame() {
       setView(next);
       if (pending.current && pending.current === next.acknowledgedEvent) {
         pending.current = null;
-        setBusy(false);
+        setAction(null);
       }
     };
     Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, receive);
@@ -152,11 +153,11 @@ function Frame() {
     if (root.current) resize.observe(root.current);
     return () => { Streamlit.events.removeEventListener(Streamlit.RENDER_EVENT, receive); resize.disconnect(); };
   }, []);
-  return <div ref={root}>{view && <Workbench key={view.scopeKey} view={view} busy={busy} send={event => {
+  return <div ref={root}>{view && <Workbench key={view.scopeKey} view={view} action={action} send={event => {
     if (pending.current) return;
     const nonce = crypto.randomUUID();
     pending.current = nonce;
-    setBusy(true);
+    setAction(event.action);
     Streamlit.setComponentValue({ ...event, nonce });
   }} />}</div>;
 }

@@ -5,13 +5,13 @@ import sqlite3
 import streamlit as st
 import streamlit.components.v1 as components
 
-from quality_graph import TextBaseline, accepted_samples, candidate_aliases, clean, key_for, label_decision, normalized
-from quality_graph_seed import LABELING_STAGES, TAXONOMY
+from quality_graph import TextBaseline, accepted_samples, candidate_aliases, clean, defect_types, key_for, label_decision, normalized
+from quality_graph_seed import LABELING_STAGES
 
 
-QUALITY_GRAPH_RELEASE = 4
+QUALITY_GRAPH_RELEASE = 5
 DIST = Path(__file__).resolve().parent / "quality_workbench/dist"
-_workbench = components.declare_component("quality_defect_labeler_v4", path=str(DIST))
+_workbench = components.declare_component("quality_defect_labeler_v5", path=str(DIST))
 WIDGET_KEY = "quality_labeling_react"
 ANSWERED = {"confirmed", "approved"}
 ACTOR = "workbench"
@@ -42,10 +42,9 @@ def work_queue(observations, decisions, query):
             and (not phrase or phrase in normalized(f"{obs.description} {obs.record} {obs.process} {obs.raw_type}"))]
 
 
-def _sample(obs, decision, decisions, t):
+def _sample(obs, decision, decisions, types, t):
     if obs is None:
         return None
-    codes = TAXONOMY[obs.community]
     _, _, suggestion, _ = candidate_aliases([obs])[0]
     if not suggestion:
         train = [(item, result["labels"][0]) for item, result in accepted_samples(decisions)
@@ -56,10 +55,10 @@ def _sample(obs, decision, decisions, t):
             "family": obs.family, "stage": obs.stage, "process": obs.process, "date": obs.date,
             "source": obs.source, "record": obs.record, "revision": decision.get("revision", 0),
             "suggestion": suggestion,
-            "options": [{"id": code, "name": t(zh, en)} for code, (zh, en, _) in codes.items()]}
+            "options": [{"id": code, "name": t(zh, en)} for code, (zh, en, _) in types.items()]}
 
 
-def _apply(event, scoped, decisions, queue, sample, decision, settings, store, t):
+def _apply(event, scoped, decisions, queue, sample, decision, settings, store, t, types=None):
     action = event.get("action")
     if action == "search":
         settings.update(query=clean(event.get("query"))[:150], cursor=0)
@@ -86,11 +85,13 @@ def _apply(event, scoped, decisions, queue, sample, decision, settings, store, t
     if action != "answer":
         raise ValueError("Invalid annotation action")
     choice = event.get("choice")
-    if not isinstance(choice, str) or (choice != "unsure" and choice not in TAXONOMY[sample.community]):
+    if types is None:
+        types = defect_types(sample.community, store.latest("taxonomy").get(sample.community))
+    if not isinstance(choice, str) or (choice != "unsure" and choice not in types):
         raise ValueError(t("请选择有效的标准疵点。", "Choose a valid canonical defect."))
     unsure = choice == "unsure"
     payload = label_decision(sample, [] if unsure else [choice], "insufficient" if unsure else "labeled",
-                             "Annotator selected unable to determine" if unsure else "", "confirmed")
+                             "Annotator selected unable to determine" if unsure else "", "confirmed", types=types)
     store.write("label", sample.id, revision, ACTOR, payload)
     settings["undo"] = (sample.id, revision + 1)
     return t("已记录：暂无法判断。", "Recorded as unable to determine.") if unsure else t("标签已保存。", "Label saved.")
@@ -115,12 +116,14 @@ def render_labeling_workbench(scoped, store, scope, t):
         settings.update(scope=scope_key, query="", cursor=0, message="", error="")
         settings.pop("undo", None)
     decisions = store.latest("label")
+    community = scope[0]
+    types = defect_types(community, store.latest("taxonomy").get(community))
     queue, sample, decision = _queue_state(scoped, decisions, settings)
     event = st.session_state.get(WIDGET_KEY)
     if isinstance(event, dict) and event.get("nonce") and event["nonce"] != settings.get("event"):
         settings.update(event=event["nonce"], message="", error="")
         try:
-            settings["message"] = _apply(event, scoped, decisions, queue, sample, decision, settings, store, t)
+            settings["message"] = _apply(event, scoped, decisions, queue, sample, decision, settings, store, t, types=types)
         except (ValueError, TypeError, sqlite3.Error) as error:
             settings["error"] = str(error)
         decisions = store.latest("label")
@@ -128,5 +131,5 @@ def render_labeling_workbench(scoped, store, scope, t):
     _workbench(language=t("zh", "en"), gates=progress_by_gate(scoped, decisions), query=settings["query"],
                scope=[value for value in scope if value], scopeKey=scope_key, queueCount=len(queue),
                queuePosition=settings["cursor"] + 1 if sample else 0, canUndo="undo" in settings,
-               sample=_sample(sample, decision, decisions, t), message=settings.get("message", ""),
+               sample=_sample(sample, decision, decisions, types, t), message=settings.get("message", ""),
                error=settings.get("error", ""), acknowledgedEvent=settings.get("event"), key=WIDGET_KEY, default=None)

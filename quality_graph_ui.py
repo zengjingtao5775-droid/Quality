@@ -13,12 +13,13 @@ import pandas as pd
 import streamlit as st
 
 from quality_graph import (EVALUATION_MINIMUMS, Observation, ReviewStore, accepted_samples, candidate_aliases, clean,
-                           csv_bytes, evaluate_with_readiness, graph_db, graph_mode, guide_path, link_candidates, link_key, normalized,
-                           read_controls, read_csv_observations, read_zx_observations, report_control_candidates)
+                           csv_bytes, defect_types, evaluate_with_readiness, graph_db, graph_mode, guide_path, link_candidates,
+                           link_key, normalized, read_controls, read_csv_observations, read_zx_observations,
+                           report_control_candidates, save_defect_type)
 from quality_graph_seed import GLOVES, GUIDE_DIGEST, LABELING_STAGES, STAGES, TAXONOMY, TAXONOMY_VERSION
 from quality_workbench_ui import render_labeling_workbench
 
-QUALITY_GRAPH_RELEASE = 4
+QUALITY_GRAPH_RELEASE = 5
 
 
 def review_store(root):
@@ -87,10 +88,10 @@ def dashboard_observations(jdy, bme):
     return rows
 
 
-def _name(code, t):
+def _name(code, types, t):
     if not code:
         return "—"
-    zh, en, _ = TAXONOMY[code.split("-")[0]][code]
+    zh, en, _ = types[code]
     return f"{code} · {t(zh, en)}"
 
 
@@ -104,25 +105,25 @@ def _save(store, kind, key, previous, actor, payload, t):
         st.rerun()
 
 
-def mapping_rows(observations, aliases, links, controls):
+def mapping_rows(observations, aliases, links, controls, catalog):
     """Export the two edge types independently, preserving many-to-many links."""
     rows = []
     for key, obs, draft, count in candidate_aliases(observations):
         saved = aliases.get(key, {})
         defect = saved.get("defect", draft)
+        zh, en, _ = catalog[obs.community].get(defect, ("", "", ""))
         rows.append(dict(edge="ALIAS_OF", community=obs.community, factory=obs.factory, family=obs.family, stage=obs.stage,
             raw_type=obs.raw_type, raw_description=obs.description, records=count, canonical_id=defect,
-            canonical_name=TAXONOMY[obs.community].get(defect, ("",))[0],
-            canonical_name_en=TAXONOMY[obs.community][defect][1] if defect else "",
+            canonical_name=zh, canonical_name_en=en,
             status=saved.get("status", "draft" if draft else "unmapped"), relation="EXACT_WITHIN_SCOPE",
             what="", how="", target="", tolerance="", frequency="", sampling="", how_to_react="", cp_version="", cp_sha256="", reference="",
             approved_ccs="", note=saved.get("reason", ""), source=obs.source, reviewer=saved.get("actor", ""),
             reviewed_at=saved.get("at", ""), taxonomy=TAXONOMY_VERSION))
     for key, stage, defect, row, relation, note in link_candidates(links):
         control, saved = controls.get(row, {}), links.get(key, {})
+        zh, en, _ = catalog["TU"].get(defect, ("", "", ""))
         rows.append(dict(edge="CONTROL_LINK", community="TU", factory="ZX", family=GLOVES, stage=stage,
-            raw_type="", raw_description="", records="", canonical_id=defect, canonical_name=TAXONOMY["TU"][defect][0],
-            canonical_name_en=TAXONOMY["TU"][defect][1],
+            raw_type="", raw_description="", records="", canonical_id=defect, canonical_name=zh, canonical_name_en=en,
             status=saved.get("status", "draft") if control else "source_unavailable", relation=relation,
             what=control.get("what", ""), how=control.get("how", ""), target=control.get("target", ""),
             tolerance=control.get("tolerance", ""), frequency=control.get("frequency", ""), sampling=control.get("sampling", ""),
@@ -133,7 +134,7 @@ def mapping_rows(observations, aliases, links, controls):
     return rows
 
 
-def _alias_editor(scoped, aliases, links, controls, store, actor, t):
+def _alias_editor(scoped, aliases, links, controls, store, actor, types, t):
     candidates = sorted(candidate_aliases(scoped), key=lambda item: (-item[3], item[1].description))
     if candidates:
         selected = st.selectbox(t("选择待映射描述", "Select a description"), candidates, index=None,
@@ -143,7 +144,7 @@ def _alias_editor(scoped, aliases, links, controls, store, actor, t):
             key, obs, draft, _ = selected
             previous = aliases.get(key, {})
             seed = previous.get("defect", draft)
-            codes = list(TAXONOMY[obs.community])
+            codes = list(types)
             if seed:
                 path = [{"Control Plan": controls[row]["what"], "How to control": controls[row]["how"],
                          t("来源", "Source"): controls[row]["reference"],
@@ -156,7 +157,7 @@ def _alias_editor(scoped, aliases, links, controls, store, actor, t):
                         st.dataframe(path, hide_index=True, width="stretch")
             with st.form(f"qg_alias_{key}_{previous.get('revision', 0)}"):
                 defect = st.selectbox(t("标准疵点", "Canonical defect"), codes, index=codes.index(seed) if seed in codes else None,
-                                      format_func=lambda code: _name(code, t))
+                                      format_func=lambda code: _name(code, types, t))
                 reason = st.text_area(t("判定依据或适用边界", "Evidence or applicability limits"), value=previous.get("reason", ""))
                 approve = st.form_submit_button(t("确认同义映射", "Approve alias"), disabled=not bool(clean(actor)))
                 block = st.form_submit_button(t("标为待澄清", "Mark unresolved"), disabled=not bool(clean(actor)))
@@ -171,13 +172,13 @@ def _alias_editor(scoped, aliases, links, controls, store, actor, t):
 
 
 
-def _cp_editor(links, controls, store, actor, stage_filter, t):
+def _cp_editor(links, controls, store, actor, stage_filter, types, t):
     if not controls:
         st.info(t("请加载本试点对应版本的 ZX 手套 CP。", "Load the ZX glove guide version for this pilot."))
         return
     options = [item for item in link_candidates(links) if item[3] in controls and (not stage_filter or item[1] == stage_filter)]
     selected = st.selectbox(t("核对 ZX 手套控制项", "Review a ZX glove control link"), options, index=None,
-        format_func=lambda item: f"{item[1]} · {_name(item[2], t)} · {t('原表行', 'Source row')} {item[3]} · {controls[item[3]]['what']}", key="qg_edge")
+        format_func=lambda item: f"{item[1]} · {_name(item[2], types, t)} · {t('原表行', 'Source row')} {item[3]} · {controls[item[3]]['what']}", key="qg_edge")
     if selected:
         key, stage, defect, row, relation, note = selected
         control = controls[row]
@@ -204,7 +205,7 @@ def _cp_editor(links, controls, store, actor, stage_filter, t):
     with st.expander(t("新增 ZX 控制关联候选", "Add a ZX control-link candidate")):
         with st.form("qg_new_edge"):
             stage = st.selectbox(t("发现疵点的环节", "Observation gate"), STAGES, index=STAGES.index(stage_filter) if stage_filter else 0)
-            defect = st.selectbox(t("标准疵点", "Canonical defect"), TAXONOMY["TU"], format_func=lambda code: _name(code, t))
+            defect = st.selectbox(t("标准疵点", "Canonical defect"), types, format_func=lambda code: _name(code, types, t))
             row = st.selectbox(t("CP 原表行", "CP source row"), list(controls), index=None,
                 format_func=lambda n: f"{n} · {controls[n]['step']} / {controls[n]['what'] or controls[n]['how']}")
             relation = st.selectbox(t("关系", "Relation"), {"DETECT": t("用于检出", "Detect"), "VERIFY": t("用于复核", "Verify")},
@@ -221,25 +222,57 @@ def _cp_editor(links, controls, store, actor, stage_filter, t):
                 _save(store, "link", key, {}, actor, dict(ccs=[], reason="", edge=[stage, defect, row, relation, note], status="draft"), t)
 
 
+def _dictionary_editor(store, community, saved, types, t):
+    rows = [dict(code=code, zh=zh, en=en, definition=definition) for code, (zh, en, definition) in types.items()]
+    listing, editor = st.columns([1.7, 1], gap="medium")
+    with listing:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=420, column_config={
+            "code": t("编号", "ID"), "zh": t("中文名称", "Chinese name"), "en": t("英文名称", "English name"),
+            "definition": t("判定定义", "Definition"),
+        })
+        st.download_button(t("下载字典 CSV", "Download dictionary CSV"), csv_bytes(rows), "quality-defect-types.csv", "text/csv")
+    with editor, st.container(border=True, key="qg_mapping_editor"):
+        st.subheader(t("编辑标准疵点", "Edit canonical defects"))
+        code = st.selectbox(t("选择疵点", "Choose a defect"), ["", *types], key=f"qg_type_{community}",
+                            format_func=lambda item: _name(item, types, t) if item else t("＋ 新增疵点", "+ Add a defect"))
+        zh, en, definition = types.get(code, ("", "", ""))
+        with st.form(f"qg_type_form_{community}_{code}_{saved.get('revision', 0)}"):
+            zh = st.text_input(t("中文名称", "Chinese name"), value=zh, max_chars=80)
+            en = st.text_input(t("英文名称", "English name"), value=en, max_chars=120)
+            definition = st.text_area(t("判定定义", "Definition"), value=definition, max_chars=500)
+            submit = st.form_submit_button(t("保存疵点", "Save defect"), type="primary")
+        if submit:
+            try:
+                updated = save_defect_type(store, community, saved, code, zh, en, definition)
+            except (ValueError, sqlite3.Error) as error:
+                st.error(str(error))
+            else:
+                st.session_state["qg_saved"] = t(f"已保存标准疵点 {updated}。", f"Saved defect type {updated}.")
+                st.rerun()
+
+
 def _render_mapping(scoped, aliases, links, controls, store, community, factory, stage, family, t):
-    rows = [row for row in mapping_rows(scoped, aliases, links, controls) if row["community"] == community
+    saved_types = store.latest("taxonomy")
+    catalog = {key: defect_types(key, saved_types.get(key)) for key in TAXONOMY}
+    types = catalog[community]
+    show_zx = community == "TU" and factory in (None, "ZX") and family in (None, GLOVES)
+    modes = {"dictionary": t("标准疵点字典", "Defect dictionary"), "aliases": t("疵点描述映射", "Defect descriptions"), "controls": "Control Plan"}
+    st.subheader("Defect Mapping")
+    mode = st.radio(t("映射类型", "Mapping type"), modes if show_zx else ["dictionary", "aliases"], format_func=modes.get,
+                    horizontal=True, label_visibility="collapsed", key="qg_mapping_kind")
+    if mode == "dictionary":
+        _dictionary_editor(store, community, saved_types.get(community, {}), types, t)
+        return
+    rows = [row for row in mapping_rows(scoped, aliases, links, controls, catalog) if row["community"] == community
             and (not stage or row["stage"] == stage) and (not factory or row["factory"] == factory)
             and (not family or row["family"] == family)]
     descriptions = [row for row in rows if row["edge"] == "ALIAS_OF"]
     control_links = [row for row in rows if row["edge"] == "CONTROL_LINK"]
-    heading, download = st.columns([3, 1], vertical_alignment="center")
-    heading.subheader("Defect Mapping")
-    download.download_button(t("下载映射 CSV", "Download CSV"), csv_bytes(rows), "quality-defect-mapping.csv", "text/csv",
-                             disabled=not rows, width="stretch")
     with st.container(key="qg_mapping_metrics"):
         cards = st.columns(3)
         cards[0].metric(t("疵点描述", "Defect descriptions"), len(descriptions))
         cards[1].metric(t("已确认映射", "Approved mappings"), sum(row["status"] == "approved" for row in descriptions))
         cards[2].metric(t("CP 关联", "CP links"), len(control_links))
-    show_zx = community == "TU" and factory in (None, "ZX") and family in (None, GLOVES)
-    modes = {"aliases": t("疵点描述映射", "Defect descriptions"), "controls": "Control Plan"}
-    mode = st.radio(t("映射类型", "Mapping type"), modes if show_zx else ["aliases"], format_func=modes.get,
-                    horizontal=True, label_visibility="collapsed", key="qg_mapping_kind")
     statuses = {"draft": t("待确认", "Pending"), "unmapped": t("未匹配", "Unmapped"),
                 "approved": t("已确认", "Approved"), "unresolved": t("待澄清", "Unresolved"),
                 "source_unavailable": t("来源缺失", "Source unavailable")}
@@ -253,13 +286,14 @@ def _render_mapping(scoped, aliases, links, controls, store, community, factory,
     listing, editor = st.columns([1.7, 1], gap="medium")
     with listing:
         st.dataframe(table.rename(columns=fields), hide_index=True, width="stretch", height=420)
+        st.download_button(t("下载映射 CSV", "Download CSV"), csv_bytes(rows), "quality-defect-mapping.csv", "text/csv", disabled=not rows)
     with editor, st.container(border=True, key="qg_mapping_editor"):
         st.subheader(t("审核描述映射", "Review defect mapping") if mode == "aliases" else t("审核控制项", "Review control link"))
         actor = st.text_input(t("映射审核人", "Mapping reviewer"), key="qg_mapping_actor", max_chars=80)
         if mode == "aliases":
-            _alias_editor(scoped, aliases, links, controls, store, actor, t)
+            _alias_editor(scoped, aliases, links, controls, store, actor, types, t)
         else:
-            _cp_editor(links, controls, store, actor, stage, t)
+            _cp_editor(links, controls, store, actor, stage, types, t)
 
 
 def _import_evaluation_data(store, trial, t):
