@@ -49,13 +49,13 @@ def load_guide():
 
 @st.cache_data(show_spinner=False)
 def _cached_zx(directory, source_versions, parser_release):
-    return read_zx_observations(directory)
+    return [asdict(obs) for obs in read_zx_observations(directory)]
 
 
 def local_zx(root):
     directory = root / "TU database/ZX Database/Factory data"
     versions = tuple(sorted((path.name, path.stat().st_mtime_ns, path.stat().st_size) for path in directory.glob("*.xlsx")))
-    return _cached_zx(directory, versions, QUALITY_GRAPH_RELEASE)
+    return [Observation(**record) for record in _cached_zx(directory, versions, QUALITY_GRAPH_RELEASE)]
 
 
 def dashboard_observations(jdy, bme):
