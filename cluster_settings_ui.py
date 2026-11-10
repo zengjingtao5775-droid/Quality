@@ -11,9 +11,16 @@ from tu_risk_reference import render_tu_scoring_reference
 CLUSTER_SETTINGS_UI_VERSION = "2026-10-19-v6-configurable-anchors"
 
 
-def render_quality_navigation(t):
+def render_quality_navigation(t, include_graph=False):
     migrate_cluster_defaults(st.session_state)
-    page = "cluster-settings" if st.query_params.get("view") == "cluster-settings" else "dashboard"
+    links = [
+        ("dashboard", t("质量看板", "Dashboard"), ":material/dashboard:"),
+        ("cluster-settings", t("聚类权重设置", "Cluster Weights"), ":material/tune:"),
+    ]
+    if include_graph:
+        links.append(("quality-graph", t("知识图谱与标注", "Knowledge Graph & Labeling"), ":material/hub:"))
+    requested = st.query_params.get("view")
+    page = requested if requested in {target for target, _, _ in links} else "dashboard"
     def navigate(target):
         if target == "dashboard":
             st.query_params.pop("view", None)
@@ -25,10 +32,7 @@ def render_quality_navigation(t):
                     '<div class="quality-nav-subtitle">'+t("质量分析工作台", "Quality workspace")+'</div></div>', unsafe_allow_html=True)
         st.markdown('<div class="quality-nav-section">'+t("工作空间", "WORKSPACE")+'</div>', unsafe_allow_html=True)
         with st.container(key="quality_nav_links"):
-            for target, label, icon in (
-                ("dashboard", t("质量看板", "Dashboard"), ":material/dashboard:"),
-                ("cluster-settings", t("聚类权重设置", "Cluster Weights"), ":material/tune:"),
-            ):
+            for target, label, icon in links:
                 st.button(label, icon=icon, key=f"quality_nav_{target}",
                           type="primary" if page == target else "secondary",
                           use_container_width=True, on_click=navigate, args=(target,),

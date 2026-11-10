@@ -41,6 +41,8 @@ from dashboard_scope import (
 from tu_quality import build_zx_quality_gates
 from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
 from quality_chatbot_ui import render_quality_chatbot
+from quality_graph import graph_mode
+from quality_graph_ui import render_quality_graph, render_report_controls
 import quality_gate_metrics as _quality_gate_metrics
 if getattr(_quality_gate_metrics, "GATE_METRICS_VERSION", "") != "2026-10-16-v3-weekly-zero-exposure":
     importlib.reload(_quality_gate_metrics)
@@ -21166,7 +21168,7 @@ def render_three_part_report(community, pack, narrative):
     st.markdown(markup, unsafe_allow_html=True)
 
 
-def render_unified_ai_report(community: str, facts: dict, cards: list[dict], risks: pd.DataFrame) -> None:
+def render_unified_ai_report(community: str, facts: dict, cards: list[dict], risks: pd.DataFrame, graph_source=None) -> None:
     charts = st.session_state.get("_unified_chart_facts", {}).get(community, [])
     pack = facts.get("report_pack", {"product_risks": [], "ps_actions": [], "aql_recommendations": []})
     st.session_state.setdefault("_unified_report_facts", {})[community] = _safe_ai_value(pack)
@@ -21226,6 +21228,8 @@ def render_unified_ai_report(community: str, facts: dict, cards: list[dict], ris
                 print("Quality AI response rejected:", type(error).__name__, str(error) if isinstance(error, ValueError) else "provider request failed", flush=True)
                 st.warning(t("AI 服务暂未返回完整有效的分析，保留三段式数据报告；可稍后重试。", "The AI response was incomplete or invalid. The three-part data report is retained; try again later."))
         render_three_part_report(community, pack, report["narrative"] if report else {"actions": []})
+        if graph_source is not None:
+            render_report_controls(ROOT, graph_source, pack.get("product_risks", []), t)
 
 
 
@@ -21546,6 +21550,12 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
         "recommendation": t("沿用已批准标准", "Use approved sampling standard"),
         "governance_note": "POC scoring does not change the approved sampling standard"} for item in source_pack["aql_recommendations"]]
     pack = {key: source_pack[key] for key in ["product_risks", "ps_actions", "aql_recommendations", "cp_context"]}
+    pilot_graph = bool(graph_mode())
+    if pilot_graph:
+        # The pilot uses reviewed, explicitly scoped links rendered locally.
+        # Do not feed heuristic or private CP details into the provider payload.
+        pack["ps_actions"] = [{k: v for k, v in row.items() if not k.startswith("cp_")} for row in pack["ps_actions"]]
+        pack["cp_context"] = {"cc_model_link_available": False}
     pack["risk_poc"] = st.session_state.get("_tu_risk_poc_cc_audit", {})
     render_unified_ai_report("TU", {"community": "TU", "scope": scope.facts(), "customer": metrics, "iv": current_iv, "report_pack": pack,
         "inspected_qty": float(finished.qty_inspected.sum()), "defect_points": float(finished.defect_qty.sum()),
@@ -21554,7 +21564,8 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
         "quality_analysis_scope": quality_scope.facts(), "quality_unavailable": unavailable,
         "quality_cc_mapping": {stage: {"source_rows": len(frame),
             "records_with_cc": int(identifiers(frame.get("product_code", pd.Series("", index=frame.index))).ne("").sum())}
-            for stage, frame in [("IQC", incoming), ("PQC", finished), ("FQC", jdy)]}}, cards, risks)
+            for stage, frame in [("IQC", incoming), ("PQC", finished), ("FQC", jdy)]}}, cards, risks,
+        graph_source=finished if pilot_graph else None)
 
 
 def render_unified_bme(scope, events, customer_nc, orders, cluster_inputs):
@@ -21704,10 +21715,20 @@ def render_unified_dashboard():
     for key in ("quality_communities", "quality_suppliers", "quality_ccs", "quality_models", "quality_product_types", "quality_period", "quality_dates"):
         if key in st.session_state:
             st.session_state[key] = st.session_state[key]
-    page = render_quality_navigation(t)
+    mode = graph_mode()
+    page = render_quality_navigation(t, include_graph=bool(mode))
     if page == "cluster-settings":
         render_unified_header(include_data_map=False)
         render_cluster_settings(t)
+        return
+    if page == "quality-graph":
+        render_unified_header(include_data_map=False)
+        if mode == "local":
+            jdy, _ = load_jiandaoyun_zx_fqc(JIANDAOYUN_CACHE_VERSION)
+            events = load_bme_quality_events_cached(bme_source_fingerprint(ROOT), _BME_QUALITY_LOGIC_VERSION)
+        else:
+            jdy, events = pd.DataFrame(), pd.DataFrame()
+        render_quality_graph(ROOT, jdy, events, t)
         return
     st.session_state["_unified_chart_facts"] = {}
     st.session_state["_unified_report_facts"] = {}
