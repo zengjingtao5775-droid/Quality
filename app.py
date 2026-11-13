@@ -21099,6 +21099,8 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
     is_poc = bool(pack.get("risk_poc"))
     action_map = {str(item.get("cc")): item for item in pack.get("ps_actions", [])}
     aql_map = {str(item.get("cc")): item for item in pack.get("aql_recommendations", [])}
+    zx_cp = JIANDAOYUN_SOURCES["ZX_CP"]
+    zx_cp_url = f"https://www.jiandaoyun.com/dashboard/app/{zx_cp['app_id']}/form/{zx_cp['entry_id']}"
     local_dcs = os.environ.get("QUALITY_DCS_IMAGES_DIR")
     dcs_dir = ROOT / "assets/quality-graph/dcs"
     if local_dcs and st.get_option("server.address") == "127.0.0.1":
@@ -21203,10 +21205,10 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
             passed = fmt(group.get("pass_count"))
             basis = t(f"{label} · {passed} 条通过 / {fmt(valid)} 条有效首验", f"{label} · {passed} passes / {fmt(valid)} valid first inspections") if valid else label
             cells = [
-                (fmt(group.get("records")), "neutral", label),
                 (f"{rate:.1%}" if rate is not None else "—", tone, basis),
                 (passed if valid else "—", "good" if valid else "neutral", basis),
                 (fmt(group.get("fail_count")) if valid else "—", tone, label),
+                (fmt(group.get("records")), "neutral", label),
                 (group.get("latest_date") or "—", "neutral", label),
             ]
             values.append([f'<span data-owner="{key}" class="quality-value-{color}" title="{e(tooltip)}">{e(value)}</span>'
@@ -21257,19 +21259,26 @@ def render_three_part_report(community, pack, narrative, control_evidence=None):
                 f'<td>{e(fmt(action.get("fqc_records")))}</td><td>{e(fmt(action.get("fqc_sampled")))}</td>'
                 f'<td>{e(fmt(action.get("fqc_defects")))}</td><td class="quality-report-date">{latest}</td></tr>')
 
-        aql_button, aql_evidence = report_aql_cell(cc, aql, action)
+        aql_evidence = ""
+        if community == "TU":
+            plan_cell = (f'<td><a href="{e(zx_cp_url)}" target="_blank" rel="noopener noreferrer">'
+                         f'{e(t("打开 CP", "Open CP"))}</a></td>')
+        else:
+            aql_button, aql_evidence = report_aql_cell(cc, aql, action)
+            plan_cell = f'<td class="quality-report-aql">{aql_button}</td>'
         plan_shade = ' class="quality-plan-alt"' if index % 2 == 0 else ''
         plan_rows.append(f'<tr data-cc="{e(cc)}"{plan_shade}><th scope="row">{cc_label(cc)}</th>'
             f'<td>{short(product.get("top_defect") or t("待补问题类型", "Defect link missing"), 8)}</td>'
-            f'<td>{report_cp_cell(cc, action)}</td><td class="quality-report-aql">{aql_button}</td></tr>{aql_evidence}')
+            f'<td>{report_cp_cell(cc, action)}</td>{plan_cell}</tr>{aql_evidence}')
 
     risk_table = table("risk-table", [t("排序", "Rank"), "CC / Model", t("主要疵点", "Top defect"), t("总分区间", "Score/range") if is_poc else t("风险分", "Risk"), "DPU", "Return Qty" if is_poc else "RPM", "IV Qty" if is_poc else "IV"], [4, 32, 23, 11, 12, 11, 7], risk_rows)
     if community == "TU":
-        evidence_table = table("evidence-table", ["CC", t("FQC 条数", "FQC records"), "Passing rate", "PASS", t("未通过", "Not pass"), t("最近 FQC", "Latest FQC")], [9, 14, 19, 13, 13, 32], evidence_rows, paired=True)
+        evidence_table = table("evidence-table", ["CC", "Passing rate", "PASS", t("未通过", "Not pass"), t("FQC 条数", "FQC records"), t("最近 FQC", "Latest FQC")], [9, 19, 13, 13, 14, 32], evidence_rows, paired=True)
     else:
         evidence_table = table("evidence-table", ["CC", t("FQC 记录", "FQC records"), t("检验数", "Inspections"), t("源不良数", "Source NC"), t("最近 FQC", "Latest FQC")], [20, 20, 20, 20, 20], evidence_rows)
     plan_widths = [13, 17, 54, 16] if community == "TU" else [18, 28, 32, 22]
-    plan_table = table("plan-table", ["CC", t("主要疵点", "Top defect"), t("CP / 工序标准", "CP / Process"), t("建议 AQL", "Suggested AQL")], plan_widths, plan_rows)
+    plan_columns = ["DCS", t("CP 链接", "CP link")] if community == "TU" else [t("CP / 工序标准", "CP / Process"), t("建议 AQL", "Suggested AQL")]
+    plan_table = table("plan-table", ["CC", t("主要疵点", "Top defect"), *plan_columns], plan_widths, plan_rows)
     ai_rows = []
     for item in narrative.get("actions", []):
         scope_text = " / ".join(item.get("priority_ccs", [])) or t("当前范围", "Current selection")
