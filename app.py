@@ -39,7 +39,7 @@ from dashboard_scope import (
     select_fsd_customer, ranked_cc_risk, build_iv_issue_pareto, ranked_inspection_defects,
     SUPPLIER_PRODUCT_TYPES,
 )
-from tu_quality import build_zx_quality_gates
+from tu_quality import build_zx_quality_gates, load_zx_iqc_inspections, zx_iqc_weekly_rates
 from tu_cluster_selection import FOCUS_KEY, clear_cluster_focus, select_quality_gate_sources
 from quality_chatbot_ui import render_quality_chatbot
 import quality_graph_seed as _quality_graph_seed
@@ -13303,6 +13303,8 @@ def render_community_cockpit(
         render_quality_gate_analysis(
             gate_summary, gate_pareto, ["ZX"],
             start_date or dt.date.min, end_date or dt.date.max, analysis_kind="TU",
+            iqc_inspections=zx_iqc_inspection_source()
+            if selected_cc == ALL_FILTER_VALUE and selected_model == ALL_FILTER_VALUE else None,
         )
 
         with st.expander(t("更多分析", "More Analysis"), expanded=True):
@@ -14382,6 +14384,33 @@ def load_fsd_rpm_cluster_inputs_cached(
     return load_fsd_rpm_cluster_inputs(ROOT)
 
 
+@st.cache_data(show_spinner=False)
+def read_zx_iqc_inspection_source(path: Path, source_stamp: int) -> pd.DataFrame:
+    return load_zx_iqc_inspections(path)
+
+
+def zx_iqc_inspection_source() -> pd.DataFrame | None:
+    demo_workbook = os.environ.get("NEA_IQC_DEMO_WORKBOOK")
+    if demo_workbook and st.get_option("server.address") == "127.0.0.1":
+        demo_path = Path(demo_workbook)
+        if demo_path.is_file():
+            inspections = read_zx_iqc_inspection_source(demo_path, demo_path.stat().st_mtime_ns)
+            inspections.attrs["simulated"] = True
+            return inspections
+    path = ROOT / FACTORIES["ZX"]["incoming"]
+    if path.is_file():
+        inspections = read_zx_iqc_inspection_source(path, path.stat().st_mtime_ns)
+        if not inspections.empty:
+            return inspections
+
+    demo_path = ROOT / "assets" / "iqc_weekly_demo.xlsx"
+    if demo_path.is_file():
+        inspections = read_zx_iqc_inspection_source(demo_path, demo_path.stat().st_mtime_ns)
+        inspections.attrs["simulated"] = True
+        return inspections
+    return None
+
+
 def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False, unavailable_reason: str = "") -> None:
     """Keep the three-column template visible without inventing zero data."""
     label = t("异常记录数（QTY）", "Exception records (QTY)") if is_tu and stage == "IQC" else t("问题数量（QTY）", "Issue quantity (QTY)") if stage == "IQC" else t("疵点率", "Defect-point rate")
@@ -14403,9 +14432,13 @@ def render_empty_quality_gate(stage: str, chart_key: str, *, is_tu: bool = False
         apply_quality_chart_style(fig, height=height, showlegend=False)
         fig.update_xaxes(title_text=(t("周次", "Week") if is_tu else t("月份", "Month")) if kind == "trend" else t("疵点排名", "Defect rank"),
                          showticklabels=False, showgrid=False, zeroline=False, title_font=dict(size=13))
-        fig.update_yaxes(title_text=t("数量（QTY）", "QTY") if stage == "IQC" or kind == "pareto" else t("疵点率（%）", "Defect-point rate (%)"),
+        trend_is_rate = kind == "trend" and (is_tu or stage != "IQC")
+        fig.update_yaxes(title_text=t("疵点率（%）", "Defect-point rate (%)") if trend_is_rate else t("数量（QTY）", "QTY"),
+                         tickformat=".2%" if trend_is_rate else ",.0f",
                          showticklabels=False, showgrid=False, zeroline=False, title_font=dict(size=13))
-        fig.add_annotation(text=t("暂无数据", "No data available"), x=.5, y=.5, xref="paper", yref="paper",
+        empty_message = (t("缺少同期完整 IQC 检验量及疵点数量", "Complete IQC inspection and defect quantities are unavailable")
+                         if kind == "trend" and is_tu and stage == "IQC" else t("暂无数据", "No data available"))
+        fig.add_annotation(text=empty_message, x=.5, y=.5, xref="paper", yref="paper",
                            showarrow=False, font=dict(color="#98a2b3", size=14))
         fig.update_layout(margin=dict(l=8, r=8, t=25, b=45))
         render_unified_plotly(fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key}_{kind}_empty", insight_group=gate_charts)
@@ -14422,6 +14455,7 @@ def render_quality_gate_analysis(
     analysis_kind: str = "FG",
     focused_cc: str = "",
     unavailable_stages: dict | None = None,
+    iqc_inspections: pd.DataFrame | None = None,
 ) -> None:
     is_cpt = analysis_kind.upper() == "CPT"
     is_tu = analysis_kind.upper() == "TU"
@@ -14497,7 +14531,12 @@ def render_quality_gate_analysis(
                     & pareto["date"].notna()
                     & pareto["date"].dt.date.between(start_date, end_date)
                 ].copy()
-                if stage_summary.empty:
+                tu_iqc = is_tu and stage == "IQC"
+                iqc_periods = (
+                    zx_iqc_weekly_rates(iqc_inspections, start_date, end_date)
+                    if tu_iqc and iqc_inspections is not None else pd.DataFrame()
+                )
+                if stage_summary.empty and iqc_periods.empty:
                     missing_link = (unavailable_stages or {}).get(stage)
                     reason = t(f"{stage} 原始数据尚未建立 {missing_link} 关联，无法按所选产品统计。", f"{stage} source data has no {missing_link} link; selected-product results are unavailable.") if missing_link else ""
                     render_empty_quality_gate(stage, f"{chart_key_prefix}_{stage}", is_tu=is_tu, unavailable_reason=reason)
@@ -14537,13 +14576,21 @@ def render_quality_gate_analysis(
                 st.markdown(f'<div class="{metric_class}">{metric_html}</div>', unsafe_allow_html=True)
 
                 gate_charts = []
-                st.markdown(f'<div class="bme-fg-chart-label">{html.escape(t("每周趋势", "Weekly trend") if is_tu else t("月度趋势", "Monthly trend"))}</div>', unsafe_allow_html=True)
-                primary_metric = rate_label if is_rate else count_label
+                simulated_iqc = tu_iqc and iqc_inspections is not None and iqc_inspections.attrs.get("simulated", False)
+                trend_heading = t("每周趋势", "Weekly trend") if is_tu else t("月度趋势", "Monthly trend")
+                if simulated_iqc:
+                    trend_heading += t("（模拟数据）", " (simulated data)")
+                st.markdown(f'<div class="bme-fg-chart-label">{html.escape(trend_heading)}</div>', unsafe_allow_html=True)
+                trend_is_rate = is_rate or tu_iqc
+                trend_periods = iqc_periods if tu_iqc else periods
+                trend_column = "defect_rate" if trend_is_rate else "defect_qty"
+                primary_metric = rate_label if trend_is_rate else count_label
                 period_axis = "week" if is_tu else "month"
                 period_title = t("周次", "Week") if is_tu else t("月份", "Month")
+                trend_y_title = t("疵点率（%）", "Defect-point rate (%)") if trend_is_rate else t("数量（QTY）", "QTY")
                 trend = pd.DataFrame({
-                    period_axis: periods.index.to_timestamp(),
-                    primary_metric: periods["defect_rate"].values if is_rate else periods["defect_qty"].values,
+                    period_axis: trend_periods.index.to_timestamp() if not trend_periods.empty else pd.DatetimeIndex([]),
+                    primary_metric: trend_periods[trend_column].values if not trend_periods.empty else [],
                 })
                 # One weighted primary trend; rework remains a separate KPI.
                 trend_long = trend.melt(id_vars=period_axis, var_name="metric", value_name="value")
@@ -14555,25 +14602,46 @@ def render_quality_gate_analysis(
                         t("问题数量", "Issue count"): "#2855c5",
                         t("返工率", "Rework rate"): "#d98200",
                     },
-                    labels={period_axis: period_title, "value": t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"), "metric": ""},
+                    labels={period_axis: period_title, "value": trend_y_title, "metric": ""},
                 )
                 trend_fig.update_traces(connectgaps=False)
-                style_quality_trend(trend_fig, height=245, is_rate=is_rate,
+                style_quality_trend(trend_fig, height=245, is_rate=trend_is_rate,
                                     monthly=not is_tu, weekly=is_tu, tick_size=10 if stage == "FQC" else 11,
-                                    month_step=2 if len(periods) > 8 else 1,
-                                    show_year=periods.index.year.nunique() > 1,
-                                    x_label=period_title, y_label=t("疵点率（%）", "Defect-point rate (%)") if is_rate else t("数量（QTY）", "QTY"))
+                                    month_step=2 if len(trend_periods) > 8 else 1,
+                                    show_year=not trend_periods.empty and trend_periods.index.year.nunique() > 1,
+                                    x_label=period_title, y_label=trend_y_title)
+                if tu_iqc and not trend_periods.empty:
+                    trend_fig.update_traces(
+                        customdata=trend_periods[["defect_qty", "po_qty"]],
+                        hovertemplate="%{hovertext}<br>%{y:.2%}<br>"
+                                      + t("疵点 / 检验量", "Defects / inspected")
+                                      + " %{customdata[0]:,.0f} / %{customdata[1]:,.0f}<extra></extra>",
+                    )
                 if not trend_long.value.notna().any():
                     trend_fig.update_yaxes(range=[0, 1], showticklabels=False)
-                    trend_fig.add_annotation(text=t("检验分母不完整<br>疵点率不可计算", "Incomplete inspection denominator<br>Rate unavailable") if is_rate else t("数量不可计算", "Quantity unavailable"),
+                    unavailable_text = t("数量不可计算", "Quantity unavailable")
+                    if tu_iqc:
+                        unavailable_text = t(
+                            "缺少可比的 IQC 检验量及疵点数量<br>本期疵点率不可计算",
+                            "Comparable IQC inspection and defect quantities are unavailable",
+                        )
+                    elif trend_is_rate:
+                        unavailable_text = t("检验分母不完整<br>疵点率不可计算", "Incomplete inspection denominator<br>Rate unavailable")
+                    trend_fig.add_annotation(text=unavailable_text,
                         x=.5, y=.5, xref="paper", yref="paper", showarrow=False, font=dict(color="#64748b", size=13))
-                st.session_state["_pending_chart_context"] = {"kind": "trend", "stage": stage, "supplier": selected_suppliers,
-                    "rate_unavailable": is_rate and not trend_long.value.notna().any(),
-                    "exception_only": stage == "IQC" and (is_tu or is_cpt), "cutoff": str(end_date), "start": str(start_date),
-                    "frequency": "W-SUN" if is_tu else "M",
-                    "periods" if is_tu else "monthly": [{"period" if is_tu else "month": str(period.start_time.date()) if is_tu else str(period),
-                        "numerator": finite_number(row.defect_qty), "denominator": finite_number(row.po_qty) if is_rate and bool(row.complete_denominator) else None} for period, row in periods.iterrows()]}
-                render_unified_plotly(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=f"{chart_key_prefix}_trend_{stage}", insight_group=gate_charts)
+                trend_key = f"{chart_key_prefix}_trend_{stage}"
+                if simulated_iqc:
+                    # Keep demonstration values out of report and chatbot facts.
+                    st.plotly_chart(trend_fig, use_container_width=True, theme=None,
+                                    config={"displayModeBar": False}, key=trend_key)
+                else:
+                    st.session_state["_pending_chart_context"] = {"kind": "trend", "stage": stage, "supplier": selected_suppliers,
+                        "rate_unavailable": trend_is_rate and not trend_long.value.notna().any(),
+                        "exception_only": stage == "IQC" and is_cpt, "cutoff": str(end_date), "start": str(start_date),
+                        "frequency": "W-SUN" if is_tu else "M",
+                        "periods" if is_tu else "monthly": [{"period" if is_tu else "month": str(period.start_time.date()) if is_tu else str(period),
+                            "numerator": finite_number(row.defect_qty), "denominator": finite_number(row.po_qty) if trend_is_rate and bool(row.complete_denominator) else None} for period, row in trend_periods.iterrows()]}
+                    render_unified_plotly(trend_fig, use_container_width=True, config={"displayModeBar": False}, key=trend_key, insight_group=gate_charts)
 
                 category_type = (
                     stage_pareto["category_type"].mode().iloc[0]
@@ -21659,7 +21727,9 @@ def render_unified_tu(scope, finished_all, voice_all, incoming_all, jdy_all, iv_
         incoming, finished, jdy, scope, st.session_state.get(FOCUS_KEY, ""))
     summary, pareto = build_zx_quality_gates(gate_sources["IQC"], gate_sources["PQC"], gate_sources["FQC"])
     render_quality_gate_analysis(summary, pareto, ["ZX"], scope.start, scope.end, analysis_kind="TU",
-        focused_cc=st.session_state.get(FOCUS_KEY, ""), unavailable_stages=unavailable)
+        focused_cc=st.session_state.get(FOCUS_KEY, ""), unavailable_stages=unavailable,
+        iqc_inspections=zx_iqc_inspection_source() if quality_scope.includes_supplier("ZX")
+        and not (quality_scope.ccs or quality_scope.models) else None)
     source_pack = build_tu_community_ai_fact_pack(finished, risk_voice, incoming, cluster, pd.DataFrame(), settings, jdy_fqc_override=jdy, use_cluster_ranking=True)
     cc_facts = cc_scores.set_index("cc").to_dict("index") if not cc_scores.empty else {}
     for fact in source_pack["product_risks"]:

@@ -1,4 +1,7 @@
 """Weekly TU contracts: ISO boundaries, weighted rates, gaps and disclosures."""
+from datetime import date
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 import numpy as np
@@ -8,6 +11,7 @@ import plotly.graph_objects as go
 from quality_gate_metrics import gate_metrics
 from quality_chart_ui import style_quality_trend
 from quality_insights import chart_evidence, chart_signal, build_chart_insight, build_gate_insight_facts
+from tu_quality import IQC_INSPECTION_SHEET, load_zx_iqc_inspections, zx_iqc_weekly_rates
 
 
 class WeeklyGateTests(unittest.TestCase):
@@ -42,6 +46,27 @@ class WeeklyGateTests(unittest.TestCase):
             self.assertAlmostEqual(weeks.defect_rate.iloc[0], 19/1000)
             self.assertAlmostEqual(total["rate"], 24/1500)
             self.assertNotAlmostEqual(weeks.defect_rate.iloc[0], (.1+.01)/2)
+
+    def test_iqc_weekly_rate_uses_complete_inspections_and_preserves_gaps(self):
+        source = pd.DataFrame({
+            "检验日期": pd.to_datetime(["2026-01-04", "2026-01-05", "2026-01-06", "2026-01-19", "2026-01-26"]),
+            "检验数量": [10, 100, 900, None, 50],
+            "疵点数量": [4, 10, 0, 1, 0],
+            "单位": ["件"] * 5,
+        })
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "iqc.xlsx"
+            source.to_excel(path, sheet_name=IQC_INSPECTION_SHEET, index=False, engine="openpyxl")
+            frame = load_zx_iqc_inspections(path)
+        weeks = zx_iqc_weekly_rates(frame, date(2026, 1, 5), date(2026, 1, 31))
+        self.assertEqual(weeks.index.start_time.strftime("%Y-%m-%d").tolist(),
+                         ["2026-01-05", "2026-01-12", "2026-01-19", "2026-01-26"])
+        self.assertAlmostEqual(weeks.defect_rate.iloc[0], .01)
+        self.assertTrue(weeks.defect_rate.iloc[1:3].isna().all())
+        self.assertEqual(weeks.defect_rate.iloc[3], 0)
+        frame.loc[1, "unit"] = "米"
+        mixed = zx_iqc_weekly_rates(frame, date(2026, 1, 5), date(2026, 1, 31))
+        self.assertTrue(mixed.defect_rate.isna().all())
 
     def test_missing_weeks_are_gaps_not_zeroes(self):
         frame = self.frame(["2026-01-05", "2026-01-19"], [100, 100], [2, 1])
