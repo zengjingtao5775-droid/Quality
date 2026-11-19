@@ -20,7 +20,7 @@ from tu_cluster_selection import (OVERLAP_KEY, REVISION_KEY, clear_cluster_focus
                                  prepare_cluster_focus, select_overlap_member,
                                  sync_cluster_focus)
 
-RISK_POC_UI_VERSION = "2026-11-19-v13-overlapping-points"
+RISK_POC_UI_VERSION = "2026-11-19-v14-overlap-heading-spacing"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876"}
 RISK_GROUP_LABELS = {"high": ("高风险", "High risk"), "medium": ("中风险", "Medium risk"),
                      "low": ("低风险", "Low risk")}
@@ -157,9 +157,10 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
         fig.add_annotation(x=row.supplier_score,y=row.client_score,xref="x",yref="y",ax=dx,ay=dy,
             text=html.escape(label),showarrow=True,arrowhead=0,arrowwidth=.8,arrowcolor="#a7b1c2",
             standoff=10,font=dict(size=14,color="#344054"),bgcolor="rgba(255,255,255,0.88)",borderpad=2)
-    apply_quality_chart_style(fig, height=500, showlegend=True)
-    fig.update_layout(margin=dict(l=24, r=36, t=68, b=48),
-        legend=dict(orientation="h", x=0, y=1.15, title_text=t("风险等级", "Risk level"), font_size=14,
+    apply_quality_chart_style(fig, height=516, showlegend=True)
+    fig.update_layout(margin=dict(l=24, r=36, t=84, b=48),
+        legend=dict(orientation="h", x=0, y=1.12, yanchor="bottom",
+            title_text=t("风险等级", "Risk level"), font_size=14,
             itemclick=False, itemdoubleclick=False),
         hoverlabel=dict(bgcolor="#f8faff", bordercolor="#8795e8", font_size=15, align="left"),
         transition=dict(duration=420, easing="cubic-in-out"), clickmode="event+select")

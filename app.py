@@ -71,7 +71,7 @@ if (getattr(_cluster_weights, "CLUSTER_WEIGHTS_VERSION", "") != "2026-10-17-v2-4
         or getattr(_cluster_weights, "DEFAULT_RISK_LEVEL_THRESHOLDS", ()) != (25., 35.)):
     importlib.reload(_cluster_weights)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-11-19-v13-overlapping-points":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-11-19-v14-overlap-heading-spacing":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 from cluster_weights import current_weights, fsd_cluster_view, cmw_cluster_view
