@@ -10,7 +10,7 @@ from cluster_weights import (DEFAULTS, DEFAULT_RISK_LEVEL_THRESHOLDS, THRESHOLD_
 from tu_risk_reference import render_tu_scoring_reference
 
 
-CLUSTER_SETTINGS_UI_VERSION = "2026-11-19-v7-risk-level-thresholds"
+CLUSTER_SETTINGS_UI_VERSION = "2026-11-19-v8-default-risk-thresholds"
 
 
 def render_quality_navigation(t, include_graph=False):

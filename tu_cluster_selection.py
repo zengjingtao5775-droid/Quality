@@ -12,6 +12,7 @@ from dashboard_scope import filter_records, identifiers
 FOCUS_KEY = "_tu_quality_focus_cc"
 SCOPE_KEY = "_tu_quality_focus_scope"
 REVISION_KEY = "_tu_quality_focus_revision"
+OVERLAP_KEY = "_tu_quality_focus_overlap"
 
 
 def _cc(value):
@@ -21,11 +22,12 @@ def _cc(value):
 
 def clear_cluster_focus(state):
     state[FOCUS_KEY] = ""
+    state.pop(OVERLAP_KEY, None)
     # Chart selection state is read-only. A new widget identity clears it.
     state[REVISION_KEY] = int(state.get(REVISION_KEY, 0)) + 1
 
 
-def prepare_cluster_focus(state, scope, visible_ccs):
+def prepare_cluster_focus(state, scope, visible_ccs, visible_overlaps=()):
     """Expire a selection when the base scope or visible products change."""
     identity = scope.facts()
     allowed = {_cc(value) for value in visible_ccs} - {""}
@@ -34,24 +36,37 @@ def prepare_cluster_focus(state, scope, visible_ccs):
         state[SCOPE_KEY] = identity
     elif state.get(FOCUS_KEY) and state[FOCUS_KEY] not in allowed:
         clear_cluster_focus(state)
+    if state.get(OVERLAP_KEY) not in visible_overlaps:
+        state.pop(OVERLAP_KEY, None)
     return str(state.get(FOCUS_KEY, ""))
 
 
-def sync_cluster_focus(state, chart_key, visible_ccs):
-    """Use the exact CC carried by the selected point, never its plot index."""
+def sync_cluster_focus(state, chart_key, visible_ccs, visible_overlaps=()):
+    """Resolve a single CC or ask which Model to use at a shared position."""
     event = state.get(chart_key, {})
     selection = event.get("selection", {}) if isinstance(event, dict) else {}
     points = selection.get("points", []) if isinstance(selection, dict) else []
     if not points:
         state[FOCUS_KEY] = ""
+        state.pop(OVERLAP_KEY, None)
         return
     custom = points[-1].get("customdata", [])
     if not isinstance(custom, (list, tuple)) or len(custom) < 2:
         return
+    entity = str(custom[0])
+    if entity in visible_overlaps:
+        state[OVERLAP_KEY] = entity
+        state[FOCUS_KEY] = ""
+        return
+    state.pop(OVERLAP_KEY, None)
     selected_cc = _cc(custom[1])
     allowed = {_cc(value) for value in visible_ccs} - {""}
     if selected_cc and selected_cc in allowed:
         state[FOCUS_KEY] = selected_cc
+
+
+def select_overlap_member(state, widget_key, member_ccs):
+    state[FOCUS_KEY] = _cc(member_ccs.get(state.get(widget_key)))
 
 
 def select_quality_gate_sources(incoming, process, final, scope, focused_cc=""):

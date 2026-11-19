@@ -16,10 +16,11 @@ from quality_chart_ui import apply_quality_chart_style
 from cluster_weights import (DEFAULT_RISK_LEVEL_THRESHOLDS, current_risk_level_thresholds,
                              tu_cluster_profile, validate_risk_level_thresholds)
 from tu_risk_reference import render_tu_scoring_reference
-from tu_cluster_selection import (REVISION_KEY, prepare_cluster_focus,
+from tu_cluster_selection import (OVERLAP_KEY, REVISION_KEY, clear_cluster_focus,
+                                 prepare_cluster_focus, select_overlap_member,
                                  sync_cluster_focus)
 
-RISK_POC_UI_VERSION = "2026-11-19-v12-axis-label-spacing"
+RISK_POC_UI_VERSION = "2026-11-19-v13-overlapping-points"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876"}
 RISK_GROUP_LABELS = {"high": ("高风险", "High risk"), "medium": ("中风险", "Medium risk"),
                      "low": ("低风险", "Low risk")}
@@ -68,44 +69,79 @@ def risk_distribution_groups(rows, thresholds=DEFAULT_RISK_LEVEL_THRESHOLDS):
     return view
 
 
-def build_risk_distribution_figure(grouped, grain, translate=None, selected_groups=None, focused_cc=""):
-    """Use exact scored coordinates; colors/labels never feed back into scoring."""
-    t = translate or (lambda zh, en: zh)
+def _risk_distribution_positions(grouped, selected_groups=None):
+    """Collect Models at identical visible coordinates, highest score first."""
     view = grouped if selected_groups is None else grouped.loc[grouped.risk_group.isin(selected_groups)]
+    ranked = view.sort_values(["risk_lower", "entity"], ascending=[False, True], kind="stable")
+    return {str(members.entity.iloc[0]): members for _, members in
+            ranked.groupby(["supplier_score", "client_score"], sort=False)}
+
+
+def _point_score(row):
+    lower = number(row.get("risk_lower"))
+    upper = number(row.get("risk_upper"))
+    return f"{lower:.1f}–{upper:.1f}" if lower is not None and upper is not None and lower != upper else _fmt(lower)
+
+
+def _point_hover(members, grain, t):
+    escape = html.escape
+    row = members.iloc[0]
+    if len(members) == 1:
+        return (f"<b>{grain} {escape(str(row.entity))}</b><br>CC {escape(str(row.get('cc', '') or '—'))}<br>"
+                f"Model {escape(str(row.get('models', '') or '—'))}<br>"
+                f"Return Qty {_fmt(row.get('returns'), 0)} · IV Qty {_fmt(row.get('iv'), 0)}<br>"
+                f"Risk Score {_point_score(row)} · {t(*RISK_GROUP_LABELS[row.risk_group])}<br>"
+                f"Strategy {_fmt(row.get('strategy_indicator'), 0)}")
+    lines = [t(f"<b>{len(members)} 个产品坐标重合</b>", f"<b>{len(members)} products at these coordinates</b>")]
+    for _, member in members.head(8).iterrows():
+        lines.append(f"{grain} {escape(str(member.entity))} · CC {escape(str(member.get('cc', '') or '—'))}"
+                     f" · Risk Score {_point_score(member)} · {t(*RISK_GROUP_LABELS[member.risk_group])}")
+    lines.append(t("点击查看明细并选择产品", "Click to view and select a product"))
+    return "<br>".join(lines)
+
+
+def build_risk_distribution_figure(grouped, grain, translate=None, selected_groups=None, focused_cc="",
+                                   *, point_members=None):
+    """Plot one marker per distinct coordinate, using its highest visible risk level."""
+    t = translate or (lambda zh, en: zh)
+    if point_members is None:
+        point_members = _risk_distribution_positions(grouped, selected_groups)
+    markers = [(members.iloc[0], members) for members in point_members.values()]
     fig = go.Figure()
     for key, names in RISK_GROUP_LABELS.items():
-        label = t(*names)
-        part = view.loc[view.risk_group.eq(key)].sort_values("risk_lower", ascending=False, kind="stable")
-        if part.empty:
+        part = [(row, members) for row, members in markers if row.risk_group == key]
+        if not part:
             continue
-        custom = []
-        for _, row in part.iterrows():
-            upper = number(row.get("risk_upper"))
-            lower = number(row.get("risk_lower"))
-            score = f"{lower:.1f}–{upper:.1f}" if lower is not None and upper is not None else "—"
-            custom.append([html.escape(str(row.get("entity", ""))), html.escape(str(row.get("cc", ""))),
-                html.escape(str(row.get("models", ""))), score, _fmt(row.get("strategy_indicator"), 0),
-                _fmt(row.get("returns"), 0), _fmt(row.get("iv"), 0)])
-        fig.add_trace(go.Scatter(x=part.supplier_score, y=part.client_score, name=label,
-            text=part.entity.astype(str), mode="markers", cliponaxis=False,
-            marker=dict(size=18, color=RISK_GROUP_COLORS[key], opacity=.88, line=dict(color="#ffffff", width=1.5)),
-            customdata=custom,
-            hovertemplate=f"<b>{grain} %{{customdata[0]}}</b><br>CC %{{customdata[1]}}<br>Model %{{customdata[2]}}<br>"
-                + t("供应商风险分", "Supplier score") + ": %{x:.1f}<br>" + t("客户端风险分", "Client score") + ": %{y:.1f}<br>"
-                + "Return Qty %{customdata[5]} · IV Qty %{customdata[6]}<br>Risk Score %{customdata[3]}<br>"
-                + t("风险等级", "Risk level") + f" {label}<br>Strategy %{{customdata[4]}}<extra></extra>"))
+        counts = [f"×{len(members)}" if len(members) > 1 else "" for _, members in part]
+        show_counts = any(counts)
+        sizes = [max(28, len(label) * 8 + 10) if label else 18 for label in counts]
+        fig.add_trace(go.Scatter(
+            x=[row.supplier_score for row, _ in part], y=[row.client_score for row, _ in part],
+            name=t(*names), mode="markers+text" if show_counts else "markers", cliponaxis=False,
+            text=counts, textposition="middle center", textfont=dict(size=13, color="#1e293b"),
+            marker=dict(size=sizes if show_counts else 18, color=RISK_GROUP_COLORS[key],
+                        opacity=.88, line=dict(color="#ffffff", width=1.5)),
+            customdata=[[str(row.entity), str(row.get("cc", ""))] for row, _ in part],
+            hovertext=[_point_hover(members, grain, t) for _, members in part],
+            hovertemplate="%{hovertext}<br>" + t("供应商风险分", "Supplier score")
+                + ": %{x:.1f}<br>" + t("客户端风险分", "Client score") + ": %{y:.1f}<extra></extra>"))
+        if focused_cc:
+            trace = fig.data[-1]
+            trace.selectedpoints = [i for i, (_, members) in enumerate(part)
+                                    if members.get("cc", pd.Series(dtype=str)).eq(focused_cc).any()]
+            trace.selected = dict(marker=dict(opacity=1))
+            trace.unselected = dict(marker=dict(opacity=.3))
     # Place labels around dense points without shifting the measured coordinates.
     occupied = []
-    label_rows = view.sort_values("risk_lower", ascending=False, kind="stable")
     plot_width, plot_height = 1000, 370
-    anchors = list(zip(
-        label_rows.supplier_score * plot_width / 100,
-        (100 - label_rows.client_score) * plot_height / 100,
-    ))
+    anchors = [(row.supplier_score * plot_width / 100, (100 - row.client_score) * plot_height / 100)
+               for row, _ in markers]
     positions = [(0,-24),(0,24),(48,0),(-48,0),(58,-25),(-58,-25),(58,25),(-58,25),
                  (0,-48),(0,48),(86,0),(-86,0),(86,-45),(-86,-45),(86,45),(-86,45),
                  (0,-72),(0,72),(116,0),(-116,0)]
-    for (_, row), (px, py) in zip(label_rows.iterrows(), anchors):
+    for (row, members), (px, py) in zip(markers, anchors):
+        if len(members) > 1:
+            continue  # The count is already centered on the clickable marker.
         label = str(row.entity)
         width = max(45, len(label)*8)
         choices = []
@@ -121,13 +157,8 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
         fig.add_annotation(x=row.supplier_score,y=row.client_score,xref="x",yref="y",ax=dx,ay=dy,
             text=html.escape(label),showarrow=True,arrowhead=0,arrowwidth=.8,arrowcolor="#a7b1c2",
             standoff=10,font=dict(size=14,color="#344054"),bgcolor="rgba(255,255,255,0.88)",borderpad=2)
-    if focused_cc:
-        for trace in fig.data:
-            trace.selectedpoints = [i for i, point in enumerate(trace.customdata) if point[1] == focused_cc]
-            trace.selected = dict(marker=dict(opacity=1))
-            trace.unselected = dict(marker=dict(opacity=.3))
     apply_quality_chart_style(fig, height=500, showlegend=True)
-    fig.update_layout(margin=dict(l=24, r=36, t=58, b=48),
+    fig.update_layout(margin=dict(l=24, r=36, t=68, b=48),
         legend=dict(orientation="h", x=0, y=1.15, title_text=t("风险等级", "Risk level"), font_size=14,
             itemclick=False, itemdoubleclick=False),
         hoverlabel=dict(bgcolor="#f8faff", bordercolor="#8795e8", font_size=15, align="left"),
@@ -139,8 +170,12 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
     )
     fig.update_xaxes(title_text=t("供应商风险分（PQC + AQL）", "Supplier score (PQC + AQL)"),
         side="bottom", title_standoff=12, **axis_style)
-    fig.update_yaxes(title_text=t("客户端风险分（Return Qty + IV Qty）", "Client score (Return Qty + IV Qty)"),
-        side="left", title_standoff=10, **axis_style)
+    fig.update_yaxes(side="left", **axis_style)
+    fig.add_annotation(
+        x=0, y=1, xref="paper", yref="paper", xanchor="left", yanchor="bottom", yshift=8,
+        text=t("客户端风险分（Return Qty + IV Qty）", "Client score (Return Qty + IV Qty)"),
+        showarrow=False, font=dict(size=15, color="#344054"),
+    )
     fig.add_vline(x=50, line_dash="dash", line_color="#8b96b8", opacity=.45)
     fig.add_hline(y=50, line_dash="dash", line_color="#8b96b8", opacity=.45)
     return fig
@@ -249,13 +284,32 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
             selected = st.multiselect(t("风险等级", "Risk levels"), options, default=options,
                 format_func=lambda value: t(*RISK_GROUP_LABELS[value]), key="tu_poc_risk_levels_Hugss_Model")
             visible_ccs = plotted.loc[plotted.risk_group.isin(selected), "cc"].tolist()
-            focused_cc = prepare_cluster_focus(st.session_state, scope, visible_ccs)
+            points = _risk_distribution_positions(plotted, selected)
+            overlaps = {entity: members for entity, members in points.items() if len(members) > 1}
+            focused_cc = prepare_cluster_focus(st.session_state, scope, visible_ccs, overlaps)
             if selected:
-                fig = build_risk_distribution_figure(plotted, "Model", t, selected, focused_cc=focused_cc)
+                fig = build_risk_distribution_figure(plotted, "Model", t, focused_cc=focused_cc, point_members=points)
                 chart_key = f"tu_poc_distribution_{st.session_state.get(REVISION_KEY, 0)}"
                 st.plotly_chart(fig, use_container_width=True, key=chart_key, theme=None,
-                    on_select=lambda: sync_cluster_focus(st.session_state, chart_key, visible_ccs), selection_mode="points",
+                    on_select=lambda: sync_cluster_focus(st.session_state, chart_key, visible_ccs, overlaps),
+                    selection_mode="points",
                     config={"displayModeBar":True, "scrollZoom":False, "displaylogo":False})
+                overlap = st.session_state.get(OVERLAP_KEY)
+                if overlap in overlaps:
+                    labels, member_ccs = {}, {}
+                    for _, member in overlaps[overlap].iterrows():
+                        entity = str(member.entity)
+                        cc = member.cc or ""
+                        member_ccs[entity] = cc
+                        labels[entity] = (f"Model {entity} · CC {cc or '—'} · {_point_score(member)}"
+                                          f" · {t(*RISK_GROUP_LABELS[member.risk_group])}")
+                    widget_key = f"{chart_key}_overlap_{overlap}"
+                    st.selectbox(t("选择重合点中的 Model", "Select a model at this point"),
+                                 list(labels), index=None, format_func=labels.__getitem__, key=widget_key,
+                                 placeholder=t("选择产品查看关联 CC", "Select a product to view its CC"),
+                                 on_change=select_overlap_member, args=(st.session_state, widget_key, member_ccs))
+                    st.button(t("清除重合点选择", "Clear overlapping point selection"), key=f"{widget_key}_clear",
+                              on_click=clear_cluster_focus, args=(st.session_state,))
             else:
                 st.info(t("请选择至少一个风险等级。", "Select at least one risk level."))
         else:

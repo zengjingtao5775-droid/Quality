@@ -14,7 +14,7 @@ CLUSTER_WEIGHTS_VERSION = "2026-10-17-v2-40-10-50"
 STATE_KEY = "_quality_cluster_weights"
 THRESHOLDS_STATE_KEY = "_quality_cluster_tu_thresholds"
 RISK_LEVEL_THRESHOLDS_STATE_KEY = "_quality_tu_risk_level_thresholds"
-DEFAULT_RISK_LEVEL_THRESHOLDS = (40., 70.)
+DEFAULT_RISK_LEVEL_THRESHOLDS = (25., 35.)
 THRESHOLD_KEYS = ("pqc_warning_pct", "pqc_critical_pct", "aql_warning_pct", "aql_critical_pct",
                   "return_warning_multiple", "return_critical_multiple", "iv_warning", "iv_critical")
 THRESHOLD_DEFAULTS = {key: float(getattr(default_profile("Model"), key)) for key in THRESHOLD_KEYS}
