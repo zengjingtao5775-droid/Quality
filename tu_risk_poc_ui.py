@@ -19,7 +19,7 @@ from tu_risk_reference import render_tu_scoring_reference
 from tu_cluster_selection import (REVISION_KEY, prepare_cluster_focus,
                                  sync_cluster_focus)
 
-RISK_POC_UI_VERSION = "2026-11-19-v10-score-levels"
+RISK_POC_UI_VERSION = "2026-11-19-v11-visible-axes"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876"}
 RISK_GROUP_LABELS = {"high": ("高风险", "High risk"), "medium": ("中风险", "Medium risk"),
                      "low": ("低风险", "Low risk")}
@@ -96,21 +96,24 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
                 + t("风险等级", "Risk level") + f" {label}<br>Strategy %{{customdata[4]}}<extra></extra>"))
     # Place labels around dense points without shifting the measured coordinates.
     occupied = []
-    anchors = [(float(row.supplier_score)+4)/108*1000 for _, row in view.iterrows()]
-    anchor_y = [(108-float(row.client_score))/113*370 for _, row in view.iterrows()]
+    label_rows = view.sort_values("risk_lower", ascending=False, kind="stable")
+    plot_width, plot_height = 1000, 370
+    anchors = list(zip(
+        label_rows.supplier_score * plot_width / 100,
+        (100 - label_rows.client_score) * plot_height / 100,
+    ))
     positions = [(0,-24),(0,24),(48,0),(-48,0),(58,-25),(-58,-25),(58,25),(-58,25),
                  (0,-48),(0,48),(86,0),(-86,0),(86,-45),(-86,-45),(86,45),(-86,45),
                  (0,-72),(0,72),(116,0),(-116,0)]
-    for _, row in view.sort_values("risk_lower",ascending=False,kind="stable").iterrows():
+    for (_, row), (px, py) in zip(label_rows.iterrows(), anchors):
         label = str(row.entity)
-        px, py = (float(row.supplier_score)+4)/108*1000, (108-float(row.client_score))/113*370
         width = max(45, len(label)*8)
         choices = []
         for dx,dy in positions:
             box = (px+dx-width/2-3,py+dy-11,px+dx+width/2+3,py+dy+11)
             overlaps = sum(box[0]<old[2] and box[2]>old[0] and box[1]<old[3] and box[3]>old[1] for old in occupied)
-            covered = sum(box[0]-10<x<box[2]+10 and box[1]-10<y<box[3]+10 for x,y in zip(anchors,anchor_y))
-            outside = box[0]<-20 or box[2]>1020 or box[1]<-12 or box[3]>382
+            covered = sum(box[0]-10<x<box[2]+10 and box[1]-10<y<box[3]+10 for x,y in anchors)
+            outside = box[0]<0 or box[2]>plot_width or box[1]<0 or box[3]>plot_height
             choices.append((overlaps*10000+covered*1000+int(outside)*10000+abs(dx)+abs(dy),dx,dy,box))
         _,dx,dy,box = min(choices,key=lambda choice:choice[0])
         occupied.append(box)
@@ -128,15 +131,17 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
             itemclick=False, itemdoubleclick=False),
         hoverlabel=dict(bgcolor="#f8faff", bordercolor="#8795e8", font_size=15, align="left"),
         transition=dict(duration=420, easing="cubic-in-out"), clickmode="event+select")
+    axis_style = dict(
+        range=[0, 100], tickvals=[0, 20, 40, 60, 80, 100], title_font_size=15,
+        showline=True, linecolor="#64748b", linewidth=1.25, ticks="outside",
+        tickcolor="#64748b", ticklen=4, layer="below traces", zeroline=False,
+    )
     fig.update_xaxes(title_text=t("供应商风险分（PQC + AQL）", "Supplier score (PQC + AQL)"),
-        range=[-4, 104], tickvals=[0, 20, 40, 60, 80, 100], title_font_size=15, title_standoff=12)
+        side="bottom", title_standoff=12, **axis_style)
     fig.update_yaxes(title_text=t("客户端风险分（Return Qty + IV Qty）", "Client score (Return Qty + IV Qty)"),
-        range=[-5, 108], tickvals=[0, 20, 40, 60, 80, 100], title_font_size=15, title_standoff=10)
+        side="left", title_standoff=10, **axis_style)
     fig.add_vline(x=50, line_dash="dash", line_color="#8b96b8", opacity=.45)
     fig.add_hline(y=50, line_dash="dash", line_color="#8b96b8", opacity=.45)
-    fig.add_annotation(xref="paper", yref="paper", x=.98, y=.98,
-        text=t("右上：检验表现与客户反馈双高", "Upper right: elevated inspections and client signals"),
-        showarrow=False, font=dict(size=14, color="#dc2626"), bgcolor="rgba(255,255,255,0.85)")
     return fig
 
 

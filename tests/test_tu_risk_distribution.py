@@ -60,11 +60,19 @@ class DistributionTests(unittest.TestCase):
 
     def test_boundary_axes_and_english_hover_retain_pending_bounds(self):
         rows=self.rows();rows.loc[0,['supplier_score','client_score']]=[100.,100.]
+        rows.loc[1,['supplier_score','client_score']]=[0.,0.]
         fig=build_risk_distribution_figure(risk_distribution_groups(rows),'Model',lambda zh,en:en)
         self.assertIn('PQC + AQL',fig.layout.xaxis.title.text)
         self.assertIn('Return Qty + IV Qty',fig.layout.yaxis.title.text)
-        self.assertGreater(fig.layout.xaxis.range[1],100)
-        self.assertGreater(fig.layout.yaxis.range[1],100)
+        for axis, side in ((fig.layout.xaxis, 'bottom'), (fig.layout.yaxis, 'left')):
+            self.assertEqual(axis.range, (0, 100))
+            self.assertEqual(axis.side, side)
+            self.assertTrue(axis.showline)
+            self.assertEqual(axis.layer, 'below traces')
+        points = {(float(x), float(y)) for trace in fig.data for x, y in zip(trace.x, trace.y)}
+        self.assertTrue({(0., 0.), (100., 100.)}.issubset(points))
+        self.assertTrue(all(trace.cliponaxis is False for trace in fig.data))
+        self.assertEqual({annotation.text for annotation in fig.layout.annotations}, set(rows.entity))
         self.assertIn('Risk Score',fig.data[0].hovertemplate)
         self.assertTrue(all(x.marker.size==18 for x in fig.data))
 
