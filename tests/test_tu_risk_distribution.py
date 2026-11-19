@@ -73,6 +73,9 @@ class DistributionTests(unittest.TestCase):
         self.assertTrue({(0., 0.), (100., 100.)}.issubset(points))
         self.assertTrue(all(trace.cliponaxis is False for trace in fig.data))
         self.assertEqual({annotation.text for annotation in fig.layout.annotations}, set(rows.entity))
+        labels = {annotation.text: annotation for annotation in fig.layout.annotations}
+        self.assertLess(labels[rows.entity.iloc[1]].ay, 0)
+        self.assertGreater(labels[rows.entity.iloc[0]].ay, 0)
         self.assertIn('Risk Score',fig.data[0].hovertemplate)
         self.assertTrue(all(x.marker.size==18 for x in fig.data))
 

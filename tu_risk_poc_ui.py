@@ -19,7 +19,7 @@ from tu_risk_reference import render_tu_scoring_reference
 from tu_cluster_selection import (REVISION_KEY, prepare_cluster_focus,
                                  sync_cluster_focus)
 
-RISK_POC_UI_VERSION = "2026-11-19-v11-visible-axes"
+RISK_POC_UI_VERSION = "2026-11-19-v12-axis-label-spacing"
 RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876"}
 RISK_GROUP_LABELS = {"high": ("高风险", "High risk"), "medium": ("中风险", "Medium risk"),
                      "low": ("低风险", "Low risk")}
@@ -113,9 +113,10 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
             box = (px+dx-width/2-3,py+dy-11,px+dx+width/2+3,py+dy+11)
             overlaps = sum(box[0]<old[2] and box[2]>old[0] and box[1]<old[3] and box[3]>old[1] for old in occupied)
             covered = sum(box[0]-10<x<box[2]+10 and box[1]-10<y<box[3]+10 for x,y in anchors)
-            outside = box[0]<0 or box[2]>plot_width or box[1]<0 or box[3]>plot_height
-            choices.append((overlaps*10000+covered*1000+int(outside)*10000+abs(dx)+abs(dy),dx,dy,box))
-        _,dx,dy,box = min(choices,key=lambda choice:choice[0])
+            outside = box[0]<6 or box[2]>plot_width-6 or box[1]<6 or box[3]>plot_height-6
+            penalty = overlaps*10000 + covered*1000 + abs(dx) + abs(dy)
+            choices.append((outside, penalty, dx, dy, box))
+        _, _, dx, dy, box = min(choices, key=lambda choice: choice[:2])
         occupied.append(box)
         fig.add_annotation(x=row.supplier_score,y=row.client_score,xref="x",yref="y",ax=dx,ay=dy,
             text=html.escape(label),showarrow=True,arrowhead=0,arrowwidth=.8,arrowcolor="#a7b1c2",

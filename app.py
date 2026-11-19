@@ -68,7 +68,7 @@ if (getattr(_cluster_weights, "CLUSTER_WEIGHTS_VERSION", "") != "2026-10-17-v2-4
         or not hasattr(_cluster_weights, "current_risk_level_thresholds")):
     importlib.reload(_cluster_weights)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-11-19-v11-visible-axes":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-11-19-v12-axis-label-spacing":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 from cluster_weights import current_weights, fsd_cluster_view, cmw_cluster_view
