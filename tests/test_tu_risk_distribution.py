@@ -41,12 +41,22 @@ class DistributionTests(unittest.TestCase):
         self.assertNotIn('335330',grouped.entity.tolist());self.assertNotIn('335331',grouped.entity.tolist())
         self.assertTrue(pd.isna(rows.loc[0,'supplier_score']))
 
-    def test_one_position_and_empty_selection_do_not_invent_high_risk(self):
+    def test_single_model_uses_its_score_and_empty_results_are_supported(self):
         row=self.rows().iloc[:1].copy()
-        self.assertEqual(risk_distribution_groups(row).risk_group.tolist(),['single'])
+        self.assertEqual(risk_distribution_groups(row).risk_group.tolist(),['low'])
+        self.assertEqual(risk_distribution_groups(row.assign(risk_lower=70.)).risk_group.tolist(),['high'])
         grouped=risk_distribution_groups(pd.DataFrame())
         self.assertTrue(grouped.empty)
         self.assertEqual(len(build_risk_distribution_figure(grouped,'CC').data),0)
+
+    def test_same_coordinates_can_have_different_levels_at_custom_boundaries(self):
+        rows = self.rows().iloc[:4].assign(
+            supplier_score=50., client_score=50., risk_lower=[24.99, 25., 34.99, 35.],
+        )
+        levels = risk_distribution_groups(rows, (25., 35.))
+        self.assertEqual(levels.risk_group.tolist(), ['low', 'medium', 'medium', 'high'])
+        pd.testing.assert_frame_equal(levels.drop(columns='risk_group'), rows)
+        self.assertEqual(risk_distribution_groups(rows).risk_group.tolist(), ['low'] * 4)
 
     def test_boundary_axes_and_english_hover_retain_pending_bounds(self):
         rows=self.rows();rows.loc[0,['supplier_score','client_score']]=[100.,100.]

@@ -13,13 +13,16 @@ import streamlit as st
 
 from tu_risk_poc import default_profile, build_tu_risk, load_strategy_workbook, number
 from quality_chart_ui import apply_quality_chart_style
-from cluster_weights import tu_cluster_profile
+from cluster_weights import (DEFAULT_RISK_LEVEL_THRESHOLDS, current_risk_level_thresholds,
+                             tu_cluster_profile, validate_risk_level_thresholds)
 from tu_risk_reference import render_tu_scoring_reference
 from tu_cluster_selection import (REVISION_KEY, prepare_cluster_focus,
                                  sync_cluster_focus)
 
-RISK_POC_UI_VERSION = "2026-10-21-v9-cc-gate-selection"
-RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876", "single": "#2854c5"}
+RISK_POC_UI_VERSION = "2026-11-19-v10-score-levels"
+RISK_GROUP_COLORS = {"high": "#e85d68", "medium": "#f0a94a", "low": "#2aa876"}
+RISK_GROUP_LABELS = {"high": ("高风险", "High risk"), "medium": ("中风险", "Medium risk"),
+                     "low": ("低风险", "Low risk")}
 
 CSS = """
 .st-key-tu_three_dimension_risk{background:#fff!important;border:1px solid #dce4f4!important;border-top:5px solid #2854c5!important;border-radius:14px!important;padding:12px 16px!important;gap:8px!important}
@@ -47,8 +50,9 @@ CSS = """
 """
 
 
-def risk_distribution_groups(rows):
-    """Restore the former three-group view without changing any source score."""
+def risk_distribution_groups(rows, thresholds=DEFAULT_RISK_LEVEL_THRESHOLDS):
+    """Assign each plotted Model a level from its existing score lower bound."""
+    medium, high = validate_risk_level_thresholds(thresholds)
     view = rows.copy()
     for column in ("supplier_score", "client_score", "risk_lower"):
         view[column] = pd.to_numeric(view.get(column, pd.Series(index=view.index, dtype=float)), errors="coerce")
@@ -56,49 +60,21 @@ def risk_distribution_groups(rows):
         view["entity"] = pd.Series(index=view.index, dtype=str)
     valid = np.isfinite(view.supplier_score) & np.isfinite(view.client_score) & np.isfinite(view.risk_lower)
     view = view.loc[valid].sort_values("entity", kind="stable").copy()
-    if view.empty:
-        view["risk_group"] = pd.Series(dtype=str)
-        return view
-    points = view[["supplier_score", "client_score"]].to_numpy(dtype=float)
-    count = min(3, len(np.unique(points, axis=0)))
-    if count == 1:
-        view["risk_group"] = "single"
-        return view
-    # Same standardized, deterministic K-means used by the previous chart.
-    scale = points.std(axis=0)
-    scale[scale == 0] = 1
-    normalized = (points - points.mean(axis=0)) / scale
-    order = np.argsort(normalized.sum(axis=1), kind="stable")
-    seeds = np.linspace(0, len(order) - 1, count).round().astype(int)
-    centers = normalized[order[seeds]].copy()
-    labels = np.zeros(len(points), dtype=int)
-    for _ in range(80):
-        distances = ((normalized[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-        next_labels = distances.argmin(axis=1)
-        next_centers = centers.copy()
-        for cluster_id in range(count):
-            members = normalized[next_labels == cluster_id]
-            next_centers[cluster_id] = members.mean(axis=0) if len(members) else normalized[distances.min(axis=1).argmax()]
-        if np.array_equal(labels, next_labels) and np.allclose(centers, next_centers):
-            labels = next_labels
-            break
-        labels, centers = next_labels, next_centers
-    view["_distribution_group"] = labels
-    rank = view.groupby("_distribution_group").risk_lower.mean().sort_values(kind="stable").index.tolist()
-    names = {rank[0]: "low", rank[-1]: "high"} if len(rank) > 1 else {rank[0]: "single"}
-    names.update({cluster_id: "medium" for cluster_id in rank[1:-1]})
-    view["risk_group"] = view._distribution_group.map(names)
-    return view.drop(columns="_distribution_group")
+    view["risk_group"] = np.select(
+        [view.risk_lower.ge(high), view.risk_lower.ge(medium)],
+        ["high", "medium"],
+        default="low",
+    )
+    return view
 
 
 def build_risk_distribution_figure(grouped, grain, translate=None, selected_groups=None, focused_cc=""):
     """Use exact scored coordinates; colors/labels never feed back into scoring."""
     t = translate or (lambda zh, en: zh)
     view = grouped if selected_groups is None else grouped.loc[grouped.risk_group.isin(selected_groups)]
-    labels = {"high": t("高风险组", "High-risk group"), "medium": t("中风险组", "Medium-risk group"),
-              "low": t("低风险组", "Low-risk group"), "single": t("当前分组", "Current group")}
     fig = go.Figure()
-    for key in ("high", "medium", "low", "single"):
+    for key, names in RISK_GROUP_LABELS.items():
+        label = t(*names)
         part = view.loc[view.risk_group.eq(key)].sort_values("risk_lower", ascending=False, kind="stable")
         if part.empty:
             continue
@@ -110,13 +86,14 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
             custom.append([html.escape(str(row.get("entity", ""))), html.escape(str(row.get("cc", ""))),
                 html.escape(str(row.get("models", ""))), score, _fmt(row.get("strategy_indicator"), 0),
                 _fmt(row.get("returns"), 0), _fmt(row.get("iv"), 0)])
-        fig.add_trace(go.Scatter(x=part.supplier_score, y=part.client_score, name=labels[key],
+        fig.add_trace(go.Scatter(x=part.supplier_score, y=part.client_score, name=label,
             text=part.entity.astype(str), mode="markers", cliponaxis=False,
             marker=dict(size=18, color=RISK_GROUP_COLORS[key], opacity=.88, line=dict(color="#ffffff", width=1.5)),
             customdata=custom,
             hovertemplate=f"<b>{grain} %{{customdata[0]}}</b><br>CC %{{customdata[1]}}<br>Model %{{customdata[2]}}<br>"
                 + t("供应商风险分", "Supplier score") + ": %{x:.1f}<br>" + t("客户端风险分", "Client score") + ": %{y:.1f}<br>"
-                + "Return Qty %{customdata[5]} · IV Qty %{customdata[6]}<br>Risk Score %{customdata[3]}<br>Strategy %{customdata[4]}<extra></extra>"))
+                + "Return Qty %{customdata[5]} · IV Qty %{customdata[6]}<br>Risk Score %{customdata[3]}<br>"
+                + t("风险等级", "Risk level") + f" {label}<br>Strategy %{{customdata[4]}}<extra></extra>"))
     # Place labels around dense points without shifting the measured coordinates.
     occupied = []
     anchors = [(float(row.supplier_score)+4)/108*1000 for _, row in view.iterrows()]
@@ -147,7 +124,7 @@ def build_risk_distribution_figure(grouped, grain, translate=None, selected_grou
             trace.unselected = dict(marker=dict(opacity=.3))
     apply_quality_chart_style(fig, height=500, showlegend=True)
     fig.update_layout(margin=dict(l=24, r=36, t=58, b=48),
-        legend=dict(orientation="h", x=0, y=1.15, title_text=t("相对风险分组", "Relative risk groups"), font_size=14,
+        legend=dict(orientation="h", x=0, y=1.15, title_text=t("风险等级", "Risk level"), font_size=14,
             itemclick=False, itemdoubleclick=False),
         hoverlabel=dict(bgcolor="#f8faff", bordercolor="#8795e8", font_size=15, align="left"),
         transition=dict(duration=420, easing="cubic-in-out"), clickmode="event+select")
@@ -236,7 +213,7 @@ def _table(rows, translate):
 
 
 def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registry_override=None):
-    """Render session-weighted Model clusters; return baseline CC report facts."""
+    """Render the Model risk levels and return the baseline CC report facts."""
     t = translate or (lambda zh, en: zh)
     st.markdown('<style>'+CSS+'</style>', unsafe_allow_html=True)
     registry, connection = _registry() if registry_override is None else (registry_override, "connected")
@@ -246,24 +223,25 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
     audit["strategy_connection"] = connection
     st.session_state["_tu_risk_poc_audit"] = audit
     st.session_state["_tu_risk_poc_rows"] = rows.to_dict("records")
-    # Editable cluster weights never feed CC ranking or the report.
+    # The CC report uses its independently scored default profile.
     cc_rows, cc_audit = build_tu_risk(pqc,aql,voice,cases,scope,grain="CC",department="Hugss",
         profile=default_profile("CC"),registry=registry,season="",inspection_only=True)
     st.session_state["_tu_risk_poc_cc_rows"] = cc_rows.to_dict("records")
     st.session_state["_tu_risk_poc_cc_audit"] = cc_audit
     with st.container(key="tu_poc_distribution_panel"):
-        st.subheader(t("高风险产品聚类分析", "High-Risk Product Cluster Analysis"))
+        st.subheader(t("产品风险分布", "Product Risk Distribution"))
         if rows.empty:
             prepare_cluster_focus(st.session_state, scope, [])
             st.info(t("当前筛选暂无接入的检验产品。现有试点覆盖 Hugss · ZX。", "No connected inspection products in this selection. Current pilot: Hugss · ZX."))
             return cc_rows
-        plotted = risk_distribution_groups(rows)
+        medium, high = current_risk_level_thresholds(st.session_state)
+        st.caption(t(f"按 Model 的综合风险分下界定档。低 < {medium:g} · 中 {medium:g} 至低于 {high:g} · 高 ≥ {high:g}。虚线为两轴 50 分参考线。",
+                     f"Based on each Model's score lower bound. Low < {medium:g} · Medium {medium:g} to below {high:g} · High ≥ {high:g}. Dashed lines mark the 50-point reference on each axis."))
+        plotted = risk_distribution_groups(rows, (medium, high))
         if not plotted.empty:
-            options = [key for key in ("high", "medium", "low", "single") if key in set(plotted.risk_group)]
-            group_names = {"high": t("高风险组", "High-risk group"), "medium": t("中风险组", "Medium-risk group"),
-                "low": t("低风险组", "Low-risk group"), "single": t("当前分组", "Current group")}
-            selected = st.multiselect(t("聚类筛选（可多选）", "Cluster filter (multi-select)"), options,
-                default=options, format_func=lambda value: group_names[value], key="tu_poc_groups_Hugss_Model")
+            options = list(RISK_GROUP_LABELS)
+            selected = st.multiselect(t("风险等级", "Risk levels"), options, default=options,
+                format_func=lambda value: t(*RISK_GROUP_LABELS[value]), key="tu_poc_risk_levels_Hugss_Model")
             visible_ccs = plotted.loc[plotted.risk_group.isin(selected), "cc"].tolist()
             focused_cc = prepare_cluster_focus(st.session_state, scope, visible_ccs)
             if selected:
@@ -273,7 +251,7 @@ def render_tu_risk_poc(pqc, aql, voice, cases, scope, *, translate=None, registr
                     on_select=lambda: sync_cluster_focus(st.session_state, chart_key, visible_ccs), selection_mode="points",
                     config={"displayModeBar":True, "scrollZoom":False, "displaylogo":False})
             else:
-                st.info(t("请选择至少一个风险分组。", "Select at least one risk group."))
+                st.info(t("请选择至少一个风险等级。", "Select at least one risk level."))
         else:
             prepare_cluster_focus(st.session_state, scope, [])
             st.info(t("当前范围没有同时可计算两轴的记录，保留空图。", "No records with both scores; the plot remains empty."))

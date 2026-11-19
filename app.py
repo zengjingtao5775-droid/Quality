@@ -64,15 +64,16 @@ import tu_risk_poc as _tu_risk_poc
 if getattr(_tu_risk_poc, "RISK_POC_VERSION", "") != "2026-10-19-v6-configurable-anchors":
     importlib.reload(_tu_risk_poc)
 import cluster_weights as _cluster_weights
-if getattr(_cluster_weights, "CLUSTER_WEIGHTS_VERSION", "") != "2026-10-17-v2-40-10-50":
+if (getattr(_cluster_weights, "CLUSTER_WEIGHTS_VERSION", "") != "2026-10-17-v2-40-10-50"
+        or not hasattr(_cluster_weights, "current_risk_level_thresholds")):
     importlib.reload(_cluster_weights)
 import tu_risk_poc_ui as _tu_risk_poc_ui
-if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-10-21-v9-cc-gate-selection":
+if getattr(_tu_risk_poc_ui, "RISK_POC_UI_VERSION", "") != "2026-11-19-v10-score-levels":
     importlib.reload(_tu_risk_poc_ui)
 from tu_risk_poc_ui import render_tu_risk_poc
 from cluster_weights import current_weights, fsd_cluster_view, cmw_cluster_view
 import cluster_settings_ui as _cluster_settings_ui
-if getattr(_cluster_settings_ui, "CLUSTER_SETTINGS_UI_VERSION", "") != "2026-10-19-v6-configurable-anchors":
+if getattr(_cluster_settings_ui, "CLUSTER_SETTINGS_UI_VERSION", "") != "2026-11-19-v7-risk-level-thresholds":
     importlib.reload(_cluster_settings_ui)
 from cluster_settings_ui import render_quality_navigation, render_cluster_settings
 import quality_chart_ui as _quality_chart_ui

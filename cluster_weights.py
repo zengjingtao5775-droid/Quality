@@ -1,4 +1,4 @@
-"""Session policies for cluster views, isolated from dashboard/report scoring."""
+"""Session policies for the TU risk chart and BME cluster views."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -13,6 +13,8 @@ from tu_risk_poc import default_profile
 CLUSTER_WEIGHTS_VERSION = "2026-10-17-v2-40-10-50"
 STATE_KEY = "_quality_cluster_weights"
 THRESHOLDS_STATE_KEY = "_quality_cluster_tu_thresholds"
+RISK_LEVEL_THRESHOLDS_STATE_KEY = "_quality_tu_risk_level_thresholds"
+DEFAULT_RISK_LEVEL_THRESHOLDS = (40., 70.)
 THRESHOLD_KEYS = ("pqc_warning_pct", "pqc_critical_pct", "aql_warning_pct", "aql_critical_pct",
                   "return_warning_multiple", "return_critical_multiple", "iv_warning", "iv_critical")
 THRESHOLD_DEFAULTS = {key: float(getattr(default_profile("Model"), key)) for key in THRESHOLD_KEYS}
@@ -82,14 +84,34 @@ def current_thresholds(state):
         return deepcopy(THRESHOLD_DEFAULTS)
 
 
-def apply_tu_policy(state, weights, thresholds):
-    # Validate both parts before saving either; invalid forms cannot partly apply.
+def validate_risk_level_thresholds(thresholds):
+    medium, high = map(float, thresholds)
+    if not 0 <= medium < high <= 100:
+        raise ValueError("Risk level thresholds must satisfy 0 <= medium < high <= 100")
+    return medium, high
+
+
+def current_risk_level_thresholds(state):
+    try:
+        return validate_risk_level_thresholds(
+            state.get(RISK_LEVEL_THRESHOLDS_STATE_KEY, DEFAULT_RISK_LEVEL_THRESHOLDS)
+        )
+    except (ValueError, TypeError, OverflowError):
+        return DEFAULT_RISK_LEVEL_THRESHOLDS
+
+
+def apply_tu_policy(state, weights, thresholds, *, risk_level_thresholds=None):
+    # Validate every part before applying the form.
     weights = validate_weights("TU", weights)
     thresholds = validate_thresholds(thresholds)
+    if risk_level_thresholds is not None:
+        risk_level_thresholds = validate_risk_level_thresholds(risk_level_thresholds)
     policies = deepcopy(state.get(STATE_KEY, {}))
     policies["TU"] = weights
     state[STATE_KEY] = policies
     state[THRESHOLDS_STATE_KEY] = thresholds
+    if risk_level_thresholds is not None:
+        state[RISK_LEVEL_THRESHOLDS_STATE_KEY] = risk_level_thresholds
 
 
 def tu_cluster_profile(state):
